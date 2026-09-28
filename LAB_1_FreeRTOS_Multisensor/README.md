@@ -308,7 +308,11 @@ Unit tests exercise the deterministic, hardware-independent decision logic on th
 ```bash
 pio test -e native
 ```
-**Results**:
+
+![Automated Unit Test Results (Unity)](./docs/images/unit-tests-passed.png)  
+*Figure 2: Execution output of `pio test -e native` verifying all 13 unit tests passed in 1.35 seconds.*
+
+**Results Summary**:
 ```text
 test\test_logic\test_logic.c:101: test_temperature_below_lower_limit_is_low      [PASSED]
 test\test_logic\test_logic.c:102: test_temperature_exactly_lower_limit_is_normal  [PASSED]
@@ -323,7 +327,7 @@ test\test_logic\test_logic.c:114: test_active_without_timeout_stays_active      
 test\test_logic\test_logic.c:115: test_active_after_timeout_becomes_inactive     [PASSED]
 test\test_logic\test_logic.c:116: test_inactive_without_motion_stays_inactive     [PASSED]
 test\test_logic\test_logic.c:117: test_inactive_with_motion_becomes_active       [PASSED]
-================= 13 test cases: 13 succeeded in 00:00:00.701 =================
+================= 13 test cases: 13 succeeded in 00:00:01.352 =================
 ```
 
 ---

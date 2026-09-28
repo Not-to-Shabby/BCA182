@@ -202,7 +202,10 @@ During system operation, tasks transition through the following states:
 ## 5. Verification and Testing
 
 ### 5.1 Automated Unit Testing (`pio test -e native`)
-All 13 required unit tests were executed on the native host environment using the Unity test framework. All 13 passed successfully in **0.70 seconds**.
+All 13 required unit tests were executed on the native host environment using the Unity test framework. All 13 passed successfully in **1.35 seconds**.
+
+![Automated Unit Test Results](./images/unit-tests-passed.png)  
+*Figure 2: Execution capture of `pio test -e native` verifying all 13 unit tests passed under the Unity test runner.*
 
 ```text
 Processing test_logic in native environment
@@ -217,6 +220,11 @@ test\test_logic\test_logic.c:109: test_next_from_motion_wraps_to_temperature    
 test\test_logic\test_logic.c:110: test_previous_from_humidity_is_temperature     [PASSED]
 test\test_logic\test_logic.c:111: test_previous_from_temperature_wraps_to_motion [PASSED]
 test\test_logic\test_logic.c:114: test_active_without_timeout_stays_active       [PASSED]
+test\test_logic\test_logic.c:115: test_active_after_timeout_becomes_inactive     [PASSED]
+test\test_logic\test_logic.c:116: test_inactive_without_motion_stays_inactive     [PASSED]
+test\test_logic\test_logic.c:117: test_inactive_with_motion_becomes_active       [PASSED]
+================= 13 test cases: 13 succeeded in 00:00:01.352 =================
+```
 test\test_logic\test_logic.c:115: test_active_after_timeout_becomes_inactive     [PASSED]
 test\test_logic\test_logic.c:116: test_inactive_without_motion_stays_inactive     [PASSED]
 test\test_logic\test_logic.c:117: test_inactive_with_motion_becomes_active       [PASSED]

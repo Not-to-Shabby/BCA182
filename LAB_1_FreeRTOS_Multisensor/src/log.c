@@ -43,10 +43,30 @@ void Log_End(void)
     }
 }
 
+static inline void RawPutc(char c)
+{
+    while ((USART1->SR & USART_SR_TXE) == 0) { }
+    USART1->DR = (uint8_t)c;
+}
+
+void Log_RawPuts(const char *s)
+{
+    while (*s) { RawPutc(*s++); }
+}
+
+void Log_RawUint(uint32_t v)
+{
+    char num[12];
+    int i = 10;
+    num[11] = '\0';
+    do { num[i--] = (char)('0' + v % 10); v /= 10; } while (v > 0 && i >= 0);
+    Log_RawPuts(&num[i + 1]);
+}
+
 void Log(const char *msg)
 {
     Log_Begin();
-    HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)strlen(msg), HAL_MAX_DELAY);
+    Log_RawPuts(msg);
     Log_End();
 }
 
@@ -80,24 +100,4 @@ void Log_Uint(uint32_t v)
     while (i > 0) { buf[j++] = tmp[--i]; }
     buf[j] = '\0';
     Log(buf);
-}
-
-static void RawPutc(char c)
-{
-    while ((USART1->SR & USART_SR_TXE) == 0) { }
-    USART1->DR = (uint8_t)c;
-}
-
-void Log_RawPuts(const char *s)
-{
-    while (*s) { RawPutc(*s++); }
-}
-
-void Log_RawUint(uint32_t v)
-{
-    char num[12];
-    int i = 10;
-    num[11] = '\0';
-    do { num[i--] = (char)('0' + v % 10); v /= 10; } while (v > 0 && i >= 0);
-    Log_RawPuts(&num[i + 1]);
 }

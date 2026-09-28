@@ -22,7 +22,7 @@ void SensorTask(void *argument)
 {
     (void)argument;
     SensorData data = {0};
-    Dht22Reading r;
+    Dht22Reading r = {0};
     uint16_t raw;
     TickType_t lastWakeTime = xTaskGetTickCount();
 
@@ -54,9 +54,9 @@ void SensorTask(void *argument)
         /* Stream diagnostic telemetry via thread-safe logger */
         Log_Begin();
         Log("[Sensor] Temp: ");
-        Log_Tenths(r.temp_x10);
+        if (data.dhtValid) { Log_Tenths(r.temp_x10); } else { Log("--"); }
         Log(" C | Hum: ");
-        Log_Tenths((int32_t)r.hum_x10);
+        if (data.dhtValid) { Log_Tenths((int32_t)r.hum_x10); } else { Log("--"); }
         Log(" % | Light: ");
         Log_Uint((uint32_t)data.lightLevel);
         Log(" %\r\n");

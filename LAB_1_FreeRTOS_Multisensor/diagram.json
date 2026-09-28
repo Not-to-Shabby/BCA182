@@ -3,58 +3,36 @@
   "author": "Perch Arnel II Montefalcon",
   "editor": "wokwi",
   "parts": [
-    {
-      "type": "board-stm32-bluepill",
-      "id": "stm32",
-      "top": 25,
-      "left": 20,
-      "attrs": {}
-    },
+    { "type": "board-stm32-bluepill", "id": "stm32", "top": 25, "left": 20, "attrs": {} },
     {
       "type": "wokwi-dht22",
       "id": "dht1",
-      "top": -170,
-      "left": -250,
-      "attrs": {
-        "temperature": "25",
-        "humidity": "50"
-      }
+      "top": 317.1,
+      "left": -149.4,
+      "attrs": { "temperature": "25", "humidity": "50" }
     },
     {
       "type": "board-ssd1306",
       "id": "oled1",
-      "top": -180,
-      "left": 250,
-      "attrs": {
-        "i2cAddress": "0x3c"
-      }
+      "top": -102.46,
+      "left": 125.03,
+      "attrs": { "i2cAddress": "0x3c" }
     },
-    {
-      "type": "wokwi-buzzer",
-      "id": "buzzer1",
-      "top": 185,
-      "left": 260,
-      "attrs": {}
-    },
+    { "type": "wokwi-buzzer", "id": "buzzer1", "top": 280.8, "left": 136.2, "attrs": {} },
     {
       "type": "wokwi-photoresistor-sensor",
       "id": "ldr1",
-      "top": -20,
-      "left": -270,
+      "top": -16.2,
+      "left": 266.8,
+      "rotate": 180,
       "attrs": {}
     },
-    {
-      "type": "wokwi-ky-040",
-      "id": "encoder1",
-      "top": -10,
-      "left": 275,
-      "attrs": {}
-    },
+    { "type": "wokwi-ky-040", "id": "encoder1", "top": 20.9, "left": -231.2, "attrs": {} },
     {
       "type": "wokwi-pir-motion-sensor",
       "id": "pir1",
-      "top": 180,
-      "left": -240,
+      "top": 128.8,
+      "left": -189.78,
       "attrs": {}
     }
   ],
@@ -62,24 +40,24 @@
     [ "stm32:A9", "$serialMonitor:RX", "amber", [] ],
     [ "stm32:A10", "$serialMonitor:TX", "amber", [] ],
     [ "dht1:VCC", "stm32:3V3.1", "red", [] ],
-    [ "dht1:GND", "stm32:GND.1", "black", [] ],
-    [ "dht1:SDA", "stm32:A1", "green", [] ],
-    [ "ldr1:VCC", "stm32:3V3.1", "red", [] ],
-    [ "ldr1:GND", "stm32:GND.1", "black", [] ],
-    [ "ldr1:AO", "stm32:A0", "orange", [] ],
-    [ "encoder1:VCC", "stm32:3V3.1", "red", [] ],
-    [ "encoder1:GND", "stm32:GND.1", "black", [] ],
-    [ "encoder1:CLK", "stm32:A4", "cyan", [] ],
-    [ "encoder1:DT", "stm32:A5", "magenta", [] ],
-    [ "pir1:VCC", "stm32:3V3.1", "red", [] ],
-    [ "pir1:GND", "stm32:GND.1", "black", [] ],
-    [ "pir1:OUT", "stm32:A3", "gold", [] ],
-    [ "oled1:VCC", "stm32:3V3.1", "red", [] ],
-    [ "oled1:GND", "stm32:GND.1", "black", [] ],
-    [ "oled1:SDA", "stm32:B7", "blue", [] ],
-    [ "oled1:SCL", "stm32:B6", "yellow", [] ],
-    [ "buzzer1:1", "stm32:A2", "purple", [] ],
-    [ "buzzer1:2", "stm32:GND.1", "black", [] ]
+    [ "dht1:GND", "stm32:GND.1", "black", [ "v9.6", "h48", "v-230.4", "h90.83" ] ],
+    [ "dht1:SDA", "stm32:A1", "green", [ "h249.7", "v-261.64" ] ],
+    [ "ldr1:VCC", "stm32:3V3.2", "red", [ "h-67.2", "h-48", "v26.36" ] ],
+    [ "ldr1:GND", "stm32:GND.2", "black", [ "h-12.4", "v0.2", "h-131.6", "v16.96" ] ],
+    [ "ldr1:AO", "stm32:A0", "orange", [ "h-48", "v180.66" ] ],
+    [ "encoder1:VCC", "stm32:3V3.1", "red", [ "h28.8", "v161.16" ] ],
+    [ "encoder1:GND", "stm32:GND.1", "black", [ "h57.6", "v144.8", "h90.83" ] ],
+    [ "encoder1:CLK", "stm32:A4", "cyan", [ "v-144", "h403.2", "v151.16" ] ],
+    [ "encoder1:DT", "stm32:A5", "magenta", [ "h38.4", "v-28.7", "h249.6", "v122.36" ] ],
+    [ "pir1:GND", "stm32:GND.1", "black", [ "v-9.6", "h162.94", "v-2.88", "h4.43" ] ],
+    [ "pir1:OUT", "stm32:A3", "gold", [ "v48", "h383.86", "v-117.64" ] ],
+    [ "oled1:VCC", "stm32:3V3.1", "red", [ "v-28.8", "h-163.05", "v343.16" ] ],
+    [ "oled1:GND", "stm32:GND.1", "black", [ "v-19.2", "h-163.2", "v323.96" ] ],
+    [ "oled1:SDA", "stm32:B7", "blue", [ "v-48", "h-220.73", "v314.36" ] ],
+    [ "oled1:SCL", "stm32:B6", "yellow", [ "v-38.4", "h-201.3", "v295.16" ] ],
+    [ "buzzer1:1", "stm32:GND.1", "black", [ "h-96", "v-155.81", "h-33.97" ] ],
+    [ "buzzer1:2", "stm32:A2", "purple", [ "v19.2", "h38", "v-223.24" ] ],
+    [ "pir1:VCC", "stm32:3V3.1", "red", [ "v28.8", "h192", "h-5.17" ] ]
   ],
   "dependencies": {}
 }

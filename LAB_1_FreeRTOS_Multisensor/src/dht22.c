@@ -23,7 +23,7 @@ static void DelayUs(uint32_t us)
 {
     uint32_t start = DWT->CYCCNT;
     uint32_t ticks = us * cyclesPerUs;
-    uint32_t guard = us * 20U;
+    uint32_t guard = us * 200U;
 
     for (;;)
     {
@@ -55,7 +55,7 @@ static int WaitLevel(uint32_t level, uint32_t timeoutUs)
 {
     uint32_t start = DWT->CYCCNT;
     uint32_t limit = timeoutUs * cyclesPerUs;
-    uint32_t guard = timeoutUs * 20U;
+    uint32_t guard = timeoutUs * 200U;
 
     for (;;)
     {

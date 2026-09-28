@@ -13,6 +13,39 @@
 
 #define TASK_STACK_WORDS 256
 
+static void SystemClock_Config(void) {
+    RCC_OscInitTypeDef osc = {0};
+    RCC_ClkInitTypeDef clk = {0};
+
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    osc.HSEState = RCC_HSE_ON;
+    osc.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+    osc.HSIState = RCC_HSI_ON;
+    osc.PLL.PLLState = RCC_PLL_ON;
+    osc.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    osc.PLL.PLLMUL = RCC_PLL_MUL9;
+
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
+        osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+        osc.HSEState = RCC_HSE_OFF;
+        osc.PLL.PLLState = RCC_PLL_NONE;
+        (void)HAL_RCC_OscConfig(&osc);
+    }
+
+    clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                    RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    clk.APB1CLKDivider = RCC_HCLK_DIV2;
+    clk.APB2CLKDivider = RCC_HCLK_DIV1;
+
+    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_2) != HAL_OK) {
+        clk.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+        clk.APB1CLKDivider = RCC_HCLK_DIV1;
+        (void)HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_0);
+    }
+}
+
 /* PC13 LED on Blue Pill */
 static void StatusLed_Init(void) {
     __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -70,15 +103,19 @@ int main(void) {
     SCB->VTOR = FLASH_BASE;
 
     HAL_Init();
+    SystemClock_Config();
     StatusLed_Init();
     Log_Init();
-    Sensors_Init();
 
     Log("\r\n========================================\r\n");
     Log(" BCA182 Laboratory 1: Phase 3 Sensors   \r\n");
     Log(" Real-Time Multisensor Room Monitoring  \r\n");
     Log(" DHT22 (PA1) | LDR (PA0) | Queue IPC    \r\n");
     Log("========================================\r\n");
+
+    Log("[Init] Initializing DHT22 and LDR...\r\n");
+    Sensors_Init();
+    Log("[Init] Sensor hardware initialized\r\n");
 
     if (!RTOS_Objects_Create()) {
         Log("[RTOS] ERROR: Object creation failed!\r\n");

@@ -19,74 +19,70 @@ All course assignment files (such as `*.docx`, `*.docx.md`), PlatformIO build ou
 
 ## 2. Development & Simulation Workflow
 
-- **IDE & Tooling Environment**: PlatformIO builds, test execution, and Wokwi circuit simulation are run by the user within **Visual Studio Code Insiders**.
+- **IDE & Tooling Environment**: PlatformIO builds, test execution, and Wokwi circuit simulation are run in **Visual Studio Code Insiders** or via `wokwi-cli`.
+- **Wokwi Serial Monitor Wiring**:
+  - The Wokwi STM32 Blue Pill model requires explicit connections in `diagram.json`:
+    - `[ "stm32:A9", "$serialMonitor:RX", "amber", [] ]`
+    - `[ "stm32:A10", "$serialMonitor:TX", "amber", [] ]`
+  - Without these wires, virtual USART1 serial output will not appear in the Wokwi terminal.
 - **Agent Verification Contract**:
-  - The agent does not have access to an interactive GUI Wokwi runtime.
-  - Before requesting a simulation run from the user, the agent must ensure static correctness:
-    - Clean compilation with no unresolved warnings or broken references.
-    - Deterministic decision logic verified through automated unit tests.
-    - Accurate pinout and device wiring defined in `diagram.json` and `wokwi.toml`.
-  - When the user runs the simulation in VS Code Insiders, they will copy and share the Serial Monitor output (115200 baud) and report hardware indicators (such as the on-board PC13 status LED).
-  - The agent interprets this feedback to confirm behavior or diagnose regressions.
+  - Before asking the user for a test run or committing, verify statically:
+    - `pio run`: Clean build with zero compilation errors and warnings.
+    - `pio test -e native`: 13 automated unit tests pass on the host MinGW environment via Unity.
+    - `pio check`: Cppcheck static code analysis reports zero defects.
 
 ---
 
 ## 3. STM32Cube & FreeRTOS Architecture Standards
 
 - **Strict Framework Ban**: The Arduino framework, Arduino core libraries, and Arduino-style convenience abstractions are strictly prohibited by course rules. All code must use the **STM32Cube framework** (`framework = stm32cube`), ST HAL drivers, and native FreeRTOS C/C++ APIs.
-- **Vendored FreeRTOS 10.3.1 (ARM Cortex-M3 Port)**:
-  - **Single Port Compilation**: `lib/FreeRTOS/library.json` must configure `build.srcFilter` to compile exactly one portable target: `+<portable/GCC/ARM_CM3/port.c>`.
-  - **VTOR Initialization**: Before starting the scheduler (`vTaskStartScheduler()`), the firmware must initialize `SCB->VTOR = FLASH_BASE;` so the Cortex-M3 SVC-0 handler correctly restores the initial task stack pointer from flash offset 0.
-  - **Wokwi NVIC Priority-Probe Clamp**: Wokwi's virtual MCU does not mask unimplemented NVIC priority bits. The priority-bits probe in `xPortStartScheduler()` must be safely clamped to prevent assertion deadlocks.
-  - **Combined SysTick Handler**: `main.c` must define `SysTick_Handler()` to call both `HAL_IncTick()` (for HAL timing/delays) and `xPortSysTickHandler()` (for FreeRTOS kernel context switching).
-- **I2C Protocol & Wokwi Simulation Errata**:
-  - Wokwi's virtual STM32F103 I2C peripheral model does not faithfully emulate ST's complex analog/digital filter and multi-byte event flag sequencing in hardware mode (`HAL_I2C_Mem_Write` times out or fails ACK handshakes on simulated I2C1).
-  - Therefore, the SSD1306 OLED interface must use **deterministic open-drain bit-banging** on pins `PB6` (SCL) and `PB7` (SDA) via `GPIOB->BSRR / BRR`. This provides 100% reliable frame delivery and avoids I2C bus lockups. Document this in the engineering decision log and laboratory report.
+- **Wokwi Cortex-M3 FreeRTOS Compatibility Port**:
+  - *Context Switching*: Wokwi's virtual Cortex-M3 emulator fails during hardware exception return (`EXC_RETURN` via `SVC 0`) from task startup. To bypass this emulator defect, `lib/FreeRTOS/portable/GCC/ARM_CM3/port.c` implements a direct Thread-mode bootstrap (`prvTaskBootstrap` on `PSP`) and naked `vPortYieldDirect()`.
+  - *Tick Source*: Driven by hardware timer `TIM3` at 20 Hz (`configTICK_RATE_HZ = 20`) to eliminate high-frequency interrupt overhead in web browser emulation. `TIM3_IRQHandler` advances both the FreeRTOS tick and `uwTick`.
+  - *Idle Hook Yield*: `vApplicationIdleHook()` executes `__WFI()` and calls `taskYIELD()` when `xPortConsumeTickYield()` indicates a pending tick switch.
+  - *Attribution*: This direct context-switching port pattern was adapted from the open-source implementation by [Djaver Hassan](https://github.com/djaverhassan/bca182-freertos-multisensor) (credit: Ni-ear).
+- **Hardware I2C1 for SSD1306 OLED**:
+  - Configured on pins **PB6 (SCL)** and **PB7 (SDA)** in Alternate Function Open-Drain mode (`GPIO_MODE_AF_OD`) with pull-ups.
+  - Initialized at 400 kHz Fast Mode and communicated via `HAL_I2C_Mem_Write()`.
 
 ---
 
 ## 4. Multi-Tasking & IPC Architecture
 
-- **Task Decomposition**: Systems must be modular and concurrent. Single-task super-loops are unacceptable.
-  - `SensorTask`: Periodic sensor acquisition using `vTaskDelayUntil()`.
-  - `DisplayTask`: Dedicated, exclusive owner of the SSD1306 OLED display.
-  - `InputTask`: Rotary encoder polling/event decoding.
-  - `MotionTask`: PIR motion monitoring and inactivity timer.
-  - `AlarmTask`: Temperature threshold evaluation and buzzer control.
-  - `StateTask` / System State: Centralized `ACTIVE` / `INACTIVE` state management.
+- **Task Decomposition**: 6 discrete FreeRTOS tasks with prioritized preemptive scheduling:
+  - `MotionTask` (Priority 3): Periodic 100 ms PIR monitoring on PA3.
+  - `StateTask` (Priority 3): Central state machine managing 15 s sleep/wake timer.
+  - `InputTask` (Priority 3): EXTI4 rotary encoder decoding on PA4/PA5; wakes sleeping device.
+  - `SensorTask` (Priority 2): Periodic 2000 ms acquisition using **`vTaskDelayUntil()`**.
+  - `AlarmTask` (Priority 2): Temperature limit evaluation ($18^\circ\text{C}-30^\circ\text{C}$) and TIM2 PWM buzzer control on PA2.
+  - `DisplayTask` (Priority 1): Exclusive owner of SSD1306 OLED; enters sleep when `INACTIVE`.
 - **IPC Mechanisms**:
-  - **Queues**: Used for transferring structured telemetry (`SensorData`) from producer tasks to consumers.
-  - **Mutexes**: Must protect shared hardware resources (such as USART1 serial printing) against interleaved corruption.
-  - **Event Groups / Notifications**: Used for discrete system events (`EVENT_ACTIVE`, `EVENT_MOTION`, `EVENT_ALARM`).
+  - **Queues**: `sensorToDisplayQueue`, `sensorToAlarmQueue`, `displayModeQueue`.
+  - **Mutex**: `serialMutex` (recursive) guarding `USART1` terminal telemetry.
+  - **Event Group**: `systemEvents` (`EVENT_ACTIVE`, `EVENT_MOTION`, `EVENT_ALARM`, `EVENT_PIR_LEVEL`).
 
 ---
 
 ## 5. Software Modularity & Unit Testing
 
-- **Decoupled Architecture**: All hardware-independent decision logic must be strictly separated from hardware peripheral access.
-  - `evaluateTemperature()` must be a pure function testable with floating-point values.
-  - `nextDisplayMode()` and `previousDisplayMode()` must be pure cyclic state machines.
-  - `evaluateSystemState()` must handle inactivity transitions deterministically.
-- **Unit Testing**: Unit tests are located in `LAB_1_FreeRTOS_Multisensor/test/` and run using the Unity framework.
+- **Decoupled Architecture**: All hardware-independent decision logic is isolated in `src/logic.c` and `include/logic.h`:
+  - `evaluateTemperature()`: 5 boundary conditions tested.
+  - `nextDisplayMode()` / `previousDisplayMode()`: 4 bidirectional traversal tests with wraparound.
+  - `evaluateSystemState()`: 4 state transition tests.
+- **Unit Testing**: Located in `LAB_1_FreeRTOS_Multisensor/test/test_logic/test_logic.c`, executed via `pio test -e native` on MinGW GCC using Unity.
 
 ---
 
 ## 6. Commit & Git Discipline
 
-- Commits must be made incrementally after each technical milestone.
-- Commit messages must follow conventional imperative style:
-  - `Initialize repository structure and agent rules`
-  - `Configure initial Wokwi simulation and FreeRTOS foundation`
-  - `Implement DHT22 sensor acquisition`
-  - `Add LDR measurement`
-  - `Add sensor data queue and serial mutex`
-  - `Implement OLED display task`
-  - `Add rotary encoder navigation`
-  - `Implement alarm task`
-  - `Add PIR motion and system state machine`
-  - `Add FreeRTOS event group`
-  - `Add alarm, navigation, and state unit tests`
-  - `Resolve static analysis findings`
-  - `Complete Wokwi verification and fault experiments`
-  - `Finalize technical documentation and laboratory report`
-- Never combine unrelated features into monolithic or vague commits (e.g., "update", "working").
+- Commits must be made incrementally after each technical milestone following conventional imperative style:
+  - `Initialize repository structure, agent rules, and Lab 1 scaffold`
+  - `Configure initial Wokwi simulation and FreeRTOS foundation (Phase 2)`
+  - `Complete Phase 2: FreeRTOS baseline multitasking verified in Wokwi (Task A & Task B)`
+  - `Complete Phase 3: Live sensor acquisition (DHT22 & LDR) and OLED telemetry via FreeRTOS Queue verified`
+  - `Implement Phase 4: Full 6-task FreeRTOS architecture (InputTask, AlarmTask, MotionTask, StateTask, SensorTask, DisplayTask)`
+  - `Allow rotary encoder interaction to wake system from INACTIVE sleep mode`
+  - `Complete Phase 5: Automated unit test suite (13/13 passing) and static code analysis (0 defects)`
+  - `Complete Phase 6: Comprehensive 20-section portfolio README, formal academic laboratory report, oral defense guide, and Hackster.io article`
+  - `Add circuit simulation diagram screenshot and complete wiring netlist to documentation`
+- Never combine unrelated features into monolithic or vague commits.

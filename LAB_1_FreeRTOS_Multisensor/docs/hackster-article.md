@@ -94,7 +94,7 @@ Verified using PlatformIO Check with `cppcheck`:
 ## 6. Challenges & Simulation Solutions
 During Wokwi virtual simulation, we diagnosed an emulator limitation where standard Cortex-M3 exception return unstacking (`EXC_RETURN` via `SVC 0`) failed during task startup. 
 
-We engineered a **direct Thread-mode context-switching port**:
+We engineered a **direct Thread-mode context-switching port** (adapted from the open-source implementation by [Djaver Hassan](https://github.com/djaverhassan/bca182-freertos-multisensor), credit: Ni-ear):
 - The first task is launched in Thread mode on `PSP` using `prvTaskBootstrap`.
 - Task yields execute via `vPortYieldDirect()` without relying on `PendSV`.
 - The scheduler tick is driven by hardware timer `TIM3` running at 20 Hz, reducing browser simulation overhead while preserving 100% functional fidelity.

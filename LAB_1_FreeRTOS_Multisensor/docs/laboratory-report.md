@@ -299,6 +299,8 @@ To ensure rock-solid simulation reliability:
 2. **Context Switching**: `portYIELD()` was mapped to `vPortYieldDirect()`, performing a naked Thread-mode context switch between task stacks.
 3. **Tick Timer**: `TIM3` was configured at 20 Hz (50 ms tick) to advance the RTOS scheduler and `uwTick` smoothly without burdening the host browser's JavaScript engine.
 
+*Technical Attribution*: The Thread-mode direct context-switching and TIM3 tick compatibility patch was adapted from the open-source implementation by [Djaver Hassan](https://github.com/djaverhassan/bca182-freertos-multisensor) (credit: Ni-ear).
+
 **Differences on Physical Hardware**:
 - On physical STM32F103 silicon, the standard FreeRTOS port works natively: `SVC 0` unrolls the stack into Thread mode via hardware exception return, and `PendSV` handles all preemptive context switches at priority 15.
 - The physical hardware uses the internal `SysTick` timer at 1000 Hz (1 ms tick resolution) rather than `TIM3`.

@@ -391,6 +391,7 @@ No defects found
 
 - **Course Material**: *BCA182 Embedded Systems Programming Laboratory Activity No. 1*, Mindanao State University – Iligan Institute of Technology.
 - **Instructor / Evaluator**: Paul Rodolf P. Castor (`paulrodolf.castor@g.msuiit.edu.ph`).
+- **FreeRTOS Wokwi Compatibility Patch**: The Thread-mode direct context-switching workaround (`vPortYieldDirect()`, direct PSP bootstrap via `prvTaskBootstrap`, and hardware timer `TIM3` 20 Hz tick) was adapted from the open-source implementation by [Djaver Hassan](https://github.com/djaverhassan/bca182-freertos-multisensor) (credit: Ni-ear).
 - **FreeRTOS Kernel Documentation**: [https://www.freertos.org/](https://www.freertos.org/)
 - **STMicroelectronics STM32F103 Reference Manual (RM0008)**: [https://www.st.com/](https://www.st.com/)
 - **Wokwi Simulator Documentation**: [https://docs.wokwi.com/](https://docs.wokwi.com/)

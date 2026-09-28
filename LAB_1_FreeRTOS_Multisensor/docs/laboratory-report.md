@@ -225,11 +225,6 @@ test\test_logic\test_logic.c:116: test_inactive_without_motion_stays_inactive   
 test\test_logic\test_logic.c:117: test_inactive_with_motion_becomes_active       [PASSED]
 ================= 13 test cases: 13 succeeded in 00:00:01.352 =================
 ```
-test\test_logic\test_logic.c:115: test_active_after_timeout_becomes_inactive     [PASSED]
-test\test_logic\test_logic.c:116: test_inactive_without_motion_stays_inactive     [PASSED]
-test\test_logic\test_logic.c:117: test_inactive_with_motion_becomes_active       [PASSED]
-================= 13 test cases: 13 succeeded in 00:00:00.701 =================
-```
 
 ### 5.2 Functional Verification in Wokwi (FT-01 to FT-10)
 

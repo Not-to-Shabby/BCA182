@@ -1,0 +1,28 @@
+# Course material and curriculum docs (not for git tracking)
+*.docx
+*.docx.md
+BCA182 - Laboratory Activity 1.docx.md
+
+# Legacy or scratch directories
+LAB 1/
+Lab 1*/
+tmp/
+
+# PlatformIO and IDE build artifacts
+.pio/
+.vscode/
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.a
+*.d
+*.log
+
+# OS and IDE metadata
+.zcode/
+.DS_Store
+Thumbs.db
+desktop.ini
+

@@ -1,8 +1,6 @@
 #include "ssd1306.h"
 #include <string.h>
 
-I2C_HandleTypeDef hi2c1;
-
 // Framebuffer (128x64 bits = 1024 bytes)
 static uint8_t ssd1306_buffer[1024];
 
@@ -106,87 +104,138 @@ static const uint8_t font5x7[] = {
 };
 
 // -------------------------------------------------------------
-// STM32 HAL Hardware I2C1 Bus Functions (PB6 = SCL, PB7 = SDA)
+// Bitbanged I2C Routines on PB6 (SCL) and PB7 (SDA)
 // -------------------------------------------------------------
+static inline void i2c_delay(void) {
+    for (volatile int i = 0; i < 10; i++) {
+        __NOP();
+    }
+}
 
-uint8_t ssd1306_i2c_init(void) {
+static inline void scl_high(void) {
+    GPIOB->BSRR = GPIO_PIN_6;
+    i2c_delay();
+}
+
+static inline void scl_low(void) {
+    GPIOB->BRR = GPIO_PIN_6;
+    i2c_delay();
+}
+
+static inline void sda_high(void) {
+    GPIOB->BSRR = GPIO_PIN_7;
+    i2c_delay();
+}
+
+static inline void sda_low(void) {
+    GPIOB->BRR = GPIO_PIN_7;
+    i2c_delay();
+}
+
+static inline uint8_t sda_read(void) {
+    return (GPIOB->IDR & GPIO_PIN_7) ? 1 : 0;
+}
+
+static void i2c_start(void) {
+    sda_high();
+    scl_high();
+    sda_low();
+    scl_low();
+}
+
+static void i2c_stop(void) {
+    sda_low();
+    scl_high();
+    sda_high();
+}
+
+static uint8_t i2c_write_byte(uint8_t byte) {
+    for (uint8_t i = 0; i < 8; i++) {
+        if (byte & 0x80) {
+            sda_high();
+        } else {
+            sda_low();
+        }
+        scl_high();
+        byte <<= 1;
+        scl_low();
+    }
+    // Read ACK bit from slave
+    sda_high(); // Release SDA for input
+    scl_high();
+    uint8_t ack = sda_read(); // 0 = ACK, 1 = NACK
+    scl_low();
+    return ack;
+}
+
+void ssd1306_i2c_init(void) {
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_I2C1_CLK_ENABLE();
 
-    // PB6 (SCL) & PB7 (SDA) configured as Alternate Function Open Drain
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    // Initialize I2C1 peripheral in Fast Mode (400 kHz)
-    hi2c1.Instance = I2C1;
-    hi2c1.Init.ClockSpeed = 400000;
-    hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-    hi2c1.Init.OwnAddress1 = 0;
-    hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-    hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-    hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-    hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-
-    if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
-        return 1;
-    }
-    return 0;
+    // Initial bus idle state (both lines HIGH)
+    sda_high();
+    scl_high();
 }
 
 uint8_t ssd1306_probe(void) {
-    // Check if SSD1306 responds to its 7-bit slave address
-    HAL_StatusTypeDef status = HAL_I2C_IsDeviceReady(&hi2c1, SSD1306_I2C_ADDR, 2, 50);
-    return (status == HAL_OK) ? 0 : 1;
+    i2c_start();
+    uint8_t ack = i2c_write_byte(SSD1306_I2C_ADDR);
+    i2c_stop();
+    return ack; // 0 = ACK (device present), 1 = NACK
 }
 
 static void ssd1306_write_command(uint8_t cmd) {
-    // Control byte 0x00 = Command mode
-    HAL_I2C_Mem_Write(&hi2c1, SSD1306_I2C_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, &cmd, 1, 100);
-}
-
-static void ssd1306_write_commands(const uint8_t *cmds, uint16_t count) {
-    for (uint16_t i = 0; i < count; i++) {
-        ssd1306_write_command(cmds[i]);
-    }
+    i2c_start();
+    i2c_write_byte(SSD1306_I2C_ADDR);
+    i2c_write_byte(0x00); // 0x00 = Co=0, D/C#=0 (Command)
+    i2c_write_byte(cmd);
+    i2c_stop();
 }
 
 uint8_t ssd1306_init(void) {
-    if (ssd1306_i2c_init() != 0) {
-        return 1;
-    }
+    ssd1306_i2c_init();
 
+    // Probe device first
     if (ssd1306_probe() != 0) {
-        return 2; // Device not acknowledging
+        return 1; // Device not acknowledging
     }
 
-    // Standard SSD1306 128x64 display configuration table
-    static const uint8_t init_cmds[] = {
-        0xAE,       // Display OFF
-        0xD5, 0x80, // Set Display Clock Divide Ratio / Oscillator Frequency
-        0xA8, 0x3F, // Set Multiplex Ratio (64 lines)
-        0xD3, 0x00, // Set Display Offset (0)
-        0x40,       // Set Display Start Line to 0
-        0x8D, 0x14, // Enable internal Charge Pump
-        0x20, 0x00, // Set Horizontal Memory Addressing Mode
-        0xA1,       // Set Segment Re-map (column 127 is mapped to SEG0)
-        0xC8,       // Set COM Output Scan Direction (remapped mode)
-        0xDA, 0x12, // Set COM Pins Hardware Configuration
-        0x81, 0xCF, // Set Contrast Control
-        0xD9, 0xF1, // Set Pre-charge Period
-        0xDB, 0x40, // Set VCOMH Deselect Level
-        0xA4,       // Entire Display ON (follow RAM)
-        0xA6,       // Set Normal Display mode (non-inverted)
-        0xAF        // Display ON
-    };
+    // Standard SSD1306 128x64 initialization sequence
+    ssd1306_write_command(0xAE); // Display OFF
+    ssd1306_write_command(0xD5); // Set Display Clock Divide Ratio / Oscillator Frequency
+    ssd1306_write_command(0x80);
+    ssd1306_write_command(0xA8); // Set Multiplex Ratio
+    ssd1306_write_command(0x3F); // 64 lines
+    ssd1306_write_command(0xD3); // Set Display Offset
+    ssd1306_write_command(0x00);
+    ssd1306_write_command(0x40); // Set Display Start Line to 0
+    ssd1306_write_command(0x8D); // Enable Charge Pump
+    ssd1306_write_command(0x14);
+    ssd1306_write_command(0x20); // Set Memory Addressing Mode
+    ssd1306_write_command(0x00); // Horizontal Addressing Mode
+    ssd1306_write_command(0xA1); // Set Segment Re-map (A0/A1)
+    ssd1306_write_command(0xC8); // Set COM Output Scan Direction (C0/C8)
+    ssd1306_write_command(0xDA); // Set COM Pins Hardware Configuration
+    ssd1306_write_command(0x12);
+    ssd1306_write_command(0x81); // Set Contrast Control
+    ssd1306_write_command(0xCF);
+    ssd1306_write_command(0xD9); // Set Pre-charge Period
+    ssd1306_write_command(0xF1);
+    ssd1306_write_command(0xDB); // Set VCOMH Deselect Level
+    ssd1306_write_command(0x40);
+    ssd1306_write_command(0xA4); // Entire Display ON (resume to RAM content)
+    ssd1306_write_command(0xA6); // Set Normal Display
+    ssd1306_write_command(0xAF); // Display ON
 
-    ssd1306_write_commands(init_cmds, sizeof(init_cmds));
     ssd1306_clear();
     ssd1306_update_screen();
-    return 0;
+    return 0; // Success
 }
 
 void ssd1306_clear(void) {
@@ -204,8 +253,14 @@ void ssd1306_update_screen(void) {
     ssd1306_write_command(0x00);
     ssd1306_write_command(0x07);
 
-    // Stream entire 1024-byte framebuffer via Hardware I2C (control byte 0x40 = Data stream)
-    HAL_I2C_Mem_Write(&hi2c1, SSD1306_I2C_ADDR, 0x40, I2C_MEMADD_SIZE_8BIT, ssd1306_buffer, sizeof(ssd1306_buffer), 1000);
+    // Send the 1024-byte framebuffer in chunks
+    i2c_start();
+    i2c_write_byte(SSD1306_I2C_ADDR);
+    i2c_write_byte(0x40); // 0x40 = Co=0, D/C#=1 (Data stream)
+    for (uint16_t i = 0; i < sizeof(ssd1306_buffer); i++) {
+        i2c_write_byte(ssd1306_buffer[i]);
+    }
+    i2c_stop();
 }
 
 void ssd1306_draw_pixel(int16_t x, int16_t y, uint8_t color) {
@@ -270,7 +325,7 @@ void ssd1306_draw_char(int16_t x, int16_t y, char c, uint8_t color) {
             }
         }
     }
-    // Column 6 is 1-pixel horizontal font spacing
+    // Column 6 is 1-pixel spacing
     for (uint8_t row = 0; row < 7; row++) {
         ssd1306_draw_pixel(x + 5, y + row, !color);
     }

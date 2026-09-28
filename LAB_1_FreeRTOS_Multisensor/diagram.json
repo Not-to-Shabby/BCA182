@@ -6,27 +6,80 @@
     {
       "type": "board-stm32-bluepill",
       "id": "stm32",
-      "top": 20,
-      "left": 0,
+      "top": 25,
+      "left": 20,
       "attrs": {}
     },
     {
+      "type": "wokwi-dht22",
+      "id": "dht1",
+      "top": -170,
+      "left": -250,
+      "attrs": {
+        "temperature": "25",
+        "humidity": "50"
+      }
+    },
+    {
       "type": "board-ssd1306",
-      "id": "oled",
-      "top": -160,
-      "left": 100,
+      "id": "oled1",
+      "top": -180,
+      "left": 250,
       "attrs": {
         "i2cAddress": "0x3c"
       }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "buzzer1",
+      "top": 185,
+      "left": 260,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-photoresistor-sensor",
+      "id": "ldr1",
+      "top": -20,
+      "left": -270,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-ky-040",
+      "id": "encoder1",
+      "top": -10,
+      "left": 275,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-pir-motion-sensor",
+      "id": "pir1",
+      "top": 180,
+      "left": -240,
+      "attrs": {}
     }
   ],
   "connections": [
-    [ "stm32:3V3.1", "oled:VCC", "red", [ "v0" ] ],
-    [ "stm32:GND.1", "oled:GND", "black", [ "v0" ] ],
-    [ "stm32:B6", "oled:SCL", "green", [ "v0" ] ],
-    [ "stm32:B7", "oled:SDA", "blue", [ "v0" ] ],
     [ "stm32:A9", "$serialMonitor:RX", "amber", [] ],
-    [ "stm32:A10", "$serialMonitor:TX", "amber", [] ]
+    [ "stm32:A10", "$serialMonitor:TX", "amber", [] ],
+    [ "dht1:VCC", "stm32:3V3.1", "red", [] ],
+    [ "dht1:GND", "stm32:GND.1", "black", [] ],
+    [ "dht1:SDA", "stm32:A1", "green", [] ],
+    [ "ldr1:VCC", "stm32:3V3.1", "red", [] ],
+    [ "ldr1:GND", "stm32:GND.1", "black", [] ],
+    [ "ldr1:AO", "stm32:A0", "orange", [] ],
+    [ "encoder1:VCC", "stm32:3V3.1", "red", [] ],
+    [ "encoder1:GND", "stm32:GND.1", "black", [] ],
+    [ "encoder1:CLK", "stm32:A4", "cyan", [] ],
+    [ "encoder1:DT", "stm32:A5", "magenta", [] ],
+    [ "pir1:VCC", "stm32:3V3.1", "red", [] ],
+    [ "pir1:GND", "stm32:GND.1", "black", [] ],
+    [ "pir1:OUT", "stm32:A3", "gold", [] ],
+    [ "oled1:VCC", "stm32:3V3.1", "red", [] ],
+    [ "oled1:GND", "stm32:GND.1", "black", [] ],
+    [ "oled1:SDA", "stm32:B7", "blue", [] ],
+    [ "oled1:SCL", "stm32:B6", "yellow", [] ],
+    [ "buzzer1:1", "stm32:A2", "purple", [] ],
+    [ "buzzer1:2", "stm32:GND.1", "black", [] ]
   ],
   "dependencies": {}
 }

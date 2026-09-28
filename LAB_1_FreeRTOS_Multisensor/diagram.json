@@ -24,7 +24,9 @@
     [ "stm32:3V3.1", "oled:VCC", "red", [ "v0" ] ],
     [ "stm32:GND.1", "oled:GND", "black", [ "v0" ] ],
     [ "stm32:B6", "oled:SCL", "green", [ "v0" ] ],
-    [ "stm32:B7", "oled:SDA", "blue", [ "v0" ] ]
+    [ "stm32:B7", "oled:SDA", "blue", [ "v0" ] ],
+    [ "stm32:A9", "$serialMonitor:RX", "amber", [] ],
+    [ "stm32:A10", "$serialMonitor:TX", "amber", [] ]
   ],
   "dependencies": {}
 }

@@ -9,12 +9,13 @@
 #endif
 
 #define configUSE_PREEMPTION                    1
+#define configUSE_TIME_SLICING                  1
 #define configSUPPORT_STATIC_ALLOCATION          0
 #define configSUPPORT_DYNAMIC_ALLOCATION         1
-#define configUSE_IDLE_HOOK                      0
+#define configUSE_IDLE_HOOK                      1
 #define configUSE_TICK_HOOK                      0
 #define configCPU_CLOCK_HZ                       (SystemCoreClock)
-#define configTICK_RATE_HZ                       ((TickType_t)1000)
+#define configTICK_RATE_HZ                       ((TickType_t)20)
 #define configMAX_PRIORITIES                     (5)
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
 #define configTOTAL_HEAP_SIZE                    ((size_t)(10 * 1024)) // 10 KB of 20 KB SRAM

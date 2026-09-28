@@ -13,8 +13,6 @@ void diag_putc(char c) {
     while (!(USART1->SR & USART_SR_TXE)) {
     }
     USART1->DR = (uint8_t)c;
-    while (!(USART1->SR & USART_SR_TC)) {
-    }
 }
 
 void diag_puts(const char *s) {

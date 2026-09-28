@@ -128,9 +128,15 @@ static void prvTaskExitError( void );
 
 /*-----------------------------------------------------------*/
 
+extern void * volatile pxCurrentTCB;
+extern __IO uint32_t uwTick;
+
 /* Each task maintains its own interrupt status in the critical nesting
 variable. */
-static UBaseType_t uxCriticalNesting = 0xaaaaaaaa;
+static UBaseType_t uxCriticalNesting = 0;
+static volatile BaseType_t xTickYieldPending = pdFALSE;
+
+static void prvTaskBootstrap( void ) __attribute__( ( naked ) );
 
 /*
  * The number of SysTick increments that make up one tick period.
@@ -173,21 +179,30 @@ static UBaseType_t uxCriticalNesting = 0xaaaaaaaa;
  */
 StackType_t *pxPortInitialiseStack( StackType_t *pxTopOfStack, TaskFunction_t pxCode, void *pvParameters )
 {
-	/* Simulate the stack frame as it would be created by a context switch
-	interrupt. */
-	pxTopOfStack--; /* Offset added to account for the way the MCU uses the stack on entry/exit of interrupts. */
-	*pxTopOfStack = portINITIAL_XPSR;	/* xPSR */
-	pxTopOfStack--;
-	*pxTopOfStack = ( ( StackType_t ) pxCode ) & portSTART_ADDRESS_MASK;	/* PC */
-	pxTopOfStack--;
-	*pxTopOfStack = ( StackType_t ) portTASK_RETURN_ADDRESS;	/* LR */
-	pxTopOfStack -= 5;	/* R12, R3, R2 and R1. */
-	*pxTopOfStack = ( StackType_t ) pvParameters;	/* R0 */
-	pxTopOfStack -= 8;	/* R11, R10, R9, R8, R7, R6, R5 and R4. */
+	pxTopOfStack -= 10;
+	pxTopOfStack[0] = ( StackType_t ) pxCode;
+	pxTopOfStack[1] = ( StackType_t ) pvParameters;
+	pxTopOfStack[2] = 0x06060606UL;
+	pxTopOfStack[3] = 0x07070707UL;
+	pxTopOfStack[4] = 0x08080808UL;
+	pxTopOfStack[5] = 0x09090909UL;
+	pxTopOfStack[6] = 0x10101010UL;
+	pxTopOfStack[7] = 0x11111111UL;
+	pxTopOfStack[8] = ( ( StackType_t ) prvTaskBootstrap ) | 1UL;
+	pxTopOfStack[9] = 0UL;
 
 	return pxTopOfStack;
 }
 /*-----------------------------------------------------------*/
+
+static void prvTaskBootstrap( void )
+{
+	__asm volatile(
+		" mov r0, r5                 \n"
+		" blx r4                     \n"
+		" b .                        \n"
+	);
+}
 
 static void prvTaskExitError( void )
 {
@@ -237,18 +252,95 @@ void vPortSVCHandler( void )
 static void prvPortStartFirstTask( void )
 {
 	__asm volatile(
-					" ldr r0, =0xE000ED08 	\n" /* Use the NVIC offset register to locate the stack. */
-					" ldr r0, [r0] 			\n"
-					" ldr r0, [r0] 			\n"
-					" msr msp, r0			\n" /* Set the msp back to the start of the stack. */
-					" cpsie i				\n" /* Globally enable interrupts. */
-					" cpsie f				\n"
-					" dsb					\n"
-					" isb					\n"
-					" svc 0					\n" /* System call to start first task. */
-					" nop					\n"
+					" ldr r3, =pxCurrentTCB              \n"
+					" ldr r2, [r3]                       \n"
+					" ldr r0, [r2]                       \n"
+					" ldmia r0!, {r4-r11}                \n"
+					" ldr lr, [r0, #0]                   \n"
+					" adds r0, r0, #8                    \n"
+					" msr psp, r0                        \n"
+					" movs r0, #2                        \n"
+					" msr control, r0                    \n"
+					" isb                                \n"
+					" movs r0, #0                        \n"
+					" msr basepri, r0                    \n"
+					" cpsie i                            \n"
+					" cpsie f                            \n"
+					" bx lr                              \n"
 				);
 }
+/*-----------------------------------------------------------*/
+
+void vPortYieldDirect( void ) __attribute__( ( naked ) );
+void vPortYieldDirect( void )
+{
+	__asm volatile(
+		" mrs r0, psp                         \n"
+		" sub r0, r0, #40                    \n"
+		" stmia r0, {r4-r11}                 \n"
+		" str lr, [r0, #32]                  \n"
+		" movs r1, #0                        \n"
+		" str r1, [r0, #36]                  \n"
+		" msr psp, r0                        \n"
+		" ldr r3, =pxCurrentTCB              \n"
+		" ldr r2, [r3]                       \n"
+		" str r0, [r2]                       \n"
+		" cpsid i                            \n"
+		" bl vTaskSwitchContext              \n"
+		" cpsie i                            \n"
+		" ldr r3, =pxCurrentTCB              \n"
+		" ldr r2, [r3]                       \n"
+		" ldr r0, [r2]                       \n"
+		" ldmia r0!, {r4-r11}                \n"
+		" ldr lr, [r0, #0]                   \n"
+		" adds r0, r0, #8                    \n"
+		" msr psp, r0                        \n"
+		" isb                                \n"
+		" bx lr                              \n"
+	);
+}
+
+static void prvSetupTimerInterrupt( void )
+{
+	__HAL_RCC_TIM3_CLK_ENABLE();
+	uint32_t timerClock = HAL_RCC_GetPCLK1Freq();
+	if( ( RCC->CFGR & RCC_CFGR_PPRE1 ) != 0U ) { timerClock *= 2U; }
+	uint32_t prescaler = timerClock / 10000U;
+	if( prescaler == 0U ) { prescaler = 1U; }
+	TIM3->PSC = ( uint16_t )( prescaler - 1U );
+	TIM3->ARR = ( uint16_t )( ( 10000U / configTICK_RATE_HZ ) - 1U );
+	TIM3->CNT = 0U;
+	TIM3->EGR = TIM_EGR_UG;
+	TIM3->SR = 0U;
+	TIM3->DIER = TIM_DIER_UIE;
+	NVIC_ClearPendingIRQ( TIM3_IRQn );
+	NVIC_SetPriority( TIM3_IRQn, configLIBRARY_LOWEST_INTERRUPT_PRIORITY );
+	NVIC_EnableIRQ( TIM3_IRQn );
+	TIM3->CR1 = TIM_CR1_CEN;
+}
+
+void TIM3_IRQHandler( void )
+{
+	if( ( TIM3->SR & TIM_SR_UIF ) != 0U )
+	{
+		TIM3->SR &= ~TIM_SR_UIF;
+		portDISABLE_INTERRUPTS();
+		if( xTaskIncrementTick() != pdFALSE ) { xTickYieldPending = pdTRUE; }
+		portENABLE_INTERRUPTS();
+		uwTick += ( 1000U / configTICK_RATE_HZ );
+	}
+}
+
+BaseType_t xPortConsumeTickYield( void )
+{
+	BaseType_t pending;
+	portDISABLE_INTERRUPTS();
+	pending = xTickYieldPending;
+	xTickYieldPending = pdFALSE;
+	portENABLE_INTERRUPTS();
+	return pending;
+}
+
 /*-----------------------------------------------------------*/
 
 /*
@@ -256,6 +348,13 @@ static void prvPortStartFirstTask( void )
  */
 BaseType_t xPortStartScheduler( void )
 {
+	uxCriticalNesting = 0U;
+	SysTick->CTRL = 0U;
+	prvSetupTimerInterrupt();
+	prvPortStartFirstTask();
+	return pdFALSE;
+
+	#if 0
 	/* configMAX_SYSCALL_INTERRUPT_PRIORITY must not be set to 0.
 	See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html */
 	configASSERT( configMAX_SYSCALL_INTERRUPT_PRIORITY );
@@ -342,6 +441,7 @@ BaseType_t xPortStartScheduler( void )
 
 	/* Should not get here! */
 	return 0;
+	#endif
 }
 /*-----------------------------------------------------------*/
 

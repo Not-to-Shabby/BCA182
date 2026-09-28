@@ -209,6 +209,15 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     while (1);
 }
 
+extern BaseType_t xPortConsumeTickYield(void);
+
+void vApplicationIdleHook(void) {
+    __WFI();
+    if (xPortConsumeTickYield() != pdFALSE) {
+        taskYIELD();
+    }
+}
+
 void vAssertCalled(const char *file, int line) {
     char buffer[80];
     snprintf(buffer, sizeof(buffer), "\r\n[ASSERT] %s:%d\r\n", file, line);

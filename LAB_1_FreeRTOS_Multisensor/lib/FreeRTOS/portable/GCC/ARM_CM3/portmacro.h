@@ -94,6 +94,15 @@ typedef unsigned long UBaseType_t;
 /*-----------------------------------------------------------*/
 
 /* Critical section management. */
+extern void vPortYieldDirect( void );
+#undef portYIELD
+#define portYIELD() vPortYieldDirect()
+#undef portEND_SWITCHING_ISR
+#define portEND_SWITCHING_ISR( xSwitchRequired ) \
+	do { if( ( xSwitchRequired ) != pdFALSE ) { vPortYieldDirect(); } } while( 0 )
+#undef portYIELD_FROM_ISR
+#define portYIELD_FROM_ISR( x ) portEND_SWITCHING_ISR( x )
+
 extern void vPortEnterCritical( void );
 extern void vPortExitCritical( void );
 #define portSET_INTERRUPT_MASK_FROM_ISR()		ulPortRaiseBASEPRI()

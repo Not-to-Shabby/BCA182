@@ -5,24 +5,26 @@
 #include <stdbool.h>
 #include "stm32f1xx_hal.h"
 
-#define SSD1306_WIDTH   128
-#define SSD1306_HEIGHT  64
-#define SSD1306_I2C_ADDR 0x78 // 7-bit 0x3C << 1
+#define SSD1306_WIDTH       128
+#define SSD1306_HEIGHT      64
+#define SSD1306_I2C_ADDR    (0x3C << 1) // 7-bit 0x3C shifted left = 0x78
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Hardware / I2C Bus control
-void ssd1306_i2c_init(void);
-uint8_t ssd1306_probe(void); // Returns 0 if OLED ACKs, 1 if NACK
+extern I2C_HandleTypeDef hi2c1;
 
-// Display driver APIs
+// Hardware I2C Initialization & Device Probing
+uint8_t ssd1306_i2c_init(void);
+uint8_t ssd1306_probe(void); // Returns 0 if ACK, 1 if NACK/Error
+
+// Display Lifecycle
 uint8_t ssd1306_init(void);
 void ssd1306_clear(void);
 void ssd1306_update_screen(void);
 
-// Graphic primitives
+// Graphic Primitives
 void ssd1306_draw_pixel(int16_t x, int16_t y, uint8_t color);
 void ssd1306_draw_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t color);
 void ssd1306_draw_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color);

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "author": "Perch Arnel II Montefalcon",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-stm32-bluepill",
+      "id": "stm32",
+      "top": 20,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled",
+      "top": -160,
+      "left": 100,
+      "attrs": {
+        "i2cAddress": "0x3c"
+      }
+    }
+  ],
+  "connections": [
+    [ "stm32:3V3.1", "oled:VCC", "red", [ "v0" ] ],
+    [ "stm32:GND.1", "oled:GND", "black", [ "v0" ] ],
+    [ "stm32:B6", "oled:SCL", "green", [ "v0" ] ],
+    [ "stm32:B7", "oled:SDA", "blue", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}

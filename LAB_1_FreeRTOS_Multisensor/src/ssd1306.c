@@ -1,10 +1,12 @@
 #include "ssd1306.h"
 #include <string.h>
 
-// Framebuffer (128x64 bits = 1024 bytes)
-static uint8_t ssd1306_buffer[1024];
+#define I2C_TIMEOUT_MS  100
 
-// Standard 5x7 ASCII font table (offset from ASCII 32)
+I2C_HandleTypeDef hi2c1;
+static uint8_t frame[SSD1306_WIDTH * SSD1306_PAGES];
+
+// 5x7 ASCII font table (offset from ASCII 32)
 static const uint8_t font5x7[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, // 32 ' '
     0x00, 0x00, 0x5F, 0x00, 0x00, // 33 '!'
@@ -103,179 +105,89 @@ static const uint8_t font5x7[] = {
     0x08, 0x08, 0x2A, 0x1C, 0x08  // 126 '~'
 };
 
-// -------------------------------------------------------------
-// Bitbanged I2C Routines on PB6 (SCL) and PB7 (SDA)
-// -------------------------------------------------------------
-static inline void i2c_delay(void) {
-    for (volatile int i = 0; i < 10; i++) {
-        __NOP();
+static bool WriteCmd(uint8_t cmd) {
+    return (HAL_I2C_Mem_Write(&hi2c1, SSD1306_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT,
+                              &cmd, 1, I2C_TIMEOUT_MS) == HAL_OK);
+}
+
+bool SSD1306_Init(void) {
+    hi2c1.Instance = I2C1;
+    hi2c1.Init.ClockSpeed = 400000; // 400 kHz Fast Mode
+    hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+    hi2c1.Init.OwnAddress1 = 0;
+    hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+    hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+
+    if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+        return false;
     }
-}
 
-static inline void scl_high(void) {
-    GPIOB->BSRR = GPIO_PIN_6;
-    i2c_delay();
-}
+    static const uint8_t initSeq[] = {
+        0xAE,       // Display OFF
+        0xD5, 0x80, // Set Display Clock Divide Ratio
+        0xA8, 0x3F, // Set Multiplex Ratio (64 lines)
+        0xD3, 0x00, // Set Display Offset (0)
+        0x40,       // Set Display Start Line to 0
+        0x8D, 0x14, // Enable internal Charge Pump
+        0x20, 0x00, // Horizontal Addressing Mode
+        0xA1,       // Segment Re-map
+        0xC8,       // COM Output Scan Direction
+        0xDA, 0x12, // COM Pins Hardware Configuration
+        0x81, 0xCF, // Contrast Control
+        0xD9, 0xF1, // Pre-charge Period
+        0xDB, 0x40, // VCOMH Deselect Level
+        0xA4,       // Entire Display ON (follow RAM)
+        0xA6,       // Normal Display (non-inverted)
+        0xAF        // Display ON
+    };
 
-static inline void scl_low(void) {
-    GPIOB->BRR = GPIO_PIN_6;
-    i2c_delay();
-}
-
-static inline void sda_high(void) {
-    GPIOB->BSRR = GPIO_PIN_7;
-    i2c_delay();
-}
-
-static inline void sda_low(void) {
-    GPIOB->BRR = GPIO_PIN_7;
-    i2c_delay();
-}
-
-static inline uint8_t sda_read(void) {
-    return (GPIOB->IDR & GPIO_PIN_7) ? 1 : 0;
-}
-
-static void i2c_start(void) {
-    sda_high();
-    scl_high();
-    sda_low();
-    scl_low();
-}
-
-static void i2c_stop(void) {
-    sda_low();
-    scl_high();
-    sda_high();
-}
-
-static uint8_t i2c_write_byte(uint8_t byte) {
-    for (uint8_t i = 0; i < 8; i++) {
-        if (byte & 0x80) {
-            sda_high();
-        } else {
-            sda_low();
+    for (size_t i = 0; i < sizeof(initSeq); i++) {
+        if (!WriteCmd(initSeq[i])) {
+            return false;
         }
-        scl_high();
-        byte <<= 1;
-        scl_low();
-    }
-    // Read ACK bit from slave
-    sda_high(); // Release SDA for input
-    scl_high();
-    uint8_t ack = sda_read(); // 0 = ACK, 1 = NACK
-    scl_low();
-    return ack;
-}
-
-void ssd1306_i2c_init(void) {
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    // Initial bus idle state (both lines HIGH)
-    sda_high();
-    scl_high();
-}
-
-uint8_t ssd1306_probe(void) {
-    i2c_start();
-    uint8_t ack = i2c_write_byte(SSD1306_I2C_ADDR);
-    i2c_stop();
-    return ack; // 0 = ACK (device present), 1 = NACK
-}
-
-static void ssd1306_write_command(uint8_t cmd) {
-    i2c_start();
-    i2c_write_byte(SSD1306_I2C_ADDR);
-    i2c_write_byte(0x00); // 0x00 = Co=0, D/C#=0 (Command)
-    i2c_write_byte(cmd);
-    i2c_stop();
-}
-
-uint8_t ssd1306_init(void) {
-    ssd1306_i2c_init();
-
-    // Probe device first
-    if (ssd1306_probe() != 0) {
-        return 1; // Device not acknowledging
     }
 
-    // Standard SSD1306 128x64 initialization sequence
-    ssd1306_write_command(0xAE); // Display OFF
-    ssd1306_write_command(0xD5); // Set Display Clock Divide Ratio / Oscillator Frequency
-    ssd1306_write_command(0x80);
-    ssd1306_write_command(0xA8); // Set Multiplex Ratio
-    ssd1306_write_command(0x3F); // 64 lines
-    ssd1306_write_command(0xD3); // Set Display Offset
-    ssd1306_write_command(0x00);
-    ssd1306_write_command(0x40); // Set Display Start Line to 0
-    ssd1306_write_command(0x8D); // Enable Charge Pump
-    ssd1306_write_command(0x14);
-    ssd1306_write_command(0x20); // Set Memory Addressing Mode
-    ssd1306_write_command(0x00); // Horizontal Addressing Mode
-    ssd1306_write_command(0xA1); // Set Segment Re-map (A0/A1)
-    ssd1306_write_command(0xC8); // Set COM Output Scan Direction (C0/C8)
-    ssd1306_write_command(0xDA); // Set COM Pins Hardware Configuration
-    ssd1306_write_command(0x12);
-    ssd1306_write_command(0x81); // Set Contrast Control
-    ssd1306_write_command(0xCF);
-    ssd1306_write_command(0xD9); // Set Pre-charge Period
-    ssd1306_write_command(0xF1);
-    ssd1306_write_command(0xDB); // Set VCOMH Deselect Level
-    ssd1306_write_command(0x40);
-    ssd1306_write_command(0xA4); // Entire Display ON (resume to RAM content)
-    ssd1306_write_command(0xA6); // Set Normal Display
-    ssd1306_write_command(0xAF); // Display ON
-
-    ssd1306_clear();
-    ssd1306_update_screen();
-    return 0; // Success
+    SSD1306_Clear();
+    return SSD1306_Update();
 }
 
-void ssd1306_clear(void) {
-    memset(ssd1306_buffer, 0, sizeof(ssd1306_buffer));
+void SSD1306_Clear(void) {
+    memset(frame, 0, sizeof(frame));
 }
 
-void ssd1306_update_screen(void) {
-    // Set column address range 0..127
-    ssd1306_write_command(0x21);
-    ssd1306_write_command(0x00);
-    ssd1306_write_command(127);
+bool SSD1306_Update(void) {
+    if (!WriteCmd(0x21) || !WriteCmd(0x00) || !WriteCmd(0x7F)) { return false; }
+    if (!WriteCmd(0x22) || !WriteCmd(0x00) || !WriteCmd(0x07)) { return false; }
 
-    // Set page address range 0..7
-    ssd1306_write_command(0x22);
-    ssd1306_write_command(0x00);
-    ssd1306_write_command(0x07);
-
-    // Send the 1024-byte framebuffer in chunks
-    i2c_start();
-    i2c_write_byte(SSD1306_I2C_ADDR);
-    i2c_write_byte(0x40); // 0x40 = Co=0, D/C#=1 (Data stream)
-    for (uint16_t i = 0; i < sizeof(ssd1306_buffer); i++) {
-        i2c_write_byte(ssd1306_buffer[i]);
+    for (uint32_t page = 0; page < SSD1306_PAGES; page++) {
+        if (HAL_I2C_Mem_Write(&hi2c1, SSD1306_ADDR, 0x40, I2C_MEMADD_SIZE_8BIT,
+                              &frame[page * SSD1306_WIDTH], SSD1306_WIDTH,
+                              I2C_TIMEOUT_MS) != HAL_OK) {
+            return false;
+        }
     }
-    i2c_stop();
+    return true;
 }
 
-void ssd1306_draw_pixel(int16_t x, int16_t y, uint8_t color) {
+void SSD1306_SetPower(bool on) {
+    WriteCmd(on ? 0xAF : 0xAE);
+}
+
+void SSD1306_DrawPixel(int16_t x, int16_t y, uint8_t color) {
     if (x < 0 || x >= SSD1306_WIDTH || y < 0 || y >= SSD1306_HEIGHT) {
         return;
     }
-    uint16_t index = x + (y / 8) * SSD1306_WIDTH;
+    uint16_t idx = (uint16_t)x + ((uint16_t)y / 8) * SSD1306_WIDTH;
     if (color) {
-        ssd1306_buffer[index] |= (1 << (y % 8));
+        frame[idx] |= (1 << (y % 8));
     } else {
-        ssd1306_buffer[index] &= ~(1 << (y % 8));
+        frame[idx] &= ~(1 << (y % 8));
     }
 }
 
-void ssd1306_draw_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t color) {
+void SSD1306_DrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t color) {
     int16_t dx = (x1 >= x0) ? (x1 - x0) : (x0 - x1);
     int16_t dy = (y1 >= y0) ? (y1 - y0) : (y0 - y1);
     int16_t sx = (x0 < x1) ? 1 : -1;
@@ -283,7 +195,7 @@ void ssd1306_draw_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t c
     int16_t err = dx - dy;
 
     while (1) {
-        ssd1306_draw_pixel(x0, y0, color);
+        SSD1306_DrawPixel(x0, y0, color);
         if (x0 == x1 && y0 == y1) break;
         int16_t e2 = 2 * err;
         if (e2 > -dy) {
@@ -297,20 +209,20 @@ void ssd1306_draw_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t c
     }
 }
 
-void ssd1306_draw_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color) {
-    ssd1306_draw_line(x, y, x + w - 1, y, color);
-    ssd1306_draw_line(x, y + h - 1, x + w - 1, y + h - 1, color);
-    ssd1306_draw_line(x, y, x, y + h - 1, color);
-    ssd1306_draw_line(x + w - 1, y, x + w - 1, y + h - 1, color);
+void SSD1306_DrawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color) {
+    SSD1306_DrawLine(x, y, x + w - 1, y, color);
+    SSD1306_DrawLine(x, y + h - 1, x + w - 1, y + h - 1, color);
+    SSD1306_DrawLine(x, y, x, y + h - 1, color);
+    SSD1306_DrawLine(x + w - 1, y, x + w - 1, y + h - 1, color);
 }
 
-void ssd1306_fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color) {
+void SSD1306_FillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t color) {
     for (int16_t i = 0; i < h; i++) {
-        ssd1306_draw_line(x, y + i, x + w - 1, y + i, color);
+        SSD1306_DrawLine(x, y + i, x + w - 1, y + i, color);
     }
 }
 
-void ssd1306_draw_char(int16_t x, int16_t y, char c, uint8_t color) {
+void SSD1306_DrawChar(int16_t x, int16_t y, char c, uint8_t color) {
     if (c < 32 || c > 126) {
         c = '?';
     }
@@ -319,21 +231,20 @@ void ssd1306_draw_char(int16_t x, int16_t y, char c, uint8_t color) {
         uint8_t line = font5x7[font_index + col];
         for (uint8_t row = 0; row < 7; row++) {
             if (line & (1 << row)) {
-                ssd1306_draw_pixel(x + col, y + row, color);
+                SSD1306_DrawPixel(x + col, y + row, color);
             } else {
-                ssd1306_draw_pixel(x + col, y + row, !color);
+                SSD1306_DrawPixel(x + col, y + row, !color);
             }
         }
     }
-    // Column 6 is 1-pixel spacing
     for (uint8_t row = 0; row < 7; row++) {
-        ssd1306_draw_pixel(x + 5, y + row, !color);
+        SSD1306_DrawPixel(x + 5, y + row, !color);
     }
 }
 
-void ssd1306_draw_string(int16_t x, int16_t y, const char *str, uint8_t color) {
+void SSD1306_DrawString(int16_t x, int16_t y, const char *str, uint8_t color) {
     while (*str) {
-        ssd1306_draw_char(x, y, *str++, color);
+        SSD1306_DrawChar(x, y, *str++, color);
         x += 6;
         if (x + 6 > SSD1306_WIDTH) {
             break;

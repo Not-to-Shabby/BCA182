@@ -2,6 +2,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "ssd1306.h"
+#include "diagnostics.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -67,10 +68,6 @@ static void MX_USART1_UART_Init(void) {
     HAL_UART_Init(&huart1);
 }
 
-static void uart_print(const char *msg) {
-    HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 1000);
-}
-
 /* -------------------------------------------------------------
  * Phase 2: Baseline FreeRTOS Tasks (Task A & Task B)
  * ------------------------------------------------------------- */
@@ -79,11 +76,13 @@ static void TaskA(void *pvParameters) {
     char buffer[64];
     uint32_t count = 0;
 
+    diag_puts("[Task A] Starting task loop...\r\n");
+
     for (;;) {
         count++;
         snprintf(buffer, sizeof(buffer), "[Task A] Running | Iteration: %lu | Tick: %lu\r\n",
                  count, (unsigned long)xTaskGetTickCount());
-        uart_print(buffer);
+        diag_puts(buffer);
 
         // Toggle on-board LED
         HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
@@ -98,14 +97,15 @@ static void TaskB(void *pvParameters) {
     char buffer[64];
     uint32_t count = 0;
 
-    // Small offset so Task B alternates with Task A
+    diag_puts("[Task B] Waiting initial 500 ms...\r\n");
+    // Offset so Task B alternates cleanly with Task A
     vTaskDelay(pdMS_TO_TICKS(500));
 
     for (;;) {
         count++;
         snprintf(buffer, sizeof(buffer), "[Task B] Running | Iteration: %lu | Tick: %lu\r\n",
                  count, (unsigned long)xTaskGetTickCount());
-        uart_print(buffer);
+        diag_puts(buffer);
 
         // Update SSD1306 Display with live task status
         SSD1306_Clear();
@@ -141,36 +141,45 @@ int main(void) {
     MX_GPIO_Init();
     MX_USART1_UART_Init();
 
-    uart_print("\r\n========================================\r\n");
-    uart_print(" BCA182 Laboratory 1: Phase 2 Baseline  \r\n");
-    uart_print(" Real-Time Multisensor Room Monitoring  \r\n");
-    uart_print(" FreeRTOS v10.3.1 Cortex-M3 Scheduler   \r\n");
-    uart_print("========================================\r\n");
+    // 5. Initialize Diagnostic and Fault Handlers
+    diag_early_init();
+
+    diag_puts("\r\n========================================\r\n");
+    diag_puts(" BCA182 Laboratory 1: Phase 2 Baseline  \r\n");
+    diag_puts(" Real-Time Multisensor Room Monitoring  \r\n");
+    diag_puts(" FreeRTOS v10.3.1 Cortex-M3 Scheduler   \r\n");
+    diag_puts("========================================\r\n");
 
     // Initialize OLED hardware display
-    uart_print("[Display] Initializing SSD1306 OLED over Hardware I2C1...\r\n");
+    diag_puts("[Display] Initializing SSD1306 OLED over Hardware I2C1...\r\n");
     if (SSD1306_Init()) {
-        uart_print("[Display] SSD1306 Hardware I2C initialized successfully!\r\n");
+        diag_puts("[Display] SSD1306 Hardware I2C initialized successfully!\r\n");
         SSD1306_Clear();
         SSD1306_DrawString(14, 26, "STARTING RTOS...", 1);
         SSD1306_Update();
     } else {
-        uart_print("[Display] SSD1306 initialization failed or NACK.\r\n");
+        diag_puts("[Display] SSD1306 initialization failed or NACK.\r\n");
     }
 
-    // 5. Create Baseline RTOS Tasks
-    uart_print("[RTOS] Creating Task A (Priority 2)...\r\n");
-    xTaskCreate(TaskA, "TaskA", 128, NULL, 2, NULL);
+    // 6. Create Baseline RTOS Tasks
+    diag_puts("[RTOS] Creating Task A (Priority 2)...\r\n");
+    BaseType_t resA = xTaskCreate(TaskA, "TaskA", 256, NULL, 2, NULL);
+    if (resA != pdPASS) {
+        diag_puts("[RTOS] ERROR: Task A creation failed!\r\n");
+    }
 
-    uart_print("[RTOS] Creating Task B (Priority 1)...\r\n");
-    xTaskCreate(TaskB, "TaskB", 256, NULL, 1, NULL);
+    diag_puts("[RTOS] Creating Task B (Priority 1)...\r\n");
+    BaseType_t resB = xTaskCreate(TaskB, "TaskB", 256, NULL, 1, NULL);
+    if (resB != pdPASS) {
+        diag_puts("[RTOS] ERROR: Task B creation failed!\r\n");
+    }
 
-    // 6. Start the FreeRTOS Scheduler
-    uart_print("[RTOS] Starting FreeRTOS Scheduler...\r\n");
+    // 7. Start the FreeRTOS Scheduler
+    diag_puts("[RTOS] Starting FreeRTOS Scheduler...\r\n");
     vTaskStartScheduler();
 
     // Should never reach here unless heap is exhausted
-    uart_print("[RTOS] ERROR: Insufficient RAM to start scheduler!\r\n");
+    diag_puts("[RTOS] ERROR: Scheduler returned! Insufficient heap.\r\n");
     while (1) {
     }
 }
@@ -188,7 +197,7 @@ void SysTick_Handler(void) {
 }
 
 void vApplicationMallocFailedHook(void) {
-    uart_print("\r\n[FATAL] FreeRTOS Malloc Failed!\r\n");
+    diag_puts("\r\n[FATAL] FreeRTOS Malloc Failed!\r\n");
     while (1);
 }
 
@@ -196,13 +205,13 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     (void)xTask;
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "\r\n[FATAL] Stack Overflow in task: %s\r\n", pcTaskName);
-    uart_print(buffer);
+    diag_puts(buffer);
     while (1);
 }
 
 void vAssertCalled(const char *file, int line) {
     char buffer[80];
     snprintf(buffer, sizeof(buffer), "\r\n[ASSERT] %s:%d\r\n", file, line);
-    uart_print(buffer);
+    diag_puts(buffer);
     while (1);
 }

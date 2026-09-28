@@ -68,7 +68,28 @@ This laboratory requires designing, implementing, verifying, and documenting a c
        +-------------------------------------------------------+
 ```
 
-### 2.2 System State Machine
+### 2.2 Simulated Circuit Schematic Diagram
+![Wokwi Simulation Circuit](./images/wokwi-circuit.png)  
+*Figure 1: Wokwi circuit simulation diagram displaying physical sensor connections to the STM32 Blue Pill.*
+
+### 2.3 Circuit Wiring Netlist
+
+| Source Pin (STM32) | Target Pin (Component) | Wire Color | Signal Type | Description |
+|---|---|---|---|---|
+| **`3V3.1`** | **`oled1:VCC`**, **`dht1:VCC`**, **`ldr1:VCC`**, **`pir1:VCC`**, **`encoder1:VCC`** | **Red** | Power (+3.3V) | Main regulated 3.3V DC power rail |
+| **`GND.1`** | **`oled1:GND`**, **`dht1:GND`**, **`ldr1:GND`**, **`pir1:GND`**, **`encoder1:GND`**, **`buzzer1:2`** | **Black** | Ground (0V) | Common system reference ground |
+| **`PA0`** | **`ldr1:AO`** | **Orange** | Analog In (ADC1_IN0) | Ambient light sensor analog voltage |
+| **`PA1`** | **`dht1:SDA`** | **Green** | Bidirectional Open-Drain | DHT22 single-wire digital communications |
+| **`PA2`** | **`buzzer1:1`** | **Purple** | Digital Out (TIM2_CH3) | 1 kHz audible PWM alarm signal |
+| **`PA3`** | **`pir1:OUT`** | **Gold** | Digital In (Pulldown) | Human presence motion pulse |
+| **`PA4`** | **`encoder1:CLK`** | **Cyan** | Digital In (EXTI4) | Rotary encoder quadrature clock interrupt |
+| **`PA5`** | **`encoder1:DT`** | **Magenta** | Digital In (Pull-up) | Rotary encoder quadrature direction line |
+| **`PB6`** | **`oled1:SCL`** | **Yellow** | Alternate Function (I2C1) | Hardware I2C Clock (400 kHz Fast Mode) |
+| **`PB7`** | **`oled1:SDA`** | **Blue** | Alternate Function (I2C1) | Hardware I2C Data line (400 kHz Fast Mode) |
+| **`PA9`** | **`$serialMonitor:RX`** | **Amber** | Alternate Function (USART1) | Serial diagnostic logging (115200 8N1) |
+| **`PA10`** | **`$serialMonitor:TX`** | **Amber** | Input | Virtual serial monitor input |
+
+### 2.4 System State Machine
 The system implements an automated power-management state machine:
 
 ```text

@@ -34,23 +34,26 @@ In this project, we design and implement a **fully concurrent environmental room
 
 ## 3. Hardware & Circuit Configuration
 
-```text
-       +-------------------------------------------------------+
-       |               STM32F103C8T6 (Blue Pill)               |
-       |                                                       |
-       |  PA0 (ADC1_IN0) <---- Analog Voltage ---- LDR Sensor  |
-       |  PA1 (GPIO O.D) <---> Single-Wire    <---> DHT22      |
-       |  PA2 (TIM2_CH3) ----> PWM Tone (1kHz) --> Active Buzzer|
-       |  PA3 (GPIO In)  <---- Digital Motion <--- PIR Sensor  |
-       |  PA4 (EXTI4)    <---- Quadrature CLK <-- KY-040 Enc.  |
-       |  PA5 (GPIO In)  <---- Quadrature DT  <-- KY-040 Enc.  |
-       |  PB6 (I2C1_SCL) ----> I2C Clock -------- SSD1306 OLED |
-       |  PB7 (I2C1_SDA) <---> I2C Data --------> SSD1306 OLED |
-       |  PA9 (USART1_TX)----> Serial Monitor (115200 8N1)     |
-       |  PA10(USART1_RX)<---- Serial Terminal                 |
-       |  PC13 (GPIO Out)----> Heartbeat LED (Active LOW)      |
-       +-------------------------------------------------------+
-```
+### 3.1 Simulated Circuit Diagram
+![Wokwi Simulation Circuit](./images/wokwi-circuit.png)  
+*Figure 1: Wokwi circuit simulation diagram displaying the STM32 Blue Pill connected to sensors and actuators.*
+
+### 3.2 Pin Connections and Wiring Netlist
+
+| Source Pin (STM32) | Target Pin (Component) | Wire Color | Signal Type | Description |
+|---|---|---|---|---|
+| **`3V3.1`** | **`oled1:VCC`**, **`dht1:VCC`**, **`ldr1:VCC`**, **`pir1:VCC`**, **`encoder1:VCC`** | **Red** | Power (+3.3V) | Main regulated 3.3V DC power rail |
+| **`GND.1`** | **`oled1:GND`**, **`dht1:GND`**, **`ldr1:GND`**, **`pir1:GND`**, **`encoder1:GND`**, **`buzzer1:2`** | **Black** | Ground (0V) | Common system reference ground |
+| **`PA0`** | **`ldr1:AO`** | **Orange** | Analog In (ADC1_IN0) | Ambient light sensor analog voltage |
+| **`PA1`** | **`dht1:SDA`** | **Green** | Bidirectional Open-Drain | DHT22 single-wire digital communications |
+| **`PA2`** | **`buzzer1:1`** | **Purple** | Digital Out (TIM2_CH3) | 1 kHz audible PWM alarm signal |
+| **`PA3`** | **`pir1:OUT`** | **Gold** | Digital In (Pulldown) | Human presence motion pulse |
+| **`PA4`** | **`encoder1:CLK`** | **Cyan** | Digital In (EXTI4) | Rotary encoder quadrature clock interrupt |
+| **`PA5`** | **`encoder1:DT`** | **Magenta** | Digital In (Pull-up) | Rotary encoder quadrature direction line |
+| **`PB6`** | **`oled1:SCL`** | **Yellow** | Alternate Function (I2C1) | Hardware I2C Clock (400 kHz Fast Mode) |
+| **`PB7`** | **`oled1:SDA`** | **Blue** | Alternate Function (I2C1) | Hardware I2C Data line (400 kHz Fast Mode) |
+| **`PA9`** | **`$serialMonitor:RX`** | **Amber** | Alternate Function (USART1) | Serial diagnostic logging (115200 8N1) |
+| **`PA10`** | **`$serialMonitor:TX`** | **Amber** | Input | Virtual serial monitor input |
 
 ---
 

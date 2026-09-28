@@ -77,11 +77,19 @@ void InputTask(void *argument)
         encoderSteps = 0;
         taskEXIT_CRITICAL();
 
-        bool active = (systemEvents != NULL) &&
-                      ((xEventGroupGetBits(systemEvents) & EVENT_ACTIVE) != 0);
-
-        if (steps != 0 && active)
+        if (steps != 0)
         {
+            bool active = (systemEvents != NULL) &&
+                          ((xEventGroupGetBits(systemEvents) & EVENT_ACTIVE) != 0);
+
+            /* If the system was INACTIVE, user interaction wakes it up immediately */
+            if (!active && systemEvents != NULL)
+            {
+                (void)xEventGroupSetBits(systemEvents, EVENT_MOTION);
+                Log("[Encoder] User interaction woke system to ACTIVE\r\n");
+            }
+
+            /* Apply navigation steps */
             while (steps > 0) { mode = nextDisplayMode(mode);     steps--; }
             while (steps < 0) { mode = previousDisplayMode(mode); steps++; }
 

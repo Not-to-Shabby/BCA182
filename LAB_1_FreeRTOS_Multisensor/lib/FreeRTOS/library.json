@@ -1,0 +1,16 @@
+{
+  "name": "FreeRTOS",
+  "version": "10.3.1",
+  "build": {
+    "includeDir": "include",
+    "srcFilter": [
+      "+<*.c>",
+      "+<portable/GCC/ARM_CM3/port.c>",
+      "+<portable/MemMang/heap_4.c>"
+    ],
+    "flags": [
+      "-Iinclude",
+      "-Iportable/GCC/ARM_CM3"
+    ]
+  }
+}

@@ -1,4 +1,6 @@
 #include "stm32f1xx_hal.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include "ssd1306.h"
 #include <stdio.h>
 #include <string.h>
@@ -18,7 +20,6 @@ void SystemClock_Config(void) {
     RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
     RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9; // 8 MHz * 9 = 72 MHz
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-        // Fallback to HSI if HSE is not running in emulator
         RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
         RCC_OscInitStruct.HSIState = RCC_HSI_ON;
         RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -30,10 +31,9 @@ void SystemClock_Config(void) {
                                   RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
     RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2; // APB1 = 36 MHz (I2C1 clock)
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2; // APB1 = 36 MHz
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1; // APB2 = 72 MHz
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
-        // Fallback clock config
         RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
         RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
         RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
@@ -44,8 +44,6 @@ void SystemClock_Config(void) {
 
 static void MX_GPIO_Init(void) {
     __HAL_RCC_GPIOC_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
 
     // PC13 LED (Active LOW on Blue Pill)
     GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -73,74 +71,138 @@ static void uart_print(const char *msg) {
     HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 1000);
 }
 
+/* -------------------------------------------------------------
+ * Phase 2: Baseline FreeRTOS Tasks (Task A & Task B)
+ * ------------------------------------------------------------- */
+static void TaskA(void *pvParameters) {
+    (void)pvParameters;
+    char buffer[64];
+    uint32_t count = 0;
+
+    for (;;) {
+        count++;
+        snprintf(buffer, sizeof(buffer), "[Task A] Running | Iteration: %lu | Tick: %lu\r\n",
+                 count, (unsigned long)xTaskGetTickCount());
+        uart_print(buffer);
+
+        // Toggle on-board LED
+        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+
+        // Block for 1000 ms
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+static void TaskB(void *pvParameters) {
+    (void)pvParameters;
+    char buffer[64];
+    uint32_t count = 0;
+
+    // Small offset so Task B alternates with Task A
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    for (;;) {
+        count++;
+        snprintf(buffer, sizeof(buffer), "[Task B] Running | Iteration: %lu | Tick: %lu\r\n",
+                 count, (unsigned long)xTaskGetTickCount());
+        uart_print(buffer);
+
+        // Update SSD1306 Display with live task status
+        SSD1306_Clear();
+        SSD1306_DrawRect(0, 0, SSD1306_WIDTH, SSD1306_HEIGHT, 1);
+        SSD1306_FillRect(2, 2, SSD1306_WIDTH - 4, 11, 1);
+        SSD1306_DrawString(6, 4, "BCA182 FREERTOS INIT", 0);
+
+        SSD1306_DrawString(10, 18, "PHASE 2: MULTI-TASK", 1);
+        snprintf(buffer, sizeof(buffer), "TASK A: RUNNING");
+        SSD1306_DrawString(10, 30, buffer, 1);
+        snprintf(buffer, sizeof(buffer), "TASK B: COUNT %lu", count);
+        SSD1306_DrawString(10, 42, buffer, 1);
+
+        SSD1306_Update();
+
+        // Block for 1000 ms
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 int main(void) {
+    // 1. STM32 HAL Hardware Init
     HAL_Init();
     SystemClock_Config();
+
+    // 2. Set NVIC Priority Grouping to Group 4 (all 4 bits for preemption)
+    HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);
+
+    // 3. Ensure Vector Table Base points to Flash for Cortex-M3 SVC-0 context restore
+    SCB->VTOR = FLASH_BASE;
+
+    // 4. Initialize Peripherals
     MX_GPIO_Init();
     MX_USART1_UART_Init();
 
     uart_print("\r\n========================================\r\n");
-    uart_print(" BCA182 Laboratory 1: Hardware I2C Test \r\n");
-    uart_print(" Target: STM32 Blue Pill (STM32F103C8T6)\r\n");
-    uart_print(" Framework: STM32Cube HAL (HAL_I2C1)   \r\n");
+    uart_print(" BCA182 Laboratory 1: Phase 2 Baseline  \r\n");
+    uart_print(" Real-Time Multisensor Room Monitoring  \r\n");
+    uart_print(" FreeRTOS v10.3.1 Cortex-M3 Scheduler   \r\n");
     uart_print("========================================\r\n");
 
-    uart_print("[I2C1] Initializing Hardware I2C1 (PB6/PB7) & SSD1306...\r\n");
-    bool init_ok = SSD1306_Init();
-    if (init_ok) {
-        uart_print("[I2C1] SUCCESS: SSD1306 Hardware I2C initialized!\r\n");
+    // Initialize OLED hardware display
+    uart_print("[Display] Initializing SSD1306 OLED over Hardware I2C1...\r\n");
+    if (SSD1306_Init()) {
+        uart_print("[Display] SSD1306 Hardware I2C initialized successfully!\r\n");
+        SSD1306_Clear();
+        SSD1306_DrawString(14, 26, "STARTING RTOS...", 1);
+        SSD1306_Update();
     } else {
-        uart_print("[I2C1] ERROR: SSD1306 initialization failed or NACK!\r\n");
+        uart_print("[Display] SSD1306 initialization failed or NACK.\r\n");
     }
 
-    uint32_t frame_count = 0;
-    char buffer[80];
-    int16_t bar_pos = 4;
-    int16_t bar_dir = 2;
+    // 5. Create Baseline RTOS Tasks
+    uart_print("[RTOS] Creating Task A (Priority 2)...\r\n");
+    xTaskCreate(TaskA, "TaskA", 128, NULL, 2, NULL);
 
+    uart_print("[RTOS] Creating Task B (Priority 1)...\r\n");
+    xTaskCreate(TaskB, "TaskB", 256, NULL, 1, NULL);
+
+    // 6. Start the FreeRTOS Scheduler
+    uart_print("[RTOS] Starting FreeRTOS Scheduler...\r\n");
+    vTaskStartScheduler();
+
+    // Should never reach here unless heap is exhausted
+    uart_print("[RTOS] ERROR: Insufficient RAM to start scheduler!\r\n");
     while (1) {
-        frame_count++;
-
-        // Blink PC13 LED
-        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-
-        // Draw Frame using hardware I2C buffer
-        SSD1306_Clear();
-
-        // Screen border
-        SSD1306_DrawRect(0, 0, SSD1306_WIDTH, SSD1306_HEIGHT, 1);
-
-        // Header
-        SSD1306_FillRect(2, 2, SSD1306_WIDTH - 4, 11, 1);
-        SSD1306_DrawString(6, 4, "MSU-IIT CCS - BCA182", 0); // Inverted
-
-        // Body
-        SSD1306_DrawString(14, 18, "HARDWARE I2C1 TEST", 1);
-        SSD1306_DrawString(14, 30, init_ok ? "STATUS: HARDWARE OK" : "STATUS: RETRYING", 1);
-
-        // Frame / Uptime
-        snprintf(buffer, sizeof(buffer), "FRAME: %lu", frame_count);
-        SSD1306_DrawString(14, 42, buffer, 1);
-
-        // Animated bouncing bar
-        SSD1306_DrawRect(bar_pos, 54, 20, 5, 1);
-        bar_pos += bar_dir;
-        if (bar_pos > (SSD1306_WIDTH - 26) || bar_pos < 4) {
-            bar_dir = -bar_dir;
-        }
-
-        // Push frame over hardware I2C
-        bool update_ok = SSD1306_Update();
-
-        // Output to serial
-        snprintf(buffer, sizeof(buffer), "[FRAME %lu] Update: %s | Uptime: %lu ms\r\n",
-                 frame_count, update_ok ? "OK" : "FAIL", HAL_GetTick());
-        uart_print(buffer);
-
-        HAL_Delay(500);
     }
 }
 
+/* -------------------------------------------------------------
+ * SysTick and RTOS Exception Handlers
+ * ------------------------------------------------------------- */
+extern void xPortSysTickHandler(void);
+
 void SysTick_Handler(void) {
     HAL_IncTick();
+    if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        xPortSysTickHandler();
+    }
+}
+
+void vApplicationMallocFailedHook(void) {
+    uart_print("\r\n[FATAL] FreeRTOS Malloc Failed!\r\n");
+    while (1);
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+    (void)xTask;
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "\r\n[FATAL] Stack Overflow in task: %s\r\n", pcTaskName);
+    uart_print(buffer);
+    while (1);
+}
+
+void vAssertCalled(const char *file, int line) {
+    char buffer[80];
+    snprintf(buffer, sizeof(buffer), "\r\n[ASSERT] %s:%d\r\n", file, line);
+    uart_print(buffer);
+    while (1);
 }

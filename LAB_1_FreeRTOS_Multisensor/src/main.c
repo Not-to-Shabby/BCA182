@@ -13,8 +13,8 @@ UART_HandleTypeDef huart1;
 
 /* Sensor data struct for queue */
 typedef struct {
-    float temperature;
-    float humidity;
+    int32_t temperature_x10;
+    uint32_t humidity_x10;
     int   lightLevel;
     bool  dhtValid;
 } TelemetryData;
@@ -81,12 +81,22 @@ static void MX_USART1_UART_Init(void) {
     HAL_UART_Init(&huart1);
 }
 
+static void FormatTenths(char *buffer, size_t size, int32_t value_x10) {
+    uint32_t magnitude = (uint32_t)(value_x10 < 0 ? -value_x10 : value_x10);
+    snprintf(buffer, size, "%s%lu.%lu",
+             value_x10 < 0 ? "-" : "",
+             (unsigned long)(magnitude / 10U),
+             (unsigned long)(magnitude % 10U));
+}
+
 /* -------------------------------------------------------------
  * Task A (Priority 2): Sensor Acquisition & Heartbeat
  * ------------------------------------------------------------- */
 static void TaskA(void *pvParameters) {
     (void)pvParameters;
     char buffer[80];
+    char temperature[16];
+    char humidity[16];
     uint32_t count = 0;
     TelemetryData data = {0};
     uint16_t ldrRaw = 0;
@@ -104,8 +114,8 @@ static void TaskA(void *pvParameters) {
 
         // Read DHT22 (PA1 Single-Wire)
         if (DHT22_Read(&dht)) {
-            data.temperature = (float)dht.temp_x10 / 10.0f;
-            data.humidity    = (float)dht.hum_x10 / 10.0f;
+            data.temperature_x10 = dht.temp_x10;
+            data.humidity_x10    = dht.hum_x10;
             data.dhtValid    = true;
         } else {
             data.dhtValid    = false;
@@ -117,9 +127,16 @@ static void TaskA(void *pvParameters) {
         }
 
         // Print telemetry log
+        if (data.dhtValid) {
+            FormatTenths(temperature, sizeof(temperature), data.temperature_x10);
+            FormatTenths(humidity, sizeof(humidity), (int32_t)data.humidity_x10);
+        } else {
+            snprintf(temperature, sizeof(temperature), "--");
+            snprintf(humidity, sizeof(humidity), "--");
+        }
         snprintf(buffer, sizeof(buffer),
-                 "[Task A] #%lu | LDR: %d%% | DHT: %.1f C, %.1f%% | Tick: %lu\r\n",
-                 count, data.lightLevel, data.temperature, data.humidity,
+                 "[Task A] #%lu | LDR: %d%% | DHT: %s C, %s%% | Tick: %lu\r\n",
+                 count, data.lightLevel, temperature, humidity,
                  (unsigned long)xTaskGetTickCount());
         diag_puts(buffer);
 
@@ -137,6 +154,8 @@ static void TaskA(void *pvParameters) {
 static void TaskB(void *pvParameters) {
     (void)pvParameters;
     char buffer[64];
+    char temperature[16];
+    char humidity[16];
     uint32_t count = 0;
     TelemetryData data = {0};
 
@@ -165,9 +184,11 @@ static void TaskB(void *pvParameters) {
         SSD1306_DrawString(10, 18, buffer, 1);
 
         if (data.dhtValid) {
-            snprintf(buffer, sizeof(buffer), "TEMP : %.1f C", data.temperature);
+            FormatTenths(temperature, sizeof(temperature), data.temperature_x10);
+            snprintf(buffer, sizeof(buffer), "TEMP : %s C", temperature);
             SSD1306_DrawString(10, 30, buffer, 1);
-            snprintf(buffer, sizeof(buffer), "HUM  : %.1f %%", data.humidity);
+            FormatTenths(humidity, sizeof(humidity), (int32_t)data.humidity_x10);
+            snprintf(buffer, sizeof(buffer), "HUM  : %s %%", humidity);
             SSD1306_DrawString(10, 42, buffer, 1);
         } else {
             SSD1306_DrawString(10, 30, "TEMP : READING...", 1);
@@ -198,8 +219,6 @@ int main(void) {
     // 4. Initialize Peripherals
     MX_GPIO_Init();
     MX_USART1_UART_Init();
-    LDR_Init();
-    DHT22_Init();
 
     // 5. Initialize Diagnostic and Fault Handlers
     diag_early_init();
@@ -209,6 +228,14 @@ int main(void) {
     diag_puts(" Real-Time Multisensor Room Monitoring  \r\n");
     diag_puts(" LDR (PA0) | DHT22 (PA1) | Queue IPC    \r\n");
     diag_puts("========================================\r\n");
+
+    diag_puts("[Init] Initializing LDR...\r\n");
+    LDR_Init();
+    diag_puts("[Init] LDR initialized\r\n");
+
+    diag_puts("[Init] Initializing DHT22...\r\n");
+    DHT22_Init();
+    diag_puts("[Init] DHT22 initialized\r\n");
 
     // Initialize OLED hardware display
     diag_puts("[Display] Initializing SSD1306 OLED over Hardware I2C1...\r\n");
@@ -252,7 +279,15 @@ int main(void) {
 /* -------------------------------------------------------------
  * RTOS Hooks and Handlers
  * ------------------------------------------------------------- */
+extern void xPortSysTickHandler(void);
 extern BaseType_t xPortConsumeTickYield(void);
+
+void SysTick_Handler(void) {
+    HAL_IncTick();
+    if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        xPortSysTickHandler();
+    }
+}
 
 void vApplicationIdleHook(void) {
     __WFI();

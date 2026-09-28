@@ -281,27 +281,12 @@ BaseType_t xPortStartScheduler( void )
 		/* Read the value back to see how many bits stuck. */
 		ucMaxPriorityValue = *pucFirstUserPriorityRegister;
 
-		/* Use the same mask on the maximum system call priority. */
-		ucMaxSysCallPriority = configMAX_SYSCALL_INTERRUPT_PRIORITY & ucMaxPriorityValue;
-
-		/* Calculate the maximum acceptable priority group value for the number
-		of bits read back. */
-		ulMaxPRIGROUPValue = portMAX_PRIGROUP_BITS;
-		while( ( ucMaxPriorityValue & portTOP_BIT_OF_BYTE ) == portTOP_BIT_OF_BYTE )
-		{
-			ulMaxPRIGROUPValue--;
-			ucMaxPriorityValue <<= ( uint8_t ) 0x01;
-		}
-
-		/* Wokwi emulator clamp: Wokwi does not mask unimplemented NVIC priority bits
-		   on readback in the same way real silicon does. Clamp ulMaxPRIGROUPValue to
-		   match STM32's 4 priority bits (16 priority levels). */
-		#ifdef configPRIO_BITS
-		if( ( portMAX_PRIGROUP_BITS - ulMaxPRIGROUPValue ) != configPRIO_BITS )
-		{
-			ulMaxPRIGROUPValue = portMAX_PRIGROUP_BITS - configPRIO_BITS;
-		}
-		#endif
+		/* Wokwi emulator clamp: Wokwi returns 0xFF when writing 0xFF to NVIC IP registers,
+		   deriving 8 priority bits instead of STM32's 4 priority bits.
+		   Force ucMaxSysCallPriority and ulMaxPRIGROUPValue to match 4 priority bits. */
+		ucMaxSysCallPriority = configMAX_SYSCALL_INTERRUPT_PRIORITY;
+		ulMaxPRIGROUPValue = portMAX_PRIGROUP_BITS - 4;
+		(void)ucMaxPriorityValue;
 
 		#ifdef __NVIC_PRIO_BITS
 		{

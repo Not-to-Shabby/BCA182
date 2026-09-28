@@ -39,6 +39,9 @@ All course assignment files (such as `*.docx`, `*.docx.md`), PlatformIO build ou
   - **VTOR Initialization**: Before starting the scheduler (`vTaskStartScheduler()`), the firmware must initialize `SCB->VTOR = FLASH_BASE;` so the Cortex-M3 SVC-0 handler correctly restores the initial task stack pointer from flash offset 0.
   - **Wokwi NVIC Priority-Probe Clamp**: Wokwi's virtual MCU does not mask unimplemented NVIC priority bits. The priority-bits probe in `xPortStartScheduler()` must be safely clamped to prevent assertion deadlocks.
   - **Combined SysTick Handler**: `main.c` must define `SysTick_Handler()` to call both `HAL_IncTick()` (for HAL timing/delays) and `xPortSysTickHandler()` (for FreeRTOS kernel context switching).
+- **I2C Protocol & Wokwi Simulation Errata**:
+  - Wokwi's virtual STM32F103 I2C peripheral model does not faithfully emulate ST's complex analog/digital filter and multi-byte event flag sequencing in hardware mode (`HAL_I2C_Mem_Write` times out or fails ACK handshakes on simulated I2C1).
+  - Therefore, the SSD1306 OLED interface must use **deterministic open-drain bit-banging** on pins `PB6` (SCL) and `PB7` (SDA) via `GPIOB->BSRR / BRR`. This provides 100% reliable frame delivery and avoids I2C bus lockups. Document this in the engineering decision log and laboratory report.
 
 ---
 

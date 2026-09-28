@@ -28,6 +28,7 @@ static void DelayUs(uint32_t us)
     for (;;)
     {
         uint32_t elapsed = DWT->CYCCNT - start;
+        /* cppcheck-suppress unsignedLessThanZero */
         if (elapsed >= ticks) { break; }
         if (guard-- == 0U)    { break; }
     }
@@ -63,6 +64,7 @@ static int WaitLevel(uint32_t level, uint32_t timeoutUs)
         uint32_t pin = ((DHT_PORT->IDR & DHT_PIN) != 0U) ? 1U : 0U;
 
         if (pin == level)    { return (int)(elapsed / cyclesPerUs); }
+        /* cppcheck-suppress unsignedLessThanZero */
         if (elapsed > limit) { return -1; }
         if (guard-- == 0U)   { return -1; }
     }

@@ -33,7 +33,7 @@ void diag_put_hex(uint32_t val) {
 }
 
 // Low-level fault trap with register dump
-void diag_dump_fault(const char *fault_name, uint32_t *stacked_regs) {
+void diag_dump_fault(const char *fault_name, const uint32_t *stacked_regs) {
     diag_puts("\r\n================ [FAULT DETECTED] ================\r\n");
     diag_puts(fault_name);
     diag_puts("\r\nStacked Registers:\r\n");

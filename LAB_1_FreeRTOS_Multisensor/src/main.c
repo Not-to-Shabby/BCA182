@@ -113,6 +113,7 @@ void vApplicationMallocFailedHook(void) {
     while (1);
 }
 
+/* cppcheck-suppress constParameterPointer */
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     (void)xTask;
     Log_RawPuts("\r\n[FATAL] Stack Overflow: ");

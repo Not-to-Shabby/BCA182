@@ -6,6 +6,7 @@ void HAL_MspInit(void) {
     __HAL_AFIO_REMAP_SWJ_NOJTAG(); // Disable JTAG, keep SWD
 }
 
+/* cppcheck-suppress constParameterPointer */
 void HAL_I2C_MspInit(I2C_HandleTypeDef *hi2c) {
     if (hi2c->Instance == I2C1) {
         __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -22,6 +23,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef *hi2c) {
     }
 }
 
+/* cppcheck-suppress constParameterPointer */
 void HAL_I2C_MspDeInit(I2C_HandleTypeDef *hi2c) {
     if (hi2c->Instance == I2C1) {
         __HAL_RCC_I2C1_CLK_DISABLE();
@@ -29,6 +31,7 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef *hi2c) {
     }
 }
 
+/* cppcheck-suppress constParameterPointer */
 void HAL_UART_MspInit(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
         __HAL_RCC_USART1_CLK_ENABLE();
@@ -49,6 +52,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart) {
     }
 }
 
+/* cppcheck-suppress constParameterPointer */
 void HAL_UART_MspDeInit(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
         __HAL_RCC_USART1_CLK_DISABLE();

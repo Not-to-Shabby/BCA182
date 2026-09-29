@@ -24,69 +24,65 @@ extern "C" {
 #define APP_BANNER_LINE                 "=====================================================\n"
 
 /* -------------------------------------------------------------------------- */
-/* On-Board / External GPIO Push Buttons                                      */
+/* Directional D-Pad Navigation Buttons (RT-Thread Spark Board Schematic)     */
 /* -------------------------------------------------------------------------- */
-/* Button 1: Selection latch & Confirmation (Active Low with Pull-Up)        */
-#define BUTTON_1_PORT                   "GPIOC"
-#define BUTTON_1_PIN                    0       /* KEY0 on RT-Spark */
+/* UP Button: Scroll Track Forward (SW2 / GPIO_BTN_UP on PC5, Active LOW)     */
+#define BTN_UP_PORT                     "GPIOC"
+#define BTN_UP_PIN                      5
 
-/* Button 2: Binary Bit 0 (LSB)                                              */
-#define BUTTON_2_PORT                   "GPIOC"
-#define BUTTON_2_PIN                    1       /* KEY1 on RT-Spark */
+/* DOWN Button: Scroll Track Backward (SW4 / GPIO_BTN_DOWN on PC1, Active LOW) */
+#define BTN_DOWN_PORT                   "GPIOC"
+#define BTN_DOWN_PIN                    1
 
-/* Button 3: Binary Bit 1                                                     */
-#define BUTTON_3_PORT                   "GPIOC"
-#define BUTTON_3_PIN                    4       /* KEY2 on RT-Spark */
+/* LEFT Button: Decrease Volume -5% (SW3 / GPIO_BTN_LEFT on PC0, Active LOW)  */
+#define BTN_LEFT_PORT                   "GPIOC"
+#define BTN_LEFT_PIN                    0
 
-/* Button 4: Binary Bit 2 (MSB)                                               */
-#define BUTTON_4_PORT                   "GPIOC"
-#define BUTTON_4_PIN                    5       /* WK_UP on RT-Spark */
+/* RIGHT Button: Increase Volume +5% (SW5 / GPIO_BTN_RIGHT on PC4, Active LOW)*/
+#define BTN_RIGHT_PORT                  "GPIOC"
+#define BTN_RIGHT_PIN                   4
 
-/* On-board USER_BUTTON: Play / Pause / Replay toggle                         */
-#define USER_BUTTON_PORT                "GPIOA"
-#define USER_BUTTON_PIN                 0
+/* PRESS / PLAY-PAUSE Button: Onboard USER / Wakeup Key (PA0, Active HIGH)   */
+#define BTN_PRESS_PORT                  "GPIOA"
+#define BTN_PRESS_PIN                   0
+
+/* Optional Auxiliary 5th Button on PA1 (Active LOW with pull-up)             */
+#define BTN_AUX_PORT                    "GPIOA"
+#define BTN_AUX_PIN                     1
+
+/* -------------------------------------------------------------------------- */
+/* Volume Adjustment Settings                                                 */
+/* -------------------------------------------------------------------------- */
+#define VOLUME_STEP_PERCENT             5       /* 5% step per click          */
+#define VOLUME_DEFAULT_PERCENT          70      /* Initial power-on volume    */
 
 /* -------------------------------------------------------------------------- */
 /* RGB LED Indicators                                                         */
 /* -------------------------------------------------------------------------- */
-/* Red LED: ON when audio is Paused or Stopped                                */
+/* Red LED: ON when audio is Paused or Stopped (Active LOW on RT-Spark)       */
 #define LED_RED_PORT                    "GPIOF"
-#define LED_RED_PIN                     12      /* On-board Red LED */
+#define LED_RED_PIN                     12
 
-/* Green LED: ON when in Song Confirmation Window (5-second timeout)         */
-#define LED_GREEN_PORT                  "GPIOE"
-#define LED_GREEN_PIN                   3       /* Expansion / external LED */
-
-/* Blue LED: ON when Song is actively Playing                                 */
+/* Blue LED: ON when Song is actively Playing (Active LOW on RT-Spark)        */
 #define LED_BLUE_PORT                   "GPIOF"
-#define LED_BLUE_PIN                    11      /* On-board Blue LED */
+#define LED_BLUE_PIN                    11
 
-/* -------------------------------------------------------------------------- */
-/* Volume Control Configuration (Button-Driven)                               */
-/* -------------------------------------------------------------------------- */
-/* Buttons 2 (PC1 / KEY1) and 3 (PC4 / KEY2) provide Volume Down / Up when   */
-/* pressed without Button 1. Pin PA1 can optionally serve as a 5th button.    */
-#define VOLUME_BUTTON_DOWN_PORT         "GPIOC"
-#define VOLUME_BUTTON_DOWN_PIN          1       /* Button 2 (KEY1): Vol -     */
-#define VOLUME_BUTTON_UP_PORT           "GPIOC"
-#define VOLUME_BUTTON_UP_PIN            4       /* Button 3 (KEY2): Vol +     */
-#define VOLUME_AUX_BUTTON_PORT          "GPIOA"
-#define VOLUME_AUX_BUTTON_PIN           1       /* Optional PA1 button        */
-#define VOLUME_STEP_PERCENT             5       /* 5% step per adjustment     */
+/* Green LED: Optional indicator (PE3)                                        */
+#define LED_GREEN_PORT                  "GPIOE"
+#define LED_GREEN_PIN                   3
 
 /* -------------------------------------------------------------------------- */
 /* Timing Constraints                                                         */
 /* -------------------------------------------------------------------------- */
-#define CONFIRMATION_TIMEOUT_MS         5000    /* 5 seconds confirmation window */
-#define BUTTON_DEBOUNCE_TIME_MS         20      /* 20 ms debounce filter */
-#define LCD_LED_THREAD_PERIOD_MS        100     /* 10 Hz refresh rate */
-#define BUTTON_POLL_PERIOD_MS           20      /* 50 Hz poll rate */
-#define VOLUME_THREAD_PERIOD_MS         100     /* 10 Hz poll rate */
+#define BUTTON_DEBOUNCE_TIME_MS         20      /* 20 ms debounce filter      */
+#define LCD_LED_THREAD_PERIOD_MS        100     /* 10 Hz refresh rate         */
+#define BUTTON_POLL_PERIOD_MS           20      /* 50 Hz button poll rate     */
+#define VOLUME_THREAD_PERIOD_MS         100     /* 10 Hz volume poll rate     */
 
 /* -------------------------------------------------------------------------- */
 /* Audio Player Specifications                                                */
 /* -------------------------------------------------------------------------- */
-#define TOTAL_PLAYABLE_SONGS            8       /* Binary indexed: 000 to 111 */
+#define TOTAL_PLAYABLE_SONGS            8       /* Tracks 1 to 8              */
 
 #ifdef __cplusplus
 }

@@ -16,36 +16,28 @@ This project implements a concurrent, real-time embedded **Personal MP3 Player**
 
 The application fulfills all engineering requirements specified in **Laboratory Activity 2**:
 - **8-Song Classical Repertoire**: Direct access to 8 musical compositions defined in `reference/song_def.h`.
-- **Physical GPIO Button Scanning & Debouncing (Phase 4 Completed)**:
-  - Buttons 2, 3, and 4 (`PC1`, `PC4`, `PC5`) form a 3-bit binary song selector ($2^3 = 8$ songs, indices `000` to `111`).
-  - Active-low inputs configured with internal pull-ups and filtered through a 3-sample 20 ms state-machine debouncer.
-- **Binary Selection Gesture & 5-Second Confirmation Window (Phase 4 Completed)**:
-  - While holding Buttons 2–4 in the target binary pattern, pressing Button 1 (`PC0`) latches the prospective track.
-  - Transitions to `PLAYER_STATE_CONFIRMING` (Green LED ON, graphical LCD confirmation dialog).
-  - Pressing Button 1 again within 5 seconds confirms the choice, switching track and resuming playback (Blue LED ON).
-  - If 5 seconds elapse without a second press, the system automatically aborts the selection and reverts to the previous track and playback state.
-- **Audio Transport Control**: On-board `USER_BUTTON` (`PA0`) toggles between Play (`PLAYER_STATE_PLAYING`) and Pause (`PLAYER_STATE_PAUSED`).
+- **Directional D-Pad Navigation Controls (RT-Thread Spark Board)**:
+  - **UP Button (`PC5` / SW2)**: Scrolls track forward ($1 \to 2 \dots \to 8 \to 1$).
+  - **DOWN Button (`PC1` / SW4)**: Scrolls track backward ($8 \to 7 \dots \to 1 \to 8$).
+  - **LEFT Button (`PC0` / SW3)**: Decreases volume by $5\%$ per step down to $0\%$.
+  - **RIGHT Button (`PC4` / SW5)**: Increases volume by $5\%$ per step up to $100\%$.
+  - **PRESS / PLAY-PAUSE (`PA0` / USER_BUTTON)**: Toggles between Play (`PLAYER_STATE_PLAYING`) and Pause (`PLAYER_STATE_PAUSED`). Also supports long-press on DOWN (>600 ms).
+  - Configured with internal pull-ups and filtered through a 3-sample 20 ms state-machine debouncer.
 - **Physical RGB LED State Indicators**:
-  - **Blue LED (`PF11`)**: ON when audio playback is active.
-  - **Red LED (`PF12`)**: ON when audio is paused or stopped.
-  - **Green LED (`PE3`)**: ON during the 5-second song confirmation window.
-- **Hardware-Accelerated ST7789 LCD Driver (Phase 3 Completed)**:
+  - **Blue LED (`PF11`)**: ON when audio playback is active (`PLAYER_STATE_PLAYING`).
+  - **Red LED (`PF12`)**: ON when audio is paused or stopped (`PLAYER_STATE_PAUSED` / `PLAYER_STATE_STOPPED`).
+- **Hardware-Accelerated ST7789 LCD Driver**:
   - 1.3-inch 240×240 color TFT driven via **STM32F407 FSMC Bank 3 (8080 8-bit parallel bus)**.
   - Hardware reset pulse generation on **`PD3`**.
   - Hardware backlight power activation on **`PF9`**.
   - High-performance bitmap font engine (`16×8` DejaVu Sans Mono ASCII characters).
   - Mutex-guarded display telemetry (`k_mutex g_lcd_mutex`).
-- **Button-Driven Volume Adjustment (Phase 4 Completed)**:
-  - Supports digital push-button volume control without requiring an external potentiometer.
-  - In normal playback mode (when Button 1 is not held):
-    - **Button 2 (`PC1` / KEY1)**: Decrements volume by $5\%$ per step down to $0\%$.
-    - **Button 3 (`PC4` / KEY2)**: Increments volume by $5\%$ per step up to $100\%$.
-    - **Optional Auxiliary Button (`PA1`)**: Cycles preset volume steps ($25\% \to 50\% \to 75\% \to 100\% \to 0\%$).
-  - Renders a live graphical progress bar and numeric percentage ($0\%\text{--}100\%$) on the ST7789 display.
+  - Real-time graphical volume progress bar and track title rendering.
+  - Footer navigation hints: `UP/DN: Track | L/R: Vol` and `PRESS/PA0: Play/Pause`.
 - **3 Concurrent Cooperative Zephyr Threads**:
   1. `update_lcd_leds_thread`: Manages graphical display rendering and physical RGB state LEDs.
-  2. `polling_buttons`: Handles debounced button reading, binary index decoding, and 5-second confirmation timing.
-  3. `adjust_volume`: Dedicated thread monitoring volume adjustment buttons and updating shared volume state.
+  2. `polling_buttons`: Handles debounced button reading, UP/DOWN track cycling, and Play/Pause toggling.
+  3. `adjust_volume`: Dedicated thread monitoring LEFT/RIGHT volume buttons and updating shared volume state.
 - **Low-Power Idle Sleep**: The main thread puts the MCU into low-power idle sleep (`k_sleep(K_FOREVER)` / `k_cpu_idle()`), minimizing energy consumption.
 
 ---
@@ -58,14 +50,14 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 |---|---|---|---|
 | **UART1 TX** | `PA9` | Alternate Function (AF7) | Serial telemetry / user instructions (115200 8N1) |
 | **UART1 RX** | `PA10` | Alternate Function (AF7) | Serial console input from onboard ST-LINK VCP |
-| **Button 1** (KEY0) | `PC0` | GPIO Input (Pull-Up) | Song selection latch & confirmation button |
-| **Button 2** (KEY1) | `PC1` | GPIO Input (Pull-Up) | Song selection Bit 0 (LSB, weight $2^0 = 1$) |
-| **Button 3** (KEY2) | `PC4` | GPIO Input (Pull-Up) | Song selection Bit 1 (weight $2^1 = 2$) |
-| **Button 4** (WK_UP) | `PC5` | GPIO Input (Pull-Up) | Song selection Bit 2 (MSB, weight $2^2 = 4$) |
-| **USER_BUTTON** | `PA0` | GPIO Input (Pull-Down) | Play / Pause / Replay toggle |
+| **UP Button (SW2)** | `PC5` | GPIO Input (Pull-Up) | Next Track scroll ($+1$, Track 1 to 8) |
+| **DOWN Button (SW4)** | `PC1` | GPIO Input (Pull-Up) | Previous Track scroll ($-1$) / Long-press: Play/Pause |
+| **LEFT Button (SW3)** | `PC0` | GPIO Input (Pull-Up) | Volume Down (-5% per step down to 0%) |
+| **RIGHT Button (SW5)** | `PC4` | GPIO Input (Pull-Up) | Volume Up (+5% per step up to 100%) |
+| **PRESS / USER_BUTTON** | `PA0` | GPIO Input (Pull-Down) | Play / Pause Toggle (Active High) |
+| **Auxiliary Button** | `PA1` | GPIO Input (Pull-Up) | Optional 5th button: Cycles volume presets (25%, 50%, 75%, 100%, 0%) |
 | **Red LED** | `PF12` | GPIO Output (Active Low) | Status indicator: Paused / Stopped |
 | **Blue LED** | `PF11` | GPIO Output (Active Low) | Status indicator: Playing |
-| **Green LED** | `PE3` | GPIO Output (Active High) | Status indicator: 5-Second Confirmation Window |
 | **LCD Backlight** | `PF9` | GPIO Output (High Speed) | Display backlight power control |
 | **LCD Reset** | `PD3` | GPIO Output (Push-Pull) | ST7789 hardware reset line |
 | **LCD Data Bus (D0–D7)** | `PD14..15, PD0..1, PE7..10` | Alternate Function 12 (`AF12_FSMC`) | FSMC 8080 8-bit parallel bidirectional data |
@@ -73,9 +65,6 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **LCD Command/Data ($\text{A18}$)** | `PD13` | Alternate Function 12 (`AF12_FSMC`) | Address bit 18 ($\text{LOW}=\text{CMD}$, $\text{HIGH}=\text{DATA}$) |
 | **LCD Write Enable ($\overline{\text{NWE}}$)** | `PD5` | Alternate Function 12 (`AF12_FSMC`) | FSMC Write Strobe ($\overline{\text{WR}}$) |
 | **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
-| **Volume Down (Button 2)** | `PC1` | GPIO Input (Pull-Up) | Volume decrease (-5% per step) when B1 not held |
-| **Volume Up (Button 3)** | `PC4` | GPIO Input (Pull-Up) | Volume increase (+5% per step) when B1 not held |
-| **Auxiliary Volume Button** | `PA1` | GPIO Input (Pull-Up) | Optional 5th button: Cycles volume presets (25%, 50%, 75%, 100%, 0%) |
 | **Headphone / Codec** | `PB10 (SCL), PB11 (SDA)` | I2C2 / I2S | ES8388 stereo codec & 3.5mm audio jack |
 
 ---
@@ -125,13 +114,12 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
    - Acquires `g_lcd_mutex`, renders playback telemetry, volume progress bar, or confirmation dialog, and releases mutex.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 2. **`polling_buttons` (Priority 2, Stack 1024 B)**:
-   - Polls GPIO buttons with 20 ms debounce filtering (3 consecutive stable samples).
-   - Decodes binary song index and latches prospective choice upon Button 1 press.
-   - Monitors 5-second confirmation countdown via `k_uptime_get_32()`.
-   - Handles `USER_BUTTON` Play/Pause toggle.
+   - Polls UP (`PC5`) and DOWN (`PC1`) buttons with 20 ms debouncing.
+   - Scrolls through the 8 classical tracks forward (UP) and backward (DOWN).
+   - Toggles Play / Pause on PRESS (`PA0`) or long-press on DOWN (>600 ms).
    - Cooperatively sleeps for 20 ms (`k_sleep(K_MSEC(20))`).
 3. **`adjust_volume` (Priority 3, Stack 1024 B)**:
-   - Dedicated volume adjustment thread reading Button 2 (`PC1` / Vol-) and Button 3 (`PC4` / Vol+).
+   - Dedicated volume adjustment thread reading LEFT (`PC0` / SW3) and RIGHT (`PC4` / SW5).
    - Allows smooth volume stepping (5% per step) and supports optional PA1 preset cycling.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 

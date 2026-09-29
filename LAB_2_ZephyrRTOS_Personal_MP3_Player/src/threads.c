@@ -2,7 +2,7 @@
  * @file threads.c
  * @brief Implementation of the 3 cooperative Zephyr RTOS threads for the
  *        Personal MP3 Player with unified non-racing Short-Press & Long-Press
- *        architecture on ALL buttons:
+ *        architecture and FLICKER-FREE partial LCD rendering:
  *        - UP (PC5)     : Short -> Next Track | Long -> Jump to Track 1
  *        - DOWN (PC1)   : Short -> Prev Track | Long -> Play / Pause Toggle
  *        - LEFT (PC0)   : Short -> Vol -5%    | Long / Hold -> Rapid Smooth Vol Down
@@ -55,17 +55,6 @@ typedef enum {
     BTN_EVT_HOLD_REPEAT     /**< Continuously held: auto-repeat event */
 } button_event_t;
 
-/**
- * @brief Update a button's debounced state machine and generate mutually
- *        exclusive short-press and long-press events.
- *
- * @param btn Pointer to button tracker state
- * @param raw_active True if physical button is currently active
- * @param now_ms Current system timestamp in ms
- * @param long_threshold_ms Time in ms to qualify as a long-press (e.g. 450 ms)
- * @param repeat_period_ms Time in ms between repeat events while held (0 = no repeat)
- * @return button_event_t Detected event
- */
 static button_event_t update_button_state(button_tracker_t *btn, bool raw_active,
                                           uint32_t now_ms, uint32_t long_threshold_ms,
                                           uint32_t repeat_period_ms)
@@ -188,18 +177,51 @@ static void update_status_leds(player_state_t state)
 }
 
 /* -------------------------------------------------------------------------- */
-/* ST7789 Graphical User Interface Rendering                                  */
+/* Flicker-Free Partial LCD Rendering Routines                                */
 /* -------------------------------------------------------------------------- */
-static void render_lcd_screen(player_state_t state, uint8_t cur_song_idx, uint8_t volume)
+static void render_note_row(uint16_t current_note, uint16_t total_notes, player_state_t state)
+{
+    char buf[32];
+    if (state == PLAYER_STATE_PLAYING) {
+        snprintf(buf, sizeof(buf), "NOTE: %-3u / %-3u     ", current_note + 1, total_notes);
+        lcd_show_string(14, 130, buf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+    } else if (state == PLAYER_STATE_PAUSED) {
+        snprintf(buf, sizeof(buf), "PAUSED AT NOTE %-3u ", current_note + 1);
+        lcd_show_string(14, 130, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    } else {
+        lcd_show_string(14, 130, "PRESS PA0 TO PLAY   ", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    }
+}
+
+static void render_volume_row(uint8_t volume)
+{
+    char buf[32];
+    if (volume == 0) {
+        snprintf(buf, sizeof(buf), "VOLUME: MUTE (0%%)  ");
+    } else {
+        snprintf(buf, sizeof(buf), "VOLUME: %3u%%        ", volume);
+    }
+    lcd_show_string(14, 150, buf, (volume == 0) ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+
+    uint16_t bar_width = (uint16_t)((volume * 210U) / 100U);
+    if (bar_width > 0) {
+        lcd_fill_rect(15, 169, 15 + bar_width, 179, LCD_COLOR_GREEN);
+    }
+    if (bar_width < 210) {
+        lcd_fill_rect(15 + bar_width + 1, 169, 225, 179, LCD_COLOR_BLACK);
+    }
+}
+
+static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8_t volume)
 {
     char buf[32];
 
-    /* 1. Header Banner */
+    /* 1. Top Header Banner */
     lcd_fill_rect(0, 0, LCD_WIDTH - 1, 26, LCD_COLOR_NAVY);
     lcd_show_string(16, 6, "BCA182: MP3 PLAYER", LCD_COLOR_WHITE, LCD_COLOR_NAVY);
     lcd_draw_line(0, 27, LCD_WIDTH - 1, 27, LCD_COLOR_CYAN);
 
-    /* 2. Main Playback Screen Body */
+    /* 2. Main Body Clear */
     lcd_fill_rect(0, 28, LCD_WIDTH - 1, LCD_HEIGHT - 1, LCD_COLOR_BLACK);
 
     /* Status Badge */
@@ -218,34 +240,12 @@ static void render_lcd_screen(player_state_t state, uint8_t cur_song_idx, uint8_
     lcd_show_string(14, 92, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
     lcd_show_string(14, 110, c_song->name2, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
 
-    /* Note Progress Indicator */
-    if (state == PLAYER_STATE_PLAYING) {
-        snprintf(buf, sizeof(buf), "NOTE: %u / %u",
-                 audio_engine_get_note_index() + 1, c_song->length);
-        lcd_show_string(14, 130, buf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
-    } else if (state == PLAYER_STATE_PAUSED) {
-        snprintf(buf, sizeof(buf), "PAUSED AT NOTE %u",
-                 audio_engine_get_note_index() + 1);
-        lcd_show_string(14, 130, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
-    } else {
-        lcd_show_string(14, 130, "PRESS PA0 TO PLAY", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
-    }
+    /* Note Progress Row */
+    render_note_row(audio_engine_get_note_index(), c_song->length, state);
 
     /* Volume Level Bar */
-    if (volume == 0) {
-        snprintf(buf, sizeof(buf), "VOLUME: MUTE (0%%)");
-    } else {
-        snprintf(buf, sizeof(buf), "VOLUME: %u%%", volume);
-    }
-    lcd_show_string(14, 150, buf, (volume == 0) ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_BLACK);
     lcd_draw_rect(14, 168, 226, 180, LCD_COLOR_WHITE);
-    uint16_t bar_width = (uint16_t)((volume * 210U) / 100U);
-    if (bar_width > 0) {
-        lcd_fill_rect(15, 169, 15 + bar_width, 179, LCD_COLOR_GREEN);
-    }
-    if (bar_width < 210) {
-        lcd_fill_rect(15 + bar_width + 1, 169, 225, 179, LCD_COLOR_BLACK);
-    }
+    render_volume_row(volume);
 
     /* Directional D-Pad Controls Footer */
     lcd_draw_line(0, 188, LCD_WIDTH - 1, 188, LCD_COLOR_DARKGREY);
@@ -254,7 +254,7 @@ static void render_lcd_screen(player_state_t state, uint8_t cur_song_idx, uint8_
 }
 
 /* -------------------------------------------------------------------------- */
-/* Thread 1: Update LCD and RGB LEDs                                          */
+/* Thread 1: Update LCD and RGB LEDs (Flicker-Free Differential Render)       */
 /* -------------------------------------------------------------------------- */
 void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
 {
@@ -262,7 +262,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
     ARG_UNUSED(arg2);
     ARG_UNUSED(arg3);
 
-    printk("[LCD_LED_Thread] Started\n");
+    printk("[LCD_LED_Thread] Started (Flicker-Free Differential Render)\n");
 
     uint8_t last_rendered_song = 0xFF;
     player_state_t last_rendered_state = (player_state_t)0xFF;
@@ -314,22 +314,42 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
             last_audio_vol = volume;
         }
 
-        /* 3. Redraw LCD display if state, track, volume, or note changed */
+        /* 3. Flicker-Free Differential Screen Update:
+         *    - Full screen redraw ONLY when track or player state changes.
+         *    - When only the note advances or volume changes, ONLY update that specific line!
+         *    - Never clear the entire screen on note changes!
+         */
         uint16_t current_note = audio_engine_get_note_index();
-        bool needs_redraw = force_redraw ||
-                            (current_state != last_rendered_state) ||
-                            (current_song != last_rendered_song) ||
-                            (volume != last_rendered_vol) ||
-                            (current_state == PLAYER_STATE_PLAYING && current_note != last_rendered_note);
+        bool full_redraw = force_redraw ||
+                           (current_state != last_rendered_state) ||
+                           (current_song != last_rendered_song);
+        bool vol_changed = (volume != last_rendered_vol);
+        bool note_changed = (current_note != last_rendered_note);
 
-        if (needs_redraw) {
+        if (full_redraw) {
             if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
-                render_lcd_screen(current_state, current_song, volume);
+                render_full_screen(current_state, current_song, volume);
                 last_rendered_state = current_state;
                 last_rendered_song = current_song;
                 last_rendered_vol = volume;
                 last_rendered_note = current_note;
                 k_mutex_unlock(&g_lcd_mutex);
+            }
+        } else {
+            if (vol_changed) {
+                if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
+                    render_volume_row(volume);
+                    last_rendered_vol = volume;
+                    k_mutex_unlock(&g_lcd_mutex);
+                }
+            }
+            if (note_changed) {
+                if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
+                    const song_info_t *c_song = get_song_info(current_song);
+                    render_note_row(current_note, c_song->length, current_state);
+                    last_rendered_note = current_note;
+                    k_mutex_unlock(&g_lcd_mutex);
+                }
             }
         }
 
@@ -349,7 +369,6 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
 
     printk("[Button_Thread] Started (UP/DOWN/PA0 Navigation Tracker)\n");
 
-    /* Unified button trackers */
     static button_tracker_t btn_up    = {0};
     static button_tracker_t btn_down  = {0};
     static button_tracker_t btn_press = {0};
@@ -448,7 +467,6 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
 
     printk("[Volume_Thread] Started (LEFT/RIGHT/AUX Volume Tracker)\n");
 
-    /* Unified button trackers for volume controls */
     static button_tracker_t btn_left  = {0};
     static button_tracker_t btn_right = {0};
     static button_tracker_t btn_aux   = {0};
@@ -465,7 +483,6 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
         bool right_active = ((GPIOC->IDR & (1U << 4)) == 0);
         bool aux_active   = ((GPIOA->IDR & (1U << 1)) == 0);
 
-        /* LEFT and RIGHT use repeat rate of 90ms for smooth volume ramping while held */
         button_event_t left_evt  = update_button_state(&btn_left, left_active, now, 400, 90);
         button_event_t right_evt = update_button_state(&btn_right, right_active, now, 400, 90);
         button_event_t aux_evt   = update_button_state(&btn_aux, aux_active, now, 450, 0);

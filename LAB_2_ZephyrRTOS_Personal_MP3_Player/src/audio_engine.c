@@ -10,6 +10,7 @@
  */
 
 #include "audio_engine.h"
+#include "audio_codec_es8388.h"
 #include "app_config.h"
 #include "threads.h"
 #include <zephyr/kernel.h>
@@ -184,6 +185,9 @@ void audio_engine_init(void)
     printk("[Audio] Initializing TIM3 PWM audio on PB0 (onboard) & PB1 (header)...\n");
     hw_pwm_init();
 
+    printk("[Audio] Initializing 12-bit Analog DAC (PA4) and ES8388 (3.5mm Jack)...\n");
+    audio_hardware_dac_init();
+
     /* Initialize Zephyr k_timer ticker for note scheduling */
     k_timer_init(&s_audio_timer, audio_timer_handler, NULL);
     printk("[Audio] Audio engine calibrated with exact pitch and tempo timebase.\n");
@@ -195,6 +199,7 @@ static void audio_timer_handler(struct k_timer *timer_id)
 
     if (!s_is_playing) {
         hw_stop_tone();
+        audio_hardware_dac_stop();
         return;
     }
 
@@ -232,6 +237,7 @@ static void audio_timer_handler(struct k_timer *timer_id)
         k_mutex_unlock(&g_player_mutex);
 
         hw_set_tone(note, vol);
+        audio_hardware_dac_set_tone(note, vol);
         s_in_gap_phase = true;
         k_timer_start(&s_audio_timer, K_MSEC(play_ms), K_NO_WAIT);
     } else {
@@ -242,6 +248,7 @@ static void audio_timer_handler(struct k_timer *timer_id)
         }
 
         hw_stop_tone();
+        audio_hardware_dac_stop();
         s_in_gap_phase = false;
         s_note_idx++; /* Advance to next note */
         k_timer_start(&s_audio_timer, K_MSEC(gap_ms), K_NO_WAIT);
@@ -266,6 +273,7 @@ void audio_engine_pause(void)
 {
     s_is_playing = false;
     hw_stop_tone();
+    audio_hardware_dac_stop();
     k_timer_stop(&s_audio_timer);
 }
 
@@ -282,6 +290,7 @@ void audio_engine_stop(void)
 {
     s_is_playing = false;
     hw_stop_tone();
+    audio_hardware_dac_stop();
     k_timer_stop(&s_audio_timer);
     s_note_idx = 0;
     s_in_gap_phase = false;
@@ -293,7 +302,10 @@ void audio_engine_set_volume(uint8_t volume_percent)
         const musical_piece_t *piece = &s_catalog[s_active_song];
         if (s_note_idx < piece->length) {
             hw_set_tone(piece->notes[s_note_idx], volume_percent);
+            audio_hardware_dac_set_tone(piece->notes[s_note_idx], volume_percent);
         }
+    } else {
+        audio_hardware_dac_set_volume(volume_percent);
     }
 }
 

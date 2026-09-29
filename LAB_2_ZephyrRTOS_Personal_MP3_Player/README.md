@@ -84,9 +84,10 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **LCD Command/Data ($\text{A18}$)** | `PD13` | Alternate Function 12 (`AF12_FSMC`) | Address bit 18 ($\text{LOW}=\text{CMD}$, $\text{HIGH}=\text{DATA}$) |
 | **LCD Write Enable ($\overline{\text{NWE}}$)** | `PD5` | Alternate Function 12 (`AF12_FSMC`) | FSMC Write Strobe ($\overline{\text{WR}}$) |
 | **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
+| **3.5mm Headphone Jack (`CN3`)** | `PB10 (SCL), PB11 (SDA)` + I2S3 | ES8388 Stereo Codec (`U11`) + Headphone Amp (`LOUT1`/`ROUT1`) |
+| **Analog Audio DAC1 Output** | `PA4` | Analog Mode (`DAC_OUT1`) | Direct 12-bit analog sinusoidal audio output for external speaker/earphones |
 | **Onboard Buzzer Audio** | `PB0` | Alternate Function 2 (`TIM3_CH3`) | Hardware PWM audio synthesis on onboard buzzer (`BUZ1`) |
 | **Expansion Speaker Audio** | `PB1` | Alternate Function 2 (`TIM3_CH4`) | Simultaneous PWM audio output on expansion header |
-| **Headphone / Codec** | `PB10 (SCL), PB11 (SDA)` | I2C2 / I2S | ES8388 stereo codec & 3.5mm audio jack |
 
 ---
 
@@ -107,22 +108,34 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
 
 ---
 
-## 4. Audio Synthesizer Engine & Hardware PWM Architecture (Phase 5)
+## 4. Multi-Output Audio Synthesizer Architecture (Phase 5)
 
-The audio playback subsystem generates high-fidelity square-wave musical tones directly on the on-board buzzer (`PB0`) using **STM32F407 Timer 3 Channel 3 (`TIM3_CH3`)**:
-- **Clock Configuration**: APB1 timer clock at $84\text{ MHz}$, prescaled by $83$ to produce a $1\text{ MHz}$ timer resolution ($1\ \mu\text{s}$ per count).
+The audio playback subsystem supports multiple simultaneous acoustic output channels to accommodate both external speakers, headphones, and on-board hardware:
+
+### A. 3.5mm Stereo Headphone Jack (`CN3` / PJ-320A) via ES8388 Codec
+- **Hardware Integration**: Driven by the on-board **Everest Semiconductor ES8388 Low-Power Stereo Audio Codec (`U11`)**.
+- **Control Interface**: Configured via **I2C2** on pins `PB10` (SCL) and `PB11` (SDA) at 7-bit address `0x10`. The driver powers up the internal DAC, sets digital attenuation, enables the dual headphone operational amplifiers on `LOUT1` and `ROUT1`, and disables muting.
+- **Audio Stream**: Streamed via **I2S3** (`PC7`: Master Clock, `PA15`: Word Select, `PB3`: Bit Clock, `PB5`: Serial Data) with PCM samples synthesizing pure harmonic frequencies.
+- **Usage**: Plug any standard 3.5mm stereo headphones, earphones, or desktop powered speakers directly into the board's 3.5mm jack (`CN3`).
+
+### B. Direct 12-Bit Analog Audio DAC on Pin `PA4`
+- **Hardware Integration**: Utilizes the STM32F407's internal high-speed **12-bit Analog-to-Digital Converter Channel 1 (`DAC_OUT1` on `PA4`)**.
+- **Direct Digital Synthesis (DDS)**: Driven by hardware timer **TIM4** modulating a 32-point calibrated sinusoidal lookup table ($32 \times f_{\text{note}}$) with sub-microsecond precision.
+- **Audio Quality**: Produces smooth analog sine waves with zero high-frequency square-wave aliasing.
+- **Usage**: Connect the positive terminal of an external speaker, earphone jack, or amplifier input to `PA4` (`PMOD_PA4` on the expansion header) and the ground terminal to `GND`.
+
+### C. Hardware Timer TIM3 PWM Audio (PB0 On-Board & PB1 Expansion)
+- **Clock Configuration**: APB1 timer clock at $84\text{ MHz}$, prescaled by $83$ to produce a $1\text{ MHz}$ timer resolution ($1\ \mu\text{s}$ per count) with immediate prescaler reload (`TIM_EGR_UG`).
 - **Pitch Frequency Calculation**: Note period $T$ from `reference/song_def.h` is converted into timer auto-reload value:
   $$\text{ARR} = (T_{\text{ms}} \times 1000) - 1$$
-- **Volume & Amplitude Scaling**: Volume duty cycle is mapped into `CCR3`:
-  $$\text{CCR3} = \frac{\text{ARR} \times \text{volume\_percent}}{200}$$
-  A $50\%$ duty cycle produces the loudest acoustic fundamental, while $0\%$ volume or musical rest (`No`) silences the timer output.
+- **Volume & Amplitude Scaling**: Volume duty cycle is mapped into `CCR3` and `CCR4`:
+  $$\text{CCR} = \frac{\text{ARR} \times \text{volume\_percent}}{200}$$
 - **Zephyr `k_timer` Note Ticker**:
   - Automatically calculates total duration per beat:
-    $$\text{duration\_ms} = \text{beat} \times \text{tempo} \times 4000\text{ ms}$$
+    $$\text{duration\_ms} = \text{beat} \times \text{tempo} \times 14000\text{ ms}$$
   - **Two-Phase Note Articulation**:
-    - **Tone Phase ($85\%$)**: Timer PWM output active at target note frequency.
-    - **Gap Phase ($15\%$)**: Timer PWM silenced, creating clear staccato separation between identical consecutive pitches before advancing to the next note.
-  - Seamlessly handles Pause (freezes note index and silences PWM) and Resume (continues immediately from paused note).
+    - **Tone Phase ($80\%$)**: Active tone generation at target pitch.
+    - **Gap Phase ($20\%$)**: Brief silence between consecutive notes for crisp note articulation.
 
 ---
 

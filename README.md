@@ -34,7 +34,7 @@ All firmware in this repository is built using **PlatformIO** and production-gra
 | **Real-Time OS** | **FreeRTOS Kernel v10.3.1** | **Zephyr RTOS v4.x** |
 | **Concurrency Model** | 6 Preemptive Tasks (`vTaskDelayUntil`) | 3 Cooperative / Preemptive Threads (`k_sleep`) |
 | **Display Subsystem** | 0.96" SSD1306 128×64 OLED via Hardware I2C1 | 1.3" ST7789 v3 240×240 Color TFT via 8080 FSMC Parallel |
-| **Audio Generation** | Hardware TIM2 PWM Active Buzzer (1 kHz alarm tone) | Hardware TIM3_CH3 PWM Buzzer (PB0) + ES8388 Codec (I2C/I2S) |
+| **Audio Generation** | Hardware TIM2 PWM Active Buzzer (1 kHz alarm tone) | 3.5mm Jack (ES8388 I2C/I2S) + 12-Bit Analog DAC (PA4) + PWM Buzzer (PB0/PB1) |
 | **User Input** | KY-040 Quadrature Rotary Encoder (EXTI4 / GPIO) | Directional D-Pad (UP/DOWN Track, LEFT/RIGHT Vol) + USER_BUTTON |
 | **Synchronization** | Queues, Recursive Mutex, Event Groups | Mutex (`k_mutex`), Kernel Semaphores, Workqueues |
 | **Host Unit Testing** | MinGW GCC + Unity Test Framework (`pio test -e native`) | Decoupled Pure Decision Logic (`player_logic.c`) |

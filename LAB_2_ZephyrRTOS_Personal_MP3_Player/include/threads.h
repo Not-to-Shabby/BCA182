@@ -39,6 +39,7 @@ typedef struct {
     uint8_t prospective_song_index;
     uint32_t confirmation_start_ms;
     uint8_t volume_percent;
+    uint8_t pre_mute_volume;
     bool state_changed;
 } player_context_t;
 

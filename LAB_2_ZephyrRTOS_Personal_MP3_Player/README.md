@@ -16,13 +16,26 @@ This project implements a concurrent, real-time embedded **Personal MP3 Player**
 
 The application fulfills all engineering requirements specified in **Laboratory Activity 2**:
 - **8-Song Classical Repertoire**: Direct access to 8 musical compositions defined in `reference/song_def.h`.
-- **Directional D-Pad Navigation Controls (RT-Thread Spark Board)**:
-  - **UP Button (`PC5` / SW2)**: Scrolls track forward ($1 \to 2 \dots \to 8 \to 1$).
-  - **DOWN Button (`PC1` / SW4)**: Scrolls track backward ($8 \to 7 \dots \to 1 \to 8$).
-  - **LEFT Button (`PC0` / SW3)**: Decreases volume by $5\%$ per step down to $0\%$.
-  - **RIGHT Button (`PC4` / SW5)**: Increases volume by $5\%$ per step up to $100\%$.
-  - **PRESS / PLAY-PAUSE (`PA0` / USER_BUTTON)**: Toggles between Play (`PLAYER_STATE_PLAYING`) and Pause (`PLAYER_STATE_PAUSED`). Also supports long-press on DOWN (>600 ms).
-  - Configured with internal pull-ups and filtered through a 3-sample 20 ms state-machine debouncer.
+- **Directional D-Pad Navigation Controls with Unified Long-Press Architecture**:
+  - **Zero Race Condition**: Every button utilizes an explicit release-versus-threshold state machine guaranteeing that holding a button never triggers an accidental short click on press or release.
+  - **UP Button (`PC5` / SW2)**:
+    - *Short Click*: Cycles forward to the next track ($+1$, Track 1 to 8).
+    - *Long Hold ($\ge 450\,\text{ms}$)*: Instantly resets and jumps back to Track 1 (*Für Elise*).
+  - **DOWN Button (`PC1` / SW4)**:
+    - *Short Click*: Cycles backward to the previous track ($-1$, Track 8 to 1).
+    - *Long Hold ($\ge 450\,\text{ms}$)*: Toggles **Play / Pause** on the currently selected track without changing tracks!
+  - **LEFT Button (`PC0` / SW3 - Volume Down)**:
+    - *Short Click*: Decreases volume by $5\%$ per step.
+    - *Long Hold / Repeat*: Rapidly and smoothly decreases volume down to $0\%$ (Mute) at 90 ms intervals.
+  - **RIGHT Button (`PC4` / SW5 - Volume Up)**:
+    - *Short Click*: Increases volume by $5\%$ per step.
+    - *Long Hold / Repeat*: Rapidly and smoothly increases volume up to $100\%$ at 90 ms intervals.
+  - **PRESS / USER_BUTTON (`PA0`)**:
+    - *Short Click*: Toggles Play (`PLAYER_STATE_PLAYING`) and Pause (`PLAYER_STATE_PAUSED`).
+    - *Long Hold ($\ge 500\,\text{ms}$)*: Fully stops playback (`PLAYER_STATE_STOPPED`).
+  - **AUX Button (`PA1`)**:
+    - *Short Click*: Cycles volume presets ($25\% \to 50\% \to 75\% \to 100\% \to 0\%$).
+    - *Long Hold ($\ge 450\,\text{ms}$)*: Instant Mute / Unmute toggle, preserving and restoring previous volume level.
 - **Physical RGB LED State Indicators**:
   - **Blue LED (`PF11`)**: ON when audio playback is active (`PLAYER_STATE_PLAYING`).
   - **Red LED (`PF12`)**: ON when audio is paused or stopped (`PLAYER_STATE_PAUSED` / `PLAYER_STATE_STOPPED`).

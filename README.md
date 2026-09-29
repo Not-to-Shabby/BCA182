@@ -19,7 +19,7 @@ All firmware in this repository is built using **PlatformIO** and production-gra
 | Laboratory Directory | Project Title | Target Hardware & RTOS | Description | Status |
 |---|---|---|---|---|
 | [**`LAB_1_FreeRTOS_Multisensor`**](./LAB_1_FreeRTOS_Multisensor) | Real-Time Multisensor Room Monitoring System | STM32 Blue Pill (STM32F103C8T6)<br>**FreeRTOS Kernel v10.3.1** | Concurrent 6-task FreeRTOS telemetry node integrating DHT22, LDR, PIR, rotary encoder, SSD1306 OLED, and buzzer alarm. | Done |
-| [**`LAB_2_ZephyrRTOS_Personal_MP3_Player`**](./LAB_2_ZephyrRTOS_Personal_MP3_Player) | Personal MP3 Player | RT-Thread Spark Board (STM32F407ZGT6)<br>**Zephyr RTOS v4.x** | Concurrent 3-thread Zephyr audio player with directional D-pad controls (UP/DOWN track scroll, LEFT/RIGHT volume, PRESS play/pause), ST7789 LCD telemetry, RGB LED indicators, and UART telemetry. | Phase 4: Directional D-Pad Controls & Volume Verified |
+| [**`LAB_2_ZephyrRTOS_Personal_MP3_Player`**](./LAB_2_ZephyrRTOS_Personal_MP3_Player) | Personal MP3 Player | RT-Thread Spark Board (STM32F407ZGT6)<br>**Zephyr RTOS v4.x** | Concurrent 3-thread Zephyr audio player with directional D-pad controls (UP/DOWN track scroll, LEFT/RIGHT volume, PRESS play/pause), hardware TIM3_CH3 PWM note synthesis, ST7789 LCD telemetry, and RGB LED indicators. | Phase 5: Audio Synthesizer & Music Playback Verified |
 
 ---
 
@@ -34,7 +34,7 @@ All firmware in this repository is built using **PlatformIO** and production-gra
 | **Real-Time OS** | **FreeRTOS Kernel v10.3.1** | **Zephyr RTOS v4.x** |
 | **Concurrency Model** | 6 Preemptive Tasks (`vTaskDelayUntil`) | 3 Cooperative / Preemptive Threads (`k_sleep`) |
 | **Display Subsystem** | 0.96" SSD1306 128×64 OLED via Hardware I2C1 | 1.3" ST7789 v3 240×240 Color TFT via 8080 FSMC Parallel |
-| **Audio Generation** | Hardware TIM2 PWM Active Buzzer (1 kHz alarm tone) | ES8388 Stereo Codec (I2C/I2S) + Audio PWM Output |
+| **Audio Generation** | Hardware TIM2 PWM Active Buzzer (1 kHz alarm tone) | Hardware TIM3_CH3 PWM Buzzer (PB0) + ES8388 Codec (I2C/I2S) |
 | **User Input** | KY-040 Quadrature Rotary Encoder (EXTI4 / GPIO) | Directional D-Pad (UP/DOWN Track, LEFT/RIGHT Vol) + USER_BUTTON |
 | **Synchronization** | Queues, Recursive Mutex, Event Groups | Mutex (`k_mutex`), Kernel Semaphores, Workqueues |
 | **Host Unit Testing** | MinGW GCC + Unity Test Framework (`pio test -e native`) | Decoupled Pure Decision Logic (`player_logic.c`) |

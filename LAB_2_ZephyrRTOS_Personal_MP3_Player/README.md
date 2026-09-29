@@ -36,6 +36,12 @@ The application fulfills all engineering requirements specified in **Laboratory 
   - **AUX Button (`PA1`)**:
     - *Short Click*: Cycles volume presets ($25\% \to 50\% \to 75\% \to 100\% \to 0\%$).
     - *Long Hold ($\ge 450\,\text{ms}$)*: Instant Mute / Unmute toggle, preserving and restoring previous volume level.
+- **Audio Synthesizer & Note Playback Engine (Phase 5 Completed)**:
+  - Generates authentic musical pitches via **hardware timer TIM3 Channel 3 (`PB0`) PWM**.
+  - Direct microsecond period tuning ($f = 1000.0 / T\text{ Hz}$) covering notes $G_3$ to $D_6$.
+  - Drift-free note scheduling using Zephyr's **`struct k_timer`** ticker.
+  - Distinct musical note articulation: $85\%$ note tone phase followed by a $15\%$ staccato articulation gap between consecutive notes.
+  - Real-time PWM volume duty-cycle scaling ($0\%\text{--}100\%$) and live note progression tracking (`NOTE: X / Y`) on the LCD.
 - **Physical RGB LED State Indicators**:
   - **Blue LED (`PF11`)**: ON when audio playback is active (`PLAYER_STATE_PLAYING`).
   - **Red LED (`PF12`)**: ON when audio is paused or stopped (`PLAYER_STATE_PAUSED` / `PLAYER_STATE_STOPPED`).
@@ -78,6 +84,7 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **LCD Command/Data ($\text{A18}$)** | `PD13` | Alternate Function 12 (`AF12_FSMC`) | Address bit 18 ($\text{LOW}=\text{CMD}$, $\text{HIGH}=\text{DATA}$) |
 | **LCD Write Enable ($\overline{\text{NWE}}$)** | `PD5` | Alternate Function 12 (`AF12_FSMC`) | FSMC Write Strobe ($\overline{\text{WR}}$) |
 | **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
+| **Audio Buzzer / Tone Output** | `PB0` | Alternate Function 2 (`TIM3_CH3`) | Hardware PWM audio synthesis & note playback |
 | **Headphone / Codec** | `PB10 (SCL), PB11 (SDA)` | I2C2 / I2S | ES8388 stereo codec & 3.5mm audio jack |
 
 ---
@@ -99,7 +106,26 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
 
 ---
 
-## 4. Software Architecture & Concurrency Model
+## 4. Audio Synthesizer Engine & Hardware PWM Architecture (Phase 5)
+
+The audio playback subsystem generates high-fidelity square-wave musical tones directly on the on-board buzzer (`PB0`) using **STM32F407 Timer 3 Channel 3 (`TIM3_CH3`)**:
+- **Clock Configuration**: APB1 timer clock at $84\text{ MHz}$, prescaled by $83$ to produce a $1\text{ MHz}$ timer resolution ($1\ \mu\text{s}$ per count).
+- **Pitch Frequency Calculation**: Note period $T$ from `reference/song_def.h` is converted into timer auto-reload value:
+  $$\text{ARR} = (T_{\text{ms}} \times 1000) - 1$$
+- **Volume & Amplitude Scaling**: Volume duty cycle is mapped into `CCR3`:
+  $$\text{CCR3} = \frac{\text{ARR} \times \text{volume\_percent}}{200}$$
+  A $50\%$ duty cycle produces the loudest acoustic fundamental, while $0\%$ volume or musical rest (`No`) silences the timer output.
+- **Zephyr `k_timer` Note Ticker**:
+  - Automatically calculates total duration per beat:
+    $$\text{duration\_ms} = \text{beat} \times \text{tempo} \times 4000\text{ ms}$$
+  - **Two-Phase Note Articulation**:
+    - **Tone Phase ($85\%$)**: Timer PWM output active at target note frequency.
+    - **Gap Phase ($15\%$)**: Timer PWM silenced, creating clear staccato separation between identical consecutive pitches before advancing to the next note.
+  - Seamlessly handles Pause (freezes note index and silences PWM) and Resume (continues immediately from paused note).
+
+---
+
+## 5. Software Architecture & Concurrency Model
 
 ```text
        +--------------------------------------------------------------+
@@ -113,38 +139,81 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
       |       thread        |     |                    |   |                   |
       +---------------------+     +--------------------+   +-------------------+
                  |                           |                    |
-                 | [k_mutex_lock]            | [State updates]    | [ADC Read]
+                 | [k_mutex_lock]            | [State updates]    | [Vol updates]
                  v                           v                    v
       +---------------------+     +--------------------+   +-------------------+
-      | ST7789 FSMC Display |     |  g_player context  |   | 10k Potentiometer |
-      |  (Exclusive Access) |     |  (Shared State)    |   | (Volume 0-100%)   |
+      | ST7789 FSMC Display |     |  g_player context  |   | Hardware TIM3_CH3 |
+      |  (Exclusive Access) |     |  (Shared State)    |   | PWM Audio on PB0  |
       +---------------------+     +--------------------+   +-------------------+
 ```
 
 ### Thread Responsibilities
 1. **`update_lcd_leds_thread` (Priority 3, Stack 2048 B)**:
-   - Evaluates current state: updates Red, Green, and Blue GPIO pins.
-   - Acquires `g_lcd_mutex`, renders playback telemetry, volume progress bar, or confirmation dialog, and releases mutex.
+   - Evaluates current state: updates Red and Blue GPIO pins.
+   - Synchronizes audio engine state (starts, pauses, resumes, or stops `audio_engine`).
+   - Acquires `g_lcd_mutex`, renders playback telemetry, volume progress bar, track title, and active note progress (`NOTE: X / Y`), then releases mutex.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 2. **`polling_buttons` (Priority 2, Stack 1024 B)**:
-   - Polls UP (`PC5`) and DOWN (`PC1`) buttons with 20 ms debouncing.
-   - Scrolls through the 8 classical tracks forward (UP) and backward (DOWN).
-   - Toggles Play / Pause on PRESS (`PA0`) or long-press on DOWN (>600 ms).
+   - Polls UP (`PC5`), DOWN (`PC1`), and USER_BUTTON (`PA0`) with non-racing release-vs-hold debouncing.
+   - Scrolls tracks forward (UP) and backward (DOWN).
+   - Toggles Play / Pause on PRESS (`PA0`) or DOWN long-press without race condition.
    - Cooperatively sleeps for 20 ms (`k_sleep(K_MSEC(20))`).
 3. **`adjust_volume` (Priority 3, Stack 1024 B)**:
    - Dedicated volume adjustment thread reading LEFT (`PC0` / SW3) and RIGHT (`PC4` / SW5).
-   - Allows smooth volume stepping (5% per step) and supports optional PA1 preset cycling.
+   - Smoothly steps volume ($5\%$ per step) and supports auto-repeat while held.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 
 ---
 
-## 5. Build, Verification & Toolchain
+## 6. Build, Verification & Toolchain
 
 The firmware builds cleanly under PlatformIO with Zephyr RTOS:
 
 ```bash
 # Compile firmware
 pio run -d LAB_2_ZephyrRTOS_Personal_MP3_Player
+
+# Terminal Output:
+# RAM:   [=         ]   9.8% (used 12823 bytes from 131072 bytes)
+# Flash: [=         ]   6.8% (used 71640 bytes from 1048576 bytes)
+# [SUCCESS] Took 27.08 seconds
+```
+
+---
+
+## 7. Repository Layout & File Navigation
+
+```text
+LAB_2_ZephyrRTOS_Personal_MP3_Player/
+├── .gitignore                      # Exclusions for .pio, .vscode, binaries
+├── platformio.ini                  # PlatformIO configuration for black_f407zg
+├── zephyr/
+│   ├── CMakeLists.txt              # Application CMake target configuration
+│   └── prj.conf                    # Zephyr kernel subsystem enablement (GPIO, UART, PM, C++)
+├── include/
+│   ├── app_config.h                # Hardware pinouts, timings, and player constants
+│   ├── audio_engine.h              # Audio engine API and musical piece structures
+│   ├── lcd_font.h                  # 16x8 DejaVu Sans Mono ASCII font table
+│   ├── lcd_st7789.h                # ST7789 FSMC graphics and drawing API
+│   ├── player_logic.h              # Pure decision logic and state definitions
+│   └── threads.h                   # Thread prototypes, stacks, and mutex declarations
+├── src/
+│   ├── audio_engine.c              # TIM3_CH3 PWM buzzer driver, k_timer note ticker, song data
+│   ├── lcd_st7789.c                # Hardware FSMC 8080 driver, reset & backlight
+│   ├── main.c                      # Application startup, UART guide, thread creation
+│   ├── player_logic.c              # Binary decoding, 5s timeout, and volume normalization
+│   ├── song_data.inc               # Note and beat arrays for 8 classical compositions
+│   └── threads.c                   # 3 cooperative Zephyr RTOS threads
+├── reference/                      # Course-provided reference headers and sources
+│   ├── song.h
+│   ├── song_def.h
+│   ├── NHD_0216HZ.h
+│   └── NHD_0216HZ.cpp
+├── docs/
+│   ├── Laboratory Activity 2.md    # Course assignment specification
+│   └── schematic.pdf               # RT-Thread Spark Board V1.0 schematic diagram
+└── README.md                       # This comprehensive project documentation
+```
 
 # Terminal Output:
 # RAM:   [=         ]   9.7% (used 12689 bytes from 131072 bytes)

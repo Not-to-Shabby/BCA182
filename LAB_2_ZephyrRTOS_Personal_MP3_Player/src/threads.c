@@ -16,6 +16,7 @@
 
 #include "threads.h"
 #include "lcd_st7789.h"
+#include "audio_engine.h"
 #include <zephyr/sys/printk.h>
 #include <stm32f4xx.h>
 #include <stdio.h>
@@ -206,16 +207,29 @@ static void render_lcd_screen(player_state_t state, uint8_t cur_song_idx, uint8_
                             (state == PLAYER_STATE_PAUSED)  ? LCD_COLOR_YELLOW :
                                                               LCD_COLOR_RED;
     snprintf(buf, sizeof(buf), "STATUS: %s", get_player_state_str(state));
-    lcd_show_string(14, 36, buf, status_color, LCD_COLOR_BLACK);
+    lcd_show_string(14, 34, buf, status_color, LCD_COLOR_BLACK);
 
     /* Track Number and Title */
     const song_info_t *c_song = get_song_info(cur_song_idx);
     snprintf(buf, sizeof(buf), "Track #%u of %u", cur_song_idx + 1, TOTAL_PLAYABLE_SONGS);
-    lcd_show_string(14, 58, buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    lcd_show_string(14, 54, buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 
-    lcd_show_string(14, 80, "TITLE:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
-    lcd_show_string(14, 98, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
-    lcd_show_string(14, 118, c_song->name2, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    lcd_show_string(14, 74, "TITLE:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+    lcd_show_string(14, 92, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    lcd_show_string(14, 110, c_song->name2, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+
+    /* Note Progress Indicator */
+    if (state == PLAYER_STATE_PLAYING) {
+        snprintf(buf, sizeof(buf), "NOTE: %u / %u",
+                 audio_engine_get_note_index() + 1, c_song->length);
+        lcd_show_string(14, 130, buf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+    } else if (state == PLAYER_STATE_PAUSED) {
+        snprintf(buf, sizeof(buf), "PAUSED AT NOTE %u",
+                 audio_engine_get_note_index() + 1);
+        lcd_show_string(14, 130, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    } else {
+        lcd_show_string(14, 130, "PRESS PA0 TO PLAY", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    }
 
     /* Volume Level Bar */
     if (volume == 0) {
@@ -223,20 +237,20 @@ static void render_lcd_screen(player_state_t state, uint8_t cur_song_idx, uint8_
     } else {
         snprintf(buf, sizeof(buf), "VOLUME: %u%%", volume);
     }
-    lcd_show_string(14, 146, buf, (volume == 0) ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_BLACK);
-    lcd_draw_rect(14, 166, 226, 180, LCD_COLOR_WHITE);
+    lcd_show_string(14, 150, buf, (volume == 0) ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+    lcd_draw_rect(14, 168, 226, 180, LCD_COLOR_WHITE);
     uint16_t bar_width = (uint16_t)((volume * 210U) / 100U);
     if (bar_width > 0) {
-        lcd_fill_rect(15, 167, 15 + bar_width, 179, LCD_COLOR_GREEN);
+        lcd_fill_rect(15, 169, 15 + bar_width, 179, LCD_COLOR_GREEN);
     }
     if (bar_width < 210) {
-        lcd_fill_rect(15 + bar_width + 1, 167, 225, 179, LCD_COLOR_BLACK);
+        lcd_fill_rect(15 + bar_width + 1, 169, 225, 179, LCD_COLOR_BLACK);
     }
 
     /* Directional D-Pad Controls Footer */
-    lcd_draw_line(0, 190, LCD_WIDTH - 1, 190, LCD_COLOR_DARKGREY);
-    lcd_show_string(10, 198, "UP/DN:Track (Hold:P/P)", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
-    lcd_show_string(10, 218, "L/R:Vol | PA0:Play/Stop", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    lcd_draw_line(0, 188, LCD_WIDTH - 1, 188, LCD_COLOR_DARKGREY);
+    lcd_show_string(10, 196, "UP/DN:Track (Hold:P/P)", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    lcd_show_string(10, 216, "L/R:Vol | PA0:Play/Stop", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -253,6 +267,11 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
     uint8_t last_rendered_song = 0xFF;
     player_state_t last_rendered_state = (player_state_t)0xFF;
     uint8_t last_rendered_vol = 0xFF;
+    uint16_t last_rendered_note = 0xFFFF;
+
+    uint8_t last_audio_song = 0xFF;
+    player_state_t last_audio_state = (player_state_t)0xFF;
+    uint8_t last_audio_vol = 0xFF;
 
     while (1) {
         player_state_t current_state;
@@ -271,11 +290,37 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         /* 1. Update physical RGB LEDs */
         update_status_leds(current_state);
 
-        /* 2. Redraw LCD display if state, track, or volume changed */
+        /* 2. Synchronize Audio Synthesizer Engine */
+        if (current_state == PLAYER_STATE_PLAYING) {
+            if (last_audio_state != PLAYER_STATE_PLAYING || current_song != last_audio_song) {
+                audio_engine_start_song(current_song);
+                last_audio_song = current_song;
+            } else if (!audio_engine_is_playing()) {
+                audio_engine_resume();
+            }
+        } else if (current_state == PLAYER_STATE_PAUSED) {
+            if (audio_engine_is_playing()) {
+                audio_engine_pause();
+            }
+        } else if (current_state == PLAYER_STATE_STOPPED) {
+            if (audio_engine_is_playing()) {
+                audio_engine_stop();
+            }
+        }
+        last_audio_state = current_state;
+
+        if (volume != last_audio_vol) {
+            audio_engine_set_volume(volume);
+            last_audio_vol = volume;
+        }
+
+        /* 3. Redraw LCD display if state, track, volume, or note changed */
+        uint16_t current_note = audio_engine_get_note_index();
         bool needs_redraw = force_redraw ||
                             (current_state != last_rendered_state) ||
                             (current_song != last_rendered_song) ||
-                            (volume != last_rendered_vol);
+                            (volume != last_rendered_vol) ||
+                            (current_state == PLAYER_STATE_PLAYING && current_note != last_rendered_note);
 
         if (needs_redraw) {
             if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
@@ -283,6 +328,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                 last_rendered_state = current_state;
                 last_rendered_song = current_song;
                 last_rendered_vol = volume;
+                last_rendered_note = current_note;
                 k_mutex_unlock(&g_lcd_mutex);
             }
         }

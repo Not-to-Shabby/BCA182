@@ -18,7 +18,7 @@ All firmware in this repository is implemented using **PlatformIO** and the **ST
 
 | Laboratory Directory | Project Title | Description | Status |
 |---|---|---|---|
-| [**`LAB_1_FreeRTOS_Multisensor`**](./LAB_1_FreeRTOS_Multisensor) | Real-Time Multisensor Room Monitoring System | Concurrent FreeRTOS telemetry node integrating DHT22, LDR, PIR, rotary encoder, SSD1306 OLED, and buzzer alarm. | In Progress |
+| [**`LAB_1_FreeRTOS_Multisensor`**](./LAB_1_FreeRTOS_Multisensor) | Real-Time Multisensor Room Monitoring System | Concurrent FreeRTOS telemetry node integrating DHT22, LDR, PIR, rotary encoder, SSD1306 OLED, and buzzer alarm. | Done |
 
 ---
 

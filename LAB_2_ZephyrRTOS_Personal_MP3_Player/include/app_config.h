@@ -72,6 +72,13 @@ extern "C" {
 #define LED_GREEN_PIN                   3
 
 /* -------------------------------------------------------------------------- */
+/* Audio PWM Output Configuration                                             */
+/* -------------------------------------------------------------------------- */
+#define AUDIO_PWM_PORT                  "GPIOB"
+#define AUDIO_PWM_ONBOARD_PIN           0       /* PB0: TIM3_CH3 (Onboard Buzzer) */
+#define AUDIO_PWM_EXTERNAL_PIN          1       /* PB1: TIM3_CH4 (Expansion Header Speaker) */
+
+/* -------------------------------------------------------------------------- */
 /* Timing Constraints                                                         */
 /* -------------------------------------------------------------------------- */
 #define BUTTON_DEBOUNCE_TIME_MS         20      /* 20 ms debounce filter      */

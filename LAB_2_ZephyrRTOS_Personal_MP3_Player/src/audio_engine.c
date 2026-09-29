@@ -1,7 +1,8 @@
 /**
  * @file audio_engine.c
  * @brief Real-time audio engine and musical note synthesizer for the Personal MP3 Player.
- *        Implements hardware TIM3_CH3 PWM note synthesis on PB0 and Zephyr k_timer
+ *        Implements hardware TIM3 PWM note synthesis on PB0 (onboard buzzer) and PB1 (expansion pin)
+ *        with immediate shadow prescaler reload, glitch-free ARR modulation, and Zephyr k_timer
  *        ticker for drift-free note progression across 8 classical repertoire songs.
  *
  * Course: BCA182 Embedded Systems Programming
@@ -77,7 +78,7 @@ static const musical_piece_t s_catalog[8] = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Hardware Low-Level Timer TIM3_CH3 Audio Generator on PB0                   */
+/* Hardware Low-Level Timer TIM3 Audio Generator (PB0: CH3, PB1: CH4)         */
 /* -------------------------------------------------------------------------- */
 static void hw_pwm_init(void)
 {
@@ -85,35 +86,54 @@ static void hw_pwm_init(void)
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
     RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
 
-    /* 2. Configure PB0 as Alternate Function 2 (TIM3_CH3) */
+    /* 2. Configure PB0 (TIM3_CH3 - Onboard Buzzer) as Alternate Function 2 */
     GPIOB->MODER = (GPIOB->MODER & ~(3U << (0 * 2))) | (2U << (0 * 2));
     GPIOB->OTYPER &= ~(1U << 0);
     GPIOB->OSPEEDR |= (3U << (0 * 2));
     GPIOB->PUPDR &= ~(3U << (0 * 2));
     GPIOB->AFR[0] = (GPIOB->AFR[0] & ~(0xFU << (0 * 4))) | (2U << (0 * 4)); /* AF2 */
 
-    /* 3. Configure TIM3:
-     *    APB1 timer clock is 84 MHz.
+    /* Configure PB1 (TIM3_CH4 - Expansion Header Pin) as Alternate Function 2 */
+    GPIOB->MODER = (GPIOB->MODER & ~(3U << (1 * 2))) | (2U << (1 * 2));
+    GPIOB->OTYPER &= ~(1U << 1);
+    GPIOB->OSPEEDR |= (3U << (1 * 2));
+    GPIOB->PUPDR &= ~(3U << (1 * 2));
+    GPIOB->AFR[0] = (GPIOB->AFR[0] & ~(0xFU << (1 * 4))) | (2U << (1 * 4)); /* AF2 */
+
+    /* 3. Configure TIM3 Timebase:
+     *    APB1 timer clock is 84 MHz (168 MHz SYSCLK / 4 APB1 * 2 timer mult).
      *    Prescaler = 83 -> counter clock = 84 MHz / (83 + 1) = 1.0 MHz (1 us per count).
      */
     TIM3->PSC = 83;
     TIM3->ARR = 1000;
     TIM3->CCR3 = 0; /* Silent initially */
+    TIM3->CCR4 = 0; /* Silent initially */
 
-    /* PWM Mode 1 on Channel 3: Output active while CNT < CCR3 */
-    TIM3->CCMR2 = (TIM3->CCMR2 & ~(7U << 4)) | (6U << 4) | TIM_CCMR2_OC3PE;
-    TIM3->CCER |= TIM_CCER_CC3E;
-    TIM3->CR1 |= TIM_CR1_ARPE | TIM_CR1_CEN;
+    /* PWM Mode 1 on Channel 3 and Channel 4 */
+    TIM3->CCMR2 = (TIM3->CCMR2 & ~((7U << 4) | (7U << 12))) |
+                  (6U << 4) | TIM_CCMR2_OC3PE |
+                  (6U << 12) | TIM_CCMR2_OC4PE;
+
+    /* Enable output on Channel 3 and Channel 4 */
+    TIM3->CCER |= (TIM_CCER_CC3E | TIM_CCER_CC4E);
+
+    /* CRITICAL: Force prescaler and ARR to load into shadow registers immediately */
+    TIM3->EGR = TIM_EGR_UG;
+    TIM3->SR &= ~TIM_SR_UIF;
+
+    /* Enable counter WITHOUT auto-reload preload to allow instantaneous frequency modulation */
+    TIM3->CR1 = TIM_CR1_CEN;
 }
 
 static void hw_set_tone(float note_period_ms, uint8_t volume_percent)
 {
     if (note_period_ms <= 0.001f || volume_percent == 0) {
-        TIM3->CCR3 = 0; /* Silence buzzer */
+        TIM3->CCR3 = 0;
+        TIM3->CCR4 = 0;
         return;
     }
 
-    /* Convert note period from ms to microseconds (1 us per counter tick) */
+    /* Convert note period from ms to microseconds (1 us per counter tick at 1 MHz) */
     uint32_t period_us = (uint32_t)(note_period_ms * 1000.0f + 0.5f);
     if (period_us < 50) {
         period_us = 50; /* 20 kHz max limit */
@@ -125,19 +145,27 @@ static void hw_set_tone(float note_period_ms, uint8_t volume_percent)
     TIM3->ARR = period_us - 1;
 
     /* Volume attenuation:
-     * Max duty cycle is 50% (ARR / 2) at 100% volume for purest square wave.
-     * CCR3 = (ARR * volume_percent) / 200.
+     * 50% duty cycle (ARR / 2) produces the maximum fundamental audio acoustic volume.
+     * At 100% volume -> duty = ARR / 2.
+     * At volume_percent -> duty = (ARR * volume_percent) / 200.
      */
     uint32_t pulse = ((period_us - 1) * (uint32_t)volume_percent) / 200U;
     if (pulse == 0 && volume_percent > 0) {
         pulse = 1;
     }
     TIM3->CCR3 = pulse;
+    TIM3->CCR4 = pulse;
+
+    /* Reset counter if it exceeded the new period to prevent 65535 rollover glitch */
+    if (TIM3->CNT >= (period_us - 1)) {
+        TIM3->CNT = 0;
+    }
 }
 
 static void hw_stop_tone(void)
 {
     TIM3->CCR3 = 0;
+    TIM3->CCR4 = 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -153,12 +181,12 @@ static void audio_timer_handler(struct k_timer *timer_id);
 
 void audio_engine_init(void)
 {
-    printk("[Audio] Initializing TIM3_CH3 PWM buzzer on PB0...\n");
+    printk("[Audio] Initializing TIM3 PWM audio on PB0 (onboard) & PB1 (header)...\n");
     hw_pwm_init();
 
     /* Initialize Zephyr k_timer ticker for note scheduling */
     k_timer_init(&s_audio_timer, audio_timer_handler, NULL);
-    printk("[Audio] Audio engine and hardware timer ready.\n");
+    printk("[Audio] Audio engine calibrated with exact pitch and tempo timebase.\n");
 }
 
 static void audio_timer_handler(struct k_timer *timer_id)
@@ -179,17 +207,23 @@ static void audio_timer_handler(struct k_timer *timer_id)
     float note = piece->notes[s_note_idx];
     float beat = piece->beats[s_note_idx];
 
-    /* Calculate total note duration: beat * tempo * 4000.0 ms */
-    uint32_t duration_ms = (uint32_t)(beat * piece->tempo * 4000.0f + 0.5f);
-    if (duration_ms < 25) {
-        duration_ms = 25;
+    /* Calculate total note duration:
+     * beat * tempo * 14000.0 ms yields authentic classical performance tempo:
+     * - Fur Elise: ~315 ms per eighth note (Poco moto ~190 BPM eighths / 63 BPM dotted quarters)
+     * - Turkish March: ~262 ms per note (Alla Turca ~114 BPM)
+     * - Minuet in G: ~455 ms per note (Moderato ~132 BPM)
+     * - Symphony No. 5: ~122 ms per eighth note (Allegro con brio)
+     */
+    uint32_t duration_ms = (uint32_t)(beat * piece->tempo * 14000.0f + 0.5f);
+    if (duration_ms < 60) {
+        duration_ms = 60;
     }
 
     if (!s_in_gap_phase) {
-        /* Phase 1: Play Tone (85% of total beat duration) */
-        uint32_t play_ms = (duration_ms * 85U) / 100U;
-        if (play_ms < 15) {
-            play_ms = 15;
+        /* Phase 1: Play Tone (80% of beat duration) */
+        uint32_t play_ms = (duration_ms * 80U) / 100U;
+        if (play_ms < 40) {
+            play_ms = 40;
         }
 
         uint8_t vol;
@@ -201,10 +235,10 @@ static void audio_timer_handler(struct k_timer *timer_id)
         s_in_gap_phase = true;
         k_timer_start(&s_audio_timer, K_MSEC(play_ms), K_NO_WAIT);
     } else {
-        /* Phase 2: Articulation Gap (15% silence between notes for clear note attack) */
-        uint32_t gap_ms = (duration_ms * 15U) / 100U;
-        if (gap_ms < 5) {
-            gap_ms = 5;
+        /* Phase 2: Articulation Gap (20% silence for clear note attack) */
+        uint32_t gap_ms = duration_ms - ((duration_ms * 80U) / 100U);
+        if (gap_ms < 15) {
+            gap_ms = 15;
         }
 
         hw_stop_tone();

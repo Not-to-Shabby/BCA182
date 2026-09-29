@@ -84,7 +84,8 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **LCD Command/Data ($\text{A18}$)** | `PD13` | Alternate Function 12 (`AF12_FSMC`) | Address bit 18 ($\text{LOW}=\text{CMD}$, $\text{HIGH}=\text{DATA}$) |
 | **LCD Write Enable ($\overline{\text{NWE}}$)** | `PD5` | Alternate Function 12 (`AF12_FSMC`) | FSMC Write Strobe ($\overline{\text{WR}}$) |
 | **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
-| **Audio Buzzer / Tone Output** | `PB0` | Alternate Function 2 (`TIM3_CH3`) | Hardware PWM audio synthesis & note playback |
+| **Onboard Buzzer Audio** | `PB0` | Alternate Function 2 (`TIM3_CH3`) | Hardware PWM audio synthesis on onboard buzzer (`BUZ1`) |
+| **Expansion Speaker Audio** | `PB1` | Alternate Function 2 (`TIM3_CH4`) | Simultaneous PWM audio output on expansion header |
 | **Headphone / Codec** | `PB10 (SCL), PB11 (SDA)` | I2C2 / I2S | ES8388 stereo codec & 3.5mm audio jack |
 
 ---

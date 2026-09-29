@@ -12,6 +12,7 @@
 #include <zephyr/sys/printk.h>
 #include "app_config.h"
 #include "player_logic.h"
+#include "lcd_st7789.h"
 #include "threads.h"
 
 /* -------------------------------------------------------------------------- */
@@ -33,7 +34,7 @@ static void print_uart_instructions(void)
     printk("\n%s", APP_BANNER_LINE);
     printk("  BCA182: Laboratory Activity 2 - Personal MP3 Player\n");
     printk("  Target: RT-Thread Spark Board (STM32F407ZGT6)\n");
-    printk("  RTOS:   Zephyr RTOS v3.x (Cooperative Multithreading)\n");
+    printk("  RTOS:   Zephyr RTOS v4.x (Cooperative Multithreading)\n");
     printk("%s", APP_BANNER_LINE);
     printk("OPERATING INSTRUCTIONS:\n");
     printk("  1. Binary Song Selection (8 Songs Available):\n");
@@ -63,10 +64,11 @@ int main(void)
     /* 1. Transmit user operating guide via UART1 */
     print_uart_instructions();
 
-    /* 2. Clear LCD display under mutex protection */
+    /* 2. Initialize ST7789 LCD display, FSMC 8080 bus, and Backlight (PF9) */
     k_mutex_lock(&g_lcd_mutex, K_FOREVER);
     printk("[System] Initializing ST7789 240x240 LCD display...\n");
-    printk("[System] LCD cleared successfully.\n");
+    lcd_st7789_init();
+    printk("[System] ST7789 hardware display ready.\n");
     k_mutex_unlock(&g_lcd_mutex);
 
     /* 3. Start all 3 cooperative Zephyr threads */

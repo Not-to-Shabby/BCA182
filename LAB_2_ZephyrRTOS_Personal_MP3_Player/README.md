@@ -23,10 +23,15 @@ The application fulfills all engineering requirements specified in **Laboratory 
   - **Blue LED**: ON when audio playback is active (`PLAYER_STATE_PLAYING`).
   - **Red LED**: ON when audio is paused or stopped (`PLAYER_STATE_PAUSED` / `PLAYER_STATE_STOPPED`).
   - **Green LED**: ON during the 5-second song confirmation window (`PLAYER_STATE_CONFIRMING`).
-- **Mutex-Protected LCD Telemetry**: Exclusive thread access to the 240×240 ST7789 LCD display guarded by `k_mutex g_lcd_mutex`.
-- **Continuous Potentiometer Volume Control**: 10 k$\Omega$ linear potentiometer sampled via ADC and mapped to $0\%\text{--}100\%$ volume.
+- **Hardware-Accelerated ST7789 LCD Driver (Phase 3 Completed)**:
+  - 1.3-inch 240×240 color TFT driven via **STM32F407 FSMC Bank 3 (8080 8-bit parallel bus)**.
+  - Hardware reset pulse generation on **`PD3`**.
+  - Hardware backlight power activation on **`PF9`**.
+  - High-performance bitmap font engine (`16×8` DejaVu Sans Mono ASCII characters).
+  - Mutex-guarded display telemetry (`k_mutex g_lcd_mutex`).
+- **Continuous Potentiometer Volume Control**: 10 k$\Omega$ linear potentiometer sampled via ADC and mapped to $0\%\text{--}100\%$ volume with live graphic progress bar.
 - **3 Concurrent Cooperative Zephyr Threads**:
-  1. `update_lcd_leds_thread`: Manages display updates and RGB state LEDs.
+  1. `update_lcd_leds_thread`: Manages graphical display rendering and physical RGB state LEDs.
   2. `polling_buttons`: Handles debounced button reading, binary index decoding, and 5-second confirmation timing.
   3. `adjust_volume`: Reads ADC potentiometer and updates volume level.
 - **Low-Power Idle Sleep**: The main thread puts the MCU into low-power idle sleep (`k_sleep(K_FOREVER)` / `k_cpu_idle()`), minimizing energy consumption.
@@ -46,17 +51,44 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **Button 3** (KEY2) | `PC4` | GPIO Input (Pull-Up) | Song selection Bit 1 (weight $2^1 = 2$) |
 | **Button 4** (WK_UP) | `PC5` | GPIO Input (Pull-Up) | Song selection Bit 2 (MSB, weight $2^2 = 4$) |
 | **USER_BUTTON** | `PA0` | GPIO Input (Pull-Down/Up) | Play / Pause / Replay toggle |
-| **Red LED** | `PF12` | GPIO Output (Active Low/High) | Status indicator: Paused / Stopped |
-| **Blue LED** | `PF11` | GPIO Output (Active Low/High) | Status indicator: Playing |
-| **Green LED** | `GPIOE_3` | GPIO Output | Status indicator: 5-Second Confirmation Window |
-| **LCD ST7789 v3** | `PD14..15, PD0..1, PE7..10` | FSMC 8080 8-bit Parallel | 240×240 Color TFT screen data bus |
-| **LCD CS / RS / WR / RD** | `PG10, PD13, PD5, PD4` | FSMC Control Lines | Chip select, register select, write/read enables |
+| **Red LED** | `PF12` | GPIO Output (Active Low) | Status indicator: Paused / Stopped |
+| **Blue LED** | `PF11` | GPIO Output (Active Low) | Status indicator: Playing |
+| **Green LED** | `PE3` | GPIO Output (Active High) | Status indicator: 5-Second Confirmation Window |
+| **LCD Backlight** | `PF9` | GPIO Output (High Speed) | Display backlight power control |
+| **LCD Reset** | `PD3` | GPIO Output (Push-Pull) | ST7789 hardware reset line |
+| **LCD Data Bus (D0–D7)** | `PD14..15, PD0..1, PE7..10` | Alternate Function 12 (`AF12_FSMC`) | FSMC 8080 8-bit parallel bidirectional data |
+| **LCD Chip Select ($\overline{\text{NE3}}$)** | `PG10` | Alternate Function 12 (`AF12_FSMC`) | FSMC Bank 3 Chip Select |
+| **LCD Command/Data ($\text{A18}$)** | `PD13` | Alternate Function 12 (`AF12_FSMC`) | Address bit 18 ($\text{LOW}=\text{CMD}$, $\text{HIGH}=\text{DATA}$) |
+| **LCD Write Enable ($\overline{\text{NWE}}$)** | `PD5` | Alternate Function 12 (`AF12_FSMC`) | FSMC Write Strobe ($\overline{\text{WR}}$) |
+| **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
 | **Potentiometer** | `PA1` | ADC1 Channel 1 (Analog) | 10 k$\Omega$ volume control voltage divider |
 | **Headphone / Codec** | `PB10 (SCL), PB11 (SDA)` | I2C2 / I2S | ES8388 stereo codec & 3.5mm audio jack |
 
 ---
 
-## 3. Song Catalog & Binary Index Mapping
+## 3. ST7789 FSMC Parallel Driver (Phase 3)
+
+The ST7789 v3 controller communicates over an 8-bit 8080 parallel interface simulated by the STM32F407 Flexible Static Memory Controller (FSMC):
+- **Base Memory Mapping**:
+  - `0x6803FFFE`: Address Bit 18 is 0 $\to$ ST7789 Command Register (`LCD_CMD_ADDR`).
+  - `0x68040000`: Address Bit 18 is 1 $\to$ ST7789 Data RAM Register (`LCD_DATA16_ADDR`).
+- **Timing Profile (Mode A)**:
+  - Address Setup Time: 15 HCLK (Read) / 3 HCLK (Write).
+  - Data Setup Time: 60 HCLK (Read) / 3 HCLK (Write).
+- **Startup Sequence**:
+  1. Active-low reset pulse on `PD3` ($20\,\text{ms}$ low, $120\,\text{ms}$ high).
+  2. Memory Data Access Control (`0x36`, orientation set to normal).
+  3. Color format set to 16-bit RGB565 (`0x3A`, `0x55`).
+  4. Porch setting (`0xB2`), Gate control (`0xB7`), VCOM (`0xBB`), LCM (`0xC0`).
+  5. Gamma correction tables (`0xE0`, `0xE1`).
+  6. Display Inversion ON (`0x21`).
+  7. Sleep Out (`0x11`) followed by $120\,\text{ms}$ delay.
+  8. Display ON (`0x29`).
+  9. Backlight enabled on `PF9`.
+
+---
+
+## 4. Song Catalog & Binary Index Mapping
 
 The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in binary):
 
@@ -73,7 +105,7 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
 
 ---
 
-## 4. Software Architecture & Concurrency Model
+## 5. Software Architecture & Concurrency Model
 
 ```text
        +--------------------------------------------------------------+
@@ -90,7 +122,7 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
                  | [k_mutex_lock]            | [State updates]    | [ADC Read]
                  v                           v                    v
       +---------------------+     +--------------------+   +-------------------+
-      |  ST7789 LCD & LEDs  |     |  g_player context  |   | 10k Potentiometer |
+      | ST7789 FSMC Display |     |  g_player context  |   | 10k Potentiometer |
       |  (Exclusive Access) |     |  (Shared State)    |   | (Volume 0-100%)   |
       +---------------------+     +--------------------+   +-------------------+
 ```
@@ -98,7 +130,7 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
 ### Thread Responsibilities
 1. **`update_lcd_leds_thread` (Priority 3, Stack 2048 B)**:
    - Evaluates current state: updates Red, Green, and Blue GPIO pins.
-   - Acquires `g_lcd_mutex`, renders playback telemetry or confirmation prompt, and releases mutex.
+   - Acquires `g_lcd_mutex`, renders playback telemetry, volume progress bar, or confirmation dialog, and releases mutex.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 2. **`polling_buttons` (Priority 2, Stack 1024 B)**:
    - Polls GPIO buttons with 20 ms debounce filtering.
@@ -113,7 +145,7 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
 
 ---
 
-## 5. Build, Verification & Toolchain
+## 6. Build, Verification & Toolchain
 
 The firmware builds cleanly under PlatformIO with Zephyr RTOS:
 
@@ -122,14 +154,14 @@ The firmware builds cleanly under PlatformIO with Zephyr RTOS:
 pio run -d LAB_2_ZephyrRTOS_Personal_MP3_Player
 
 # Terminal Output:
-# RAM:   [=         ]   8.1% (used 10601 bytes from 131072 bytes)
-# Flash: [          ]   2.6% (used 27592 bytes from 1048576 bytes)
-# [SUCCESS] Took 24.76 seconds
+# RAM:   [=         ]   9.7% (used 12689 bytes from 131072 bytes)
+# Flash: [=         ]   5.6% (used 59148 bytes from 1048576 bytes)
+# [SUCCESS] Took 5.98 seconds
 ```
 
 ---
 
-## 6. Repository Layout & File Navigation
+## 7. Repository Layout & File Navigation
 
 ```text
 LAB_2_ZephyrRTOS_Personal_MP3_Player/
@@ -140,9 +172,12 @@ LAB_2_ZephyrRTOS_Personal_MP3_Player/
 │   └── prj.conf                    # Zephyr kernel subsystem enablement (GPIO, UART, PM, C++)
 ├── include/
 │   ├── app_config.h                # Hardware pinouts, timings, and player constants
+│   ├── lcd_font.h                  # 16x8 DejaVu Sans Mono ASCII font table
+│   ├── lcd_st7789.h                # ST7789 FSMC graphics and drawing API
 │   ├── player_logic.h              # Pure decision logic and state definitions
 │   └── threads.h                   # Thread prototypes, stacks, and mutex declarations
 ├── src/
+│   ├── lcd_st7789.c                # Hardware FSMC 8080 driver, reset & backlight
 │   ├── main.c                      # Application startup, UART guide, thread creation
 │   ├── player_logic.c              # Binary decoding, 5s timeout, and volume normalization
 │   └── threads.c                   # 3 cooperative Zephyr RTOS threads

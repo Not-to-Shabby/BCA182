@@ -19,7 +19,7 @@ All firmware in this repository is built using **PlatformIO** and production-gra
 | Laboratory Directory | Project Title | Target Hardware & RTOS | Description | Status |
 |---|---|---|---|---|
 | [**`LAB_1_FreeRTOS_Multisensor`**](./LAB_1_FreeRTOS_Multisensor) | Real-Time Multisensor Room Monitoring System | STM32 Blue Pill (STM32F103C8T6)<br>**FreeRTOS Kernel v10.3.1** | Concurrent 6-task FreeRTOS telemetry node integrating DHT22, LDR, PIR, rotary encoder, SSD1306 OLED, and buzzer alarm. | Done |
-| [**`LAB_2_ZephyrRTOS_Personal_MP3_Player`**](./LAB_2_ZephyrRTOS_Personal_MP3_Player) | Personal MP3 Player | RT-Thread Spark Board (STM32F407ZGT6)<br>**Zephyr RTOS v4.x** | Concurrent 3-thread Zephyr audio player with 8-song binary button selection, 5-second confirmation timeout, ST7789 LCD telemetry, RGB LED state indication, ADC potentiometer volume control, and UART instructions. | Phase 3: ST7789 FSMC LCD Driver Verified |
+| [**`LAB_2_ZephyrRTOS_Personal_MP3_Player`**](./LAB_2_ZephyrRTOS_Personal_MP3_Player) | Personal MP3 Player | RT-Thread Spark Board (STM32F407ZGT6)<br>**Zephyr RTOS v4.x** | Concurrent 3-thread Zephyr audio player with 8-song binary button selection, 5-second confirmation timeout, ST7789 LCD telemetry, RGB LED state indication, ADC potentiometer volume control, and UART instructions. | Phase 4: Physical Buttons, Binary Selection & ADC Volume Verified |
 
 ---
 

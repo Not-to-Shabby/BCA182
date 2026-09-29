@@ -47,8 +47,13 @@ extern struct k_mutex g_lcd_mutex;
 extern struct k_mutex g_player_mutex;
 
 /* -------------------------------------------------------------------------- */
-/* Thread Function Prototypes                                                 */
+/* Peripheral & Thread Function Prototypes                                    */
 /* -------------------------------------------------------------------------- */
+/**
+ * @brief Initialize button GPIOs, status LEDs, and ADC1 for potentiometer.
+ */
+void init_player_peripherals(void);
+
 /**
  * @brief Thread 1: Updates LCD display and RGB status LEDs.
  */

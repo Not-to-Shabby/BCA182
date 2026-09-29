@@ -64,14 +64,18 @@ int main(void)
     /* 1. Transmit user operating guide via UART1 */
     print_uart_instructions();
 
-    /* 2. Initialize ST7789 LCD display, FSMC 8080 bus, and Backlight (PF9) */
+    /* 2. Initialize GPIO buttons, LEDs, and ADC1 potentiometer */
+    printk("[System] Initializing buttons (PC0,PC1,PC4,PC5,PA0) and ADC1 (PA1)...\n");
+    init_player_peripherals();
+
+    /* 3. Initialize ST7789 LCD display, FSMC 8080 bus, and Backlight (PF9) */
     k_mutex_lock(&g_lcd_mutex, K_FOREVER);
     printk("[System] Initializing ST7789 240x240 LCD display...\n");
     lcd_st7789_init();
     printk("[System] ST7789 hardware display ready.\n");
     k_mutex_unlock(&g_lcd_mutex);
 
-    /* 3. Start all 3 cooperative Zephyr threads */
+    /* 4. Start all 3 cooperative Zephyr threads */
     printk("[System] Spawning 3 application threads...\n");
 
     /* Thread 1: Update LCD and RGB LEDs */

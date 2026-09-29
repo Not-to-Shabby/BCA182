@@ -1,7 +1,8 @@
 /**
  * @file threads.c
  * @brief Implementation of the 3 cooperative Zephyr RTOS threads for the
- *        Personal MP3 Player with ST7789 LCD graphics and GPIO LED control.
+ *        Personal MP3 Player with ST7789 LCD graphics, physical GPIO button
+ *        scanning, binary selection gesture, 5s confirmation, and ADC volume.
  *
  * Course: BCA182 Embedded Systems Programming
  * Laboratory Activity 2: Personal MP3 Player
@@ -29,14 +30,16 @@ K_MUTEX_DEFINE(g_lcd_mutex);
 K_MUTEX_DEFINE(g_player_mutex);
 
 /* -------------------------------------------------------------------------- */
-/* Physical GPIO LED Control for RT-Thread Spark Board                        */
+/* Physical GPIO Hardware Configuration (LEDs, Buttons, ADC)                  */
 /* -------------------------------------------------------------------------- */
-static void init_status_leds(void)
+static void init_hardware_peripherals(void)
 {
-    /* Enable GPIOF clock (PF11 Blue, PF12 Red) */
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOFEN | RCC_AHB1ENR_GPIOEEN;
+    /* 1. Enable Clocks for GPIOA, GPIOC, GPIOE, GPIOF, and ADC1 */
+    RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOCEN |
+                     RCC_AHB1ENR_GPIOEEN | RCC_AHB1ENR_GPIOFEN);
+    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
 
-    /* Configure PF11 (Blue) and PF12 (Red) as Push-Pull Outputs */
+    /* 2. Configure LEDs: PF11 (Blue) and PF12 (Red) as Push-Pull Outputs */
     GPIOF->MODER = (GPIOF->MODER & ~((3U << 22) | (3U << 24))) |
                    ((1U << 22) | (1U << 24));
     GPIOF->OTYPER &= ~((1U << 11) | (1U << 12));
@@ -49,29 +52,62 @@ static void init_status_leds(void)
     GPIOE->OSPEEDR |= (3U << 6);
     GPIOE->PUPDR &= ~(3U << 6);
 
-    /* Turn all off initially (Active Low on RT-Spark onboard LEDs) */
+    /* Turn all LEDs OFF initially (Onboard PF11/PF12 are active LOW on RT-Spark) */
     GPIOF->BSRR = (1U << 11) | (1U << 12);
     GPIOE->BSRR = (1U << (3 + 16));
+
+    /* 3. Configure Buttons on GPIOC:
+     *    PC0 (Button 1 / KEY0), PC1 (Button 2 / KEY1),
+     *    PC4 (Button 3 / KEY2), PC5 (Button 4 / WK_UP)
+     *    Mode: Input (00b), Pull-Up (01b) -> Active LOW */
+    static const uint8_t c_btn_pins[] = {0, 1, 4, 5};
+    for (uint32_t i = 0; i < sizeof(c_btn_pins); i++) {
+        uint32_t pin = c_btn_pins[i];
+        GPIOC->MODER &= ~(3U << (pin * 2));
+        GPIOC->PUPDR = (GPIOC->PUPDR & ~(3U << (pin * 2))) | (1U << (pin * 2));
+    }
+
+    /* 4. Configure USER_BUTTON on GPIOA:
+     *    PA0 (USER_BUTTON / Wakeup)
+     *    Mode: Input (00b), Pull-Down (10b) -> Active HIGH on onboard key */
+    GPIOA->MODER &= ~(3U << 0);
+    GPIOA->PUPDR = (GPIOA->PUPDR & ~(3U << 0)) | (2U << 0);
+
+    /* 5. Configure Volume Potentiometer on GPIOA:
+     *    PA1 (ADC1 Channel 1)
+     *    Mode: Analog (11b), No Pull (00b) */
+    GPIOA->MODER |= (3U << 2);
+    GPIOA->PUPDR &= ~(3U << 2);
+
+    /* 6. Configure ADC1 */
+    ADC1->CR1 = 0;                           /* 12-bit resolution */
+    ADC1->CR2 = ADC_CR2_ADON;                /* Enable ADC1 */
+    ADC1->SMPR2 |= (7U << 3);                /* 480 cycles sampling for CH1 */
+    ADC1->SQR1 &= ~ADC_SQR1_L;               /* 1 conversion */
+    ADC1->SQR3 = 1U;                         /* Channel 1 */
 }
 
+/* -------------------------------------------------------------------------- */
+/* Physical RGB LED Control                                                   */
+/* -------------------------------------------------------------------------- */
 static void update_status_leds(player_state_t state)
 {
-    /* Onboard LEDs on RT-Spark are active LOW for PF11 and PF12 */
+    /* Onboard LEDs on RT-Spark are active LOW for PF11 (Blue) and PF12 (Red) */
     if (state == PLAYER_STATE_PLAYING) {
         /* Blue LED ON, Red OFF, Green OFF */
-        GPIOF->BSRR = (1U << (11 + 16)); /* Blue ON (Low) */
-        GPIOF->BSRR = (1U << 12);        /* Red OFF (High) */
-        GPIOE->BSRR = (1U << (3 + 16));  /* Green OFF (Low) */
+        GPIOF->BSRR = (1U << (11 + 16)); /* Blue ON */
+        GPIOF->BSRR = (1U << 12);        /* Red OFF */
+        GPIOE->BSRR = (1U << (3 + 16));  /* Green OFF */
     } else if (state == PLAYER_STATE_PAUSED || state == PLAYER_STATE_STOPPED) {
         /* Red LED ON, Blue OFF, Green OFF */
-        GPIOF->BSRR = (1U << 11);        /* Blue OFF (High) */
-        GPIOF->BSRR = (1U << (12 + 16)); /* Red ON (Low) */
-        GPIOE->BSRR = (1U << (3 + 16));  /* Green OFF (Low) */
+        GPIOF->BSRR = (1U << 11);        /* Blue OFF */
+        GPIOF->BSRR = (1U << (12 + 16)); /* Red ON */
+        GPIOE->BSRR = (1U << (3 + 16));  /* Green OFF */
     } else if (state == PLAYER_STATE_CONFIRMING) {
         /* Green LED ON, Red OFF, Blue OFF */
-        GPIOF->BSRR = (1U << 11);        /* Blue OFF (High) */
-        GPIOF->BSRR = (1U << 12);        /* Red OFF (High) */
-        GPIOE->BSRR = (1U << 3);         /* Green ON (High) */
+        GPIOF->BSRR = (1U << 11);        /* Blue OFF */
+        GPIOF->BSRR = (1U << 12);        /* Red OFF */
+        GPIOE->BSRR = (1U << 3);         /* Green ON */
     }
 }
 
@@ -161,7 +197,6 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
     ARG_UNUSED(arg3);
 
     printk("[LCD_LED_Thread] Started\n");
-    init_status_leds();
 
     uint8_t last_rendered_song = 0xFF;
     player_state_t last_rendered_state = (player_state_t)0xFF;
@@ -188,7 +223,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         /* 1. Update physical RGB LEDs */
         update_status_leds(current_state);
 
-        /* 2. Redraw LCD display if state, track, or volume changed, or if confirming */
+        /* 2. Redraw LCD display if state, track, or volume changed, or if in confirmation */
         bool needs_redraw = force_redraw ||
                             (current_state != last_rendered_state) ||
                             (current_song != last_rendered_song) ||
@@ -211,7 +246,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Thread 2: Polling Buttons                                                  */
+/* Thread 2: Polling Buttons with Debouncing & Binary Song Selection          */
 /* -------------------------------------------------------------------------- */
 void polling_buttons(void *arg1, void *arg2, void *arg3)
 {
@@ -221,26 +256,110 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
 
     printk("[Button_Thread] Started\n");
 
+    /* Software debounce states */
+    bool b1_last = false;
+    bool user_last = false;
+    uint8_t b1_stable_count = 0;
+    uint8_t user_stable_count = 0;
+
     while (1) {
-        /* Check 5-second confirmation timeout if in CONFIRMING state */
+        /* Read physical pin levels:
+         * PC0 (B1), PC1 (B2), PC4 (B3), PC5 (B4) are active LOW (pull-up).
+         * PA0 (USER_BUTTON) is active HIGH (pull-down).
+         */
+        bool b1_raw = ((GPIOC->IDR & (1U << 0)) == 0);
+        bool b2_raw = ((GPIOC->IDR & (1U << 1)) == 0);
+        bool b3_raw = ((GPIOC->IDR & (1U << 4)) == 0);
+        bool b4_raw = ((GPIOC->IDR & (1U << 5)) == 0);
+        bool user_raw = ((GPIOA->IDR & (1U << 0)) != 0);
+
+        /* Debounce Button 1 */
+        bool b1_pressed_event = false;
+        if (b1_raw) {
+            if (b1_stable_count < 3) {
+                b1_stable_count++;
+                if (b1_stable_count == 3 && !b1_last) {
+                    b1_pressed_event = true;
+                    b1_last = true;
+                }
+            }
+        } else {
+            b1_stable_count = 0;
+            b1_last = false;
+        }
+
+        /* Debounce USER_BUTTON */
+        bool user_pressed_event = false;
+        if (user_raw) {
+            if (user_stable_count < 3) {
+                user_stable_count++;
+                if (user_stable_count == 3 && !user_last) {
+                    user_pressed_event = true;
+                    user_last = true;
+                }
+            }
+        } else {
+            user_stable_count = 0;
+            user_last = false;
+        }
+
+        /* 1. Handle Button 1 Event (Selection Latch & Confirmation) */
+        if (b1_pressed_event) {
+            k_mutex_lock(&g_player_mutex, K_FOREVER);
+            if (g_player.state == PLAYER_STATE_CONFIRMING) {
+                /* Second press of Button 1 confirms choice */
+                g_player.current_song_index = g_player.prospective_song_index;
+                g_player.state = PLAYER_STATE_PLAYING;
+                g_player.state_changed = true;
+                const song_info_t *s = get_song_info(g_player.current_song_index);
+                printk("[Button] CONFIRMED: Playing Track [%u] '%s %s'\n",
+                       g_player.current_song_index + 1, s->name1, s->name2);
+            } else {
+                /* First press of Button 1 while holding B2-B4: Latch song */
+                uint8_t selected_song = decode_binary_song_index(b2_raw, b3_raw, b4_raw);
+                g_player.prospective_song_index = selected_song;
+                g_player.confirmation_start_ms = k_uptime_get_32();
+                g_player.previous_state = (g_player.state == PLAYER_STATE_STOPPED) ?
+                                          PLAYER_STATE_STOPPED : g_player.state;
+                g_player.state = PLAYER_STATE_CONFIRMING;
+                g_player.state_changed = true;
+                const song_info_t *s = get_song_info(selected_song);
+                printk("[Button] LATCHED: Track [%u] '%s %s' (B2=%d,B3=%d,B4=%d). Press B1 within 5s to confirm!\n",
+                       selected_song + 1, s->name1, s->name2, b2_raw, b3_raw, b4_raw);
+            }
+            k_mutex_unlock(&g_player_mutex);
+        }
+
+        /* 2. Handle USER_BUTTON Event (Play / Pause / Replay) */
+        if (user_pressed_event) {
+            k_mutex_lock(&g_player_mutex, K_FOREVER);
+            if (g_player.state != PLAYER_STATE_CONFIRMING) {
+                g_player.state = toggle_play_pause(g_player.state);
+                g_player.state_changed = true;
+                printk("[Button] USER_BUTTON: Player is now %s\n", get_player_state_str(g_player.state));
+            }
+            k_mutex_unlock(&g_player_mutex);
+        }
+
+        /* 3. Check 5-Second Confirmation Timeout */
         k_mutex_lock(&g_player_mutex, K_FOREVER);
         if (g_player.state == PLAYER_STATE_CONFIRMING) {
             uint32_t now = k_uptime_get_32();
             if (check_confirmation_timeout(g_player.confirmation_start_ms, now, CONFIRMATION_TIMEOUT_MS)) {
-                printk("[Button_Thread] Confirmation timed out (5s elapsed). Reverting.\n");
+                printk("[Button] Confirmation timeout expired (5s). Reverting to previous state.\n");
                 g_player.state = g_player.previous_state;
                 g_player.state_changed = true;
             }
         }
         k_mutex_unlock(&g_player_mutex);
 
-        /* Cooperative sleep */
+        /* Cooperative sleep: 20 ms debounce period */
         k_sleep(K_MSEC(BUTTON_POLL_PERIOD_MS));
     }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Thread 3: Adjust Volume                                                    */
+/* Thread 3: Adjust Volume via Potentiometer ADC Sampling                     */
 /* -------------------------------------------------------------------------- */
 void adjust_volume(void *arg1, void *arg2, void *arg3)
 {
@@ -250,8 +369,48 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
 
     printk("[Volume_Thread] Started\n");
 
+    uint32_t adc_filter_sum = 0;
+    uint8_t filter_samples = 0;
+
     while (1) {
-        /* Periodic volume sampling from ADC potentiometer */
+        /* Start ADC conversion on Channel 1 (PA1) */
+        ADC1->CR2 |= ADC_CR2_SWSTART;
+        uint32_t timeout_guard = 10000;
+        while (!(ADC1->SR & ADC_SR_EOC) && --timeout_guard) {
+            /* Wait for conversion completion */
+        }
+
+        if (timeout_guard > 0) {
+            uint16_t raw_adc = (uint16_t)ADC1->DR;
+            adc_filter_sum += raw_adc;
+            filter_samples++;
+
+            /* Moving average filter over 4 samples */
+            if (filter_samples >= 4) {
+                uint16_t avg_adc = (uint16_t)(adc_filter_sum / 4U);
+                adc_filter_sum = 0;
+                filter_samples = 0;
+
+                uint8_t vol = normalize_adc_volume(avg_adc, 0, 4095);
+
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                /* Update only on significant volume deviation (>= 2%) to reduce redraw churn */
+                int diff = (int)vol - (int)g_player.volume_percent;
+                if (diff < -1 || diff > 1) {
+                    g_player.volume_percent = vol;
+                    g_player.state_changed = true;
+                }
+                k_mutex_unlock(&g_player_mutex);
+            }
+        }
+
+        /* Cooperative sleep */
         k_sleep(K_MSEC(VOLUME_THREAD_PERIOD_MS));
     }
+}
+
+/* Public initialization helper */
+void init_player_peripherals(void)
+{
+    init_hardware_peripherals();
 }

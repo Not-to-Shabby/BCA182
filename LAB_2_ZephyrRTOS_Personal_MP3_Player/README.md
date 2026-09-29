@@ -16,20 +16,29 @@ This project implements a concurrent, real-time embedded **Personal MP3 Player**
 
 The application fulfills all engineering requirements specified in **Laboratory Activity 2**:
 - **8-Song Classical Repertoire**: Direct access to 8 musical compositions defined in `reference/song_def.h`.
-- **Binary Button Song Selection**: Buttons 2, 3, and 4 form a 3-bit binary song selector ($2^3 = 8$ songs, indices `000` to `111`).
-- **5-Second Confirmation Window**: A two-step selection gesture latches the prospective song upon pressing Button 1, requiring a second press of Button 1 within 5 seconds to confirm. If 5 seconds elapse without confirmation, the system aborts the change and resumes previous playback.
-- **Audio Transport Control**: On-board `USER_BUTTON` (`PA0` / `PC5`) toggles between Play, Pause, and Replay.
-- **RGB LED State Indicators**:
-  - **Blue LED**: ON when audio playback is active (`PLAYER_STATE_PLAYING`).
-  - **Red LED**: ON when audio is paused or stopped (`PLAYER_STATE_PAUSED` / `PLAYER_STATE_STOPPED`).
-  - **Green LED**: ON during the 5-second song confirmation window (`PLAYER_STATE_CONFIRMING`).
+- **Physical GPIO Button Scanning & Debouncing (Phase 4 Completed)**:
+  - Buttons 2, 3, and 4 (`PC1`, `PC4`, `PC5`) form a 3-bit binary song selector ($2^3 = 8$ songs, indices `000` to `111`).
+  - Active-low inputs configured with internal pull-ups and filtered through a 3-sample 20 ms state-machine debouncer.
+- **Binary Selection Gesture & 5-Second Confirmation Window (Phase 4 Completed)**:
+  - While holding Buttons 2–4 in the target binary pattern, pressing Button 1 (`PC0`) latches the prospective track.
+  - Transitions to `PLAYER_STATE_CONFIRMING` (Green LED ON, graphical LCD confirmation dialog).
+  - Pressing Button 1 again within 5 seconds confirms the choice, switching track and resuming playback (Blue LED ON).
+  - If 5 seconds elapse without a second press, the system automatically aborts the selection and reverts to the previous track and playback state.
+- **Audio Transport Control**: On-board `USER_BUTTON` (`PA0`) toggles between Play (`PLAYER_STATE_PLAYING`) and Pause (`PLAYER_STATE_PAUSED`).
+- **Physical RGB LED State Indicators**:
+  - **Blue LED (`PF11`)**: ON when audio playback is active.
+  - **Red LED (`PF12`)**: ON when audio is paused or stopped.
+  - **Green LED (`PE3`)**: ON during the 5-second song confirmation window.
 - **Hardware-Accelerated ST7789 LCD Driver (Phase 3 Completed)**:
   - 1.3-inch 240×240 color TFT driven via **STM32F407 FSMC Bank 3 (8080 8-bit parallel bus)**.
   - Hardware reset pulse generation on **`PD3`**.
   - Hardware backlight power activation on **`PF9`**.
   - High-performance bitmap font engine (`16×8` DejaVu Sans Mono ASCII characters).
   - Mutex-guarded display telemetry (`k_mutex g_lcd_mutex`).
-- **Continuous Potentiometer Volume Control**: 10 k$\Omega$ linear potentiometer sampled via ADC and mapped to $0\%\text{--}100\%$ volume with live graphic progress bar.
+- **Live Potentiometer ADC Volume Sampling (Phase 4 Completed)**:
+  - 10 k$\Omega$ linear potentiometer sampled via ADC1 Channel 1 (`PA1`).
+  - Moving-average 4-sample filter with deadband hysteresis to eliminate display jitter.
+  - Renders a live graphical progress bar and numeric percentage ($0\%\text{--}100\%$).
 - **3 Concurrent Cooperative Zephyr Threads**:
   1. `update_lcd_leds_thread`: Manages graphical display rendering and physical RGB state LEDs.
   2. `polling_buttons`: Handles debounced button reading, binary index decoding, and 5-second confirmation timing.
@@ -50,7 +59,7 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **Button 2** (KEY1) | `PC1` | GPIO Input (Pull-Up) | Song selection Bit 0 (LSB, weight $2^0 = 1$) |
 | **Button 3** (KEY2) | `PC4` | GPIO Input (Pull-Up) | Song selection Bit 1 (weight $2^1 = 2$) |
 | **Button 4** (WK_UP) | `PC5` | GPIO Input (Pull-Up) | Song selection Bit 2 (MSB, weight $2^2 = 4$) |
-| **USER_BUTTON** | `PA0` | GPIO Input (Pull-Down/Up) | Play / Pause / Replay toggle |
+| **USER_BUTTON** | `PA0` | GPIO Input (Pull-Down) | Play / Pause / Replay toggle |
 | **Red LED** | `PF12` | GPIO Output (Active Low) | Status indicator: Paused / Stopped |
 | **Blue LED** | `PF11` | GPIO Output (Active Low) | Status indicator: Playing |
 | **Green LED** | `PE3` | GPIO Output (Active High) | Status indicator: 5-Second Confirmation Window |
@@ -61,34 +70,12 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **LCD Command/Data ($\text{A18}$)** | `PD13` | Alternate Function 12 (`AF12_FSMC`) | Address bit 18 ($\text{LOW}=\text{CMD}$, $\text{HIGH}=\text{DATA}$) |
 | **LCD Write Enable ($\overline{\text{NWE}}$)** | `PD5` | Alternate Function 12 (`AF12_FSMC`) | FSMC Write Strobe ($\overline{\text{WR}}$) |
 | **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
-| **Potentiometer** | `PA1` | ADC1 Channel 1 (Analog) | 10 k$\Omega$ volume control voltage divider |
+| **Volume Potentiometer** | `PA1` | ADC1 Channel 1 (Analog) | 10 k$\Omega$ volume control voltage divider |
 | **Headphone / Codec** | `PB10 (SCL), PB11 (SDA)` | I2C2 / I2S | ES8388 stereo codec & 3.5mm audio jack |
 
 ---
 
-## 3. ST7789 FSMC Parallel Driver (Phase 3)
-
-The ST7789 v3 controller communicates over an 8-bit 8080 parallel interface simulated by the STM32F407 Flexible Static Memory Controller (FSMC):
-- **Base Memory Mapping**:
-  - `0x6803FFFE`: Address Bit 18 is 0 $\to$ ST7789 Command Register (`LCD_CMD_ADDR`).
-  - `0x68040000`: Address Bit 18 is 1 $\to$ ST7789 Data RAM Register (`LCD_DATA16_ADDR`).
-- **Timing Profile (Mode A)**:
-  - Address Setup Time: 15 HCLK (Read) / 3 HCLK (Write).
-  - Data Setup Time: 60 HCLK (Read) / 3 HCLK (Write).
-- **Startup Sequence**:
-  1. Active-low reset pulse on `PD3` ($20\,\text{ms}$ low, $120\,\text{ms}$ high).
-  2. Memory Data Access Control (`0x36`, orientation set to normal).
-  3. Color format set to 16-bit RGB565 (`0x3A`, `0x55`).
-  4. Porch setting (`0xB2`), Gate control (`0xB7`), VCOM (`0xBB`), LCM (`0xC0`).
-  5. Gamma correction tables (`0xE0`, `0xE1`).
-  6. Display Inversion ON (`0x21`).
-  7. Sleep Out (`0x11`) followed by $120\,\text{ms}$ delay.
-  8. Display ON (`0x29`).
-  9. Backlight enabled on `PF9`.
-
----
-
-## 4. Song Catalog & Binary Index Mapping
+## 3. Song Catalog & Binary Index Mapping
 
 The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in binary):
 
@@ -105,7 +92,7 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
 
 ---
 
-## 5. Software Architecture & Concurrency Model
+## 4. Software Architecture & Concurrency Model
 
 ```text
        +--------------------------------------------------------------+
@@ -133,19 +120,19 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
    - Acquires `g_lcd_mutex`, renders playback telemetry, volume progress bar, or confirmation dialog, and releases mutex.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 2. **`polling_buttons` (Priority 2, Stack 1024 B)**:
-   - Polls GPIO buttons with 20 ms debounce filtering.
+   - Polls GPIO buttons with 20 ms debounce filtering (3 consecutive stable samples).
    - Decodes binary song index and latches prospective choice upon Button 1 press.
    - Monitors 5-second confirmation countdown via `k_uptime_get_32()`.
    - Handles `USER_BUTTON` Play/Pause toggle.
    - Cooperatively sleeps for 20 ms (`k_sleep(K_MSEC(20))`).
 3. **`adjust_volume` (Priority 3, Stack 1024 B)**:
    - Periodically samples ADC Channel 1 (`PA1`).
-   - Normalizes raw ADC reading into a calibrated $0\%\text{--}100\%$ volume scale.
+   - Normalizes raw ADC reading into a calibrated $0\%\text{--}100\%$ volume scale via a 4-sample moving average filter.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 
 ---
 
-## 6. Build, Verification & Toolchain
+## 5. Build, Verification & Toolchain
 
 The firmware builds cleanly under PlatformIO with Zephyr RTOS:
 
@@ -155,13 +142,13 @@ pio run -d LAB_2_ZephyrRTOS_Personal_MP3_Player
 
 # Terminal Output:
 # RAM:   [=         ]   9.7% (used 12689 bytes from 131072 bytes)
-# Flash: [=         ]   5.6% (used 59148 bytes from 1048576 bytes)
-# [SUCCESS] Took 5.98 seconds
+# Flash: [=         ]   5.7% (used 60280 bytes from 1048576 bytes)
+# [SUCCESS] Took 3.87 seconds
 ```
 
 ---
 
-## 7. Repository Layout & File Navigation
+## 6. Repository Layout & File Navigation
 
 ```text
 LAB_2_ZephyrRTOS_Personal_MP3_Player/

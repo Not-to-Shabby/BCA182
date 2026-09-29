@@ -217,12 +217,15 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
 
     /* Software debounce states */
     bool up_last = false;
-    bool down_last = false;
-    bool press_last = false;
     uint8_t up_stable = 0;
+
+    bool down_is_pressed = false;
+    bool down_long_triggered = false;
     uint8_t down_stable = 0;
-    uint8_t press_stable = 0;
     uint32_t down_press_start = 0;
+
+    bool press_last = false;
+    uint8_t press_stable = 0;
 
     while (1) {
         /* Read physical pins:
@@ -234,52 +237,73 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
         bool down_raw = ((GPIOC->IDR & (1U << 1)) == 0);
         bool press_raw = ((GPIOA->IDR & (1U << 0)) != 0);
 
-        /* Debounce UP button */
-        bool up_event = false;
+        /* Action event flags */
+        bool next_track_event = false;
+        bool prev_track_event = false;
+        bool play_pause_event = false;
+
+        /* 1. Debounce UP button (scroll forward on release) */
         if (up_raw) {
-            if (up_stable < 3) {
-                up_stable++;
-                if (up_stable == 3 && !up_last) {
-                    up_event = true;
-                    up_last = true;
+            if (!up_last) {
+                if (up_stable < 3) {
+                    up_stable++;
+                    if (up_stable == 3) {
+                        up_last = true;
+                    }
                 }
             }
         } else {
+            if (up_last) {
+                next_track_event = true;
+                up_last = false;
+            }
             up_stable = 0;
-            up_last = false;
         }
 
-        /* Debounce DOWN button */
-        bool down_event = false;
-        bool down_long_press_event = false;
+        /* 2. Debounce and process DOWN button:
+         *    - While held: if held >= 450 ms, immediately trigger Play/Pause (without changing track!)
+         *    - On release: if released before 450 ms, trigger Previous Track!
+         */
         if (down_raw) {
-            if (down_stable < 3) {
-                down_stable++;
-                if (down_stable == 3 && !down_last) {
-                    down_event = true;
-                    down_last = true;
-                    down_press_start = k_uptime_get_32();
+            if (!down_is_pressed) {
+                if (down_stable < 3) {
+                    down_stable++;
+                    if (down_stable == 3) {
+                        down_is_pressed = true;
+                        down_press_start = k_uptime_get_32();
+                        down_long_triggered = false;
+                    }
                 }
-            } else if (down_last) {
-                /* Check for long-press on DOWN (> 600 ms) as alternative Play/Pause */
-                if (down_press_start > 0 && (k_uptime_get_32() - down_press_start) > 600) {
-                    down_long_press_event = true;
-                    down_press_start = 0; /* Consume */
+            } else {
+                /* Button is actively held down: check for long-press threshold */
+                if (!down_long_triggered && down_press_start > 0) {
+                    uint32_t duration = k_uptime_get_32() - down_press_start;
+                    if (duration >= 450) {
+                        down_long_triggered = true;
+                        play_pause_event = true;
+                    }
                 }
             }
         } else {
+            /* Button released */
+            if (down_is_pressed) {
+                down_is_pressed = false;
+                /* If released before long-press threshold, it was a short click (Prev Track) */
+                if (!down_long_triggered) {
+                    prev_track_event = true;
+                }
+            }
             down_stable = 0;
-            down_last = false;
             down_press_start = 0;
+            down_long_triggered = false;
         }
 
-        /* Debounce PRESS / PA0 button */
-        bool press_event = false;
+        /* 3. Debounce PRESS / PA0 (USER_BUTTON) */
         if (press_raw) {
             if (press_stable < 3) {
                 press_stable++;
                 if (press_stable == 3 && !press_last) {
-                    press_event = true;
+                    play_pause_event = true;
                     press_last = true;
                 }
             }
@@ -288,34 +312,38 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
             press_last = false;
         }
 
-        /* 1. Handle UP Button Event: Scroll Track Forward */
-        if (up_event) {
+        /* Execute Events */
+        /* UP Button Event: Scroll Track Forward */
+        if (next_track_event) {
             k_mutex_lock(&g_player_mutex, K_FOREVER);
             g_player.current_song_index = (g_player.current_song_index + 1) % TOTAL_PLAYABLE_SONGS;
             g_player.state_changed = true;
             const song_info_t *s = get_song_info(g_player.current_song_index);
-            printk("[Nav] UP -> Next Track [%u/8]: %s %s\n",
+            printk("[Nav] UP (Click) -> Next Track [%u/8]: %s %s\n",
                    g_player.current_song_index + 1, s->name1, s->name2);
             k_mutex_unlock(&g_player_mutex);
         }
 
-        /* 2. Handle DOWN Button Event: Scroll Track Backward */
-        if (down_event && !down_long_press_event) {
+        /* DOWN Button Event: Scroll Track Backward (Short Click Only) */
+        if (prev_track_event) {
             k_mutex_lock(&g_player_mutex, K_FOREVER);
             g_player.current_song_index = (g_player.current_song_index + TOTAL_PLAYABLE_SONGS - 1) % TOTAL_PLAYABLE_SONGS;
             g_player.state_changed = true;
             const song_info_t *s = get_song_info(g_player.current_song_index);
-            printk("[Nav] DOWN -> Prev Track [%u/8]: %s %s\n",
+            printk("[Nav] DOWN (Click) -> Prev Track [%u/8]: %s %s\n",
                    g_player.current_song_index + 1, s->name1, s->name2);
             k_mutex_unlock(&g_player_mutex);
         }
 
-        /* 3. Handle PRESS / PLAY-PAUSE (PA0 or long-press DOWN) */
-        if (press_event || down_long_press_event) {
+        /* PLAY-PAUSE Event (PA0 Press or DOWN Long-Press) */
+        if (play_pause_event) {
             k_mutex_lock(&g_player_mutex, K_FOREVER);
             g_player.state = toggle_play_pause(g_player.state);
             g_player.state_changed = true;
-            printk("[Nav] PRESS -> Player is now %s\n", get_player_state_str(g_player.state));
+            const song_info_t *s = get_song_info(g_player.current_song_index);
+            printk("[Nav] PLAY/PAUSE -> Track [%u] '%s %s' is now %s\n",
+                   g_player.current_song_index + 1, s->name1, s->name2,
+                   get_player_state_str(g_player.state));
             k_mutex_unlock(&g_player_mutex);
         }
 

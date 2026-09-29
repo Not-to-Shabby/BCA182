@@ -1,0 +1,11 @@
+.pio
+.vscode/
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.a
+*.d
+*.log
+

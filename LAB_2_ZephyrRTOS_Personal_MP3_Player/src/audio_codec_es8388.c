@@ -29,6 +29,8 @@ static volatile uint8_t s_sine_step = 0;
 static volatile uint16_t s_dac_scaled_table[32];
 static volatile bool s_dac_active = false;
 static volatile uint8_t s_current_volume = 70;
+static volatile uint32_t s_phase_accumulator = 0;
+static volatile uint32_t s_phase_increment = 0;
 
 /* -------------------------------------------------------------------------- */
 /* Hardware Timer TIM4 ISR for Direct Digital Synthesis (DDS)                */
@@ -41,16 +43,16 @@ static void tim4_audio_isr(const void *arg)
         TIM4->SR &= ~TIM_SR_UIF;
 
         if (s_dac_active) {
-            uint16_t sample = s_dac_scaled_table[s_sine_step];
-            /* 1. Output analog voltage to DAC1 (PA4) */
+            uint16_t sample = s_dac_scaled_table[(s_phase_accumulator >> 27) & 31U];
+            s_phase_accumulator += s_phase_increment;
+
+            /* Keep the local DAC available, but send the actual playback path to I2S. */
             DAC->DHR12R1 = sample;
 
-            /* 2. Output digital sample to SPI3/I2S3 for ES8388 codec if ready */
+            /* Convert the unsigned 12-bit table to signed 16-bit PCM. */
             if (SPI3->SR & SPI_SR_TXE) {
-                SPI3->DR = (uint16_t)(sample ^ 0x8000);
+                SPI3->DR = (uint16_t)(((int32_t)sample - 2048) << 4);
             }
-
-            s_sine_step = (s_sine_step + 1) & 31;
         } else {
             DAC->DHR12R1 = 2048; /* Mid-rail quiescent bias */
         }
@@ -197,7 +199,16 @@ static void i2s3_hw_init(void)
     GPIOC->AFR[0] = (GPIOC->AFR[0] & ~(0xFU << 28)) | (6U << 28);
     GPIOC->OSPEEDR |= (3U << 14);
 
-    /* Configure I2S3 in Master Transmit Mode */
+    /* Supply I2S3 from PLLI2S: 48 MHz / (256 * 4) = 46.875 kHz. */
+    RCC->PLLI2SCFGR = (192U << RCC_PLLI2SCFGR_PLLI2SN_Pos) |
+                      (2U << RCC_PLLI2SCFGR_PLLI2SR_Pos);
+    RCC->CR |= RCC_CR_PLLI2SON;
+    while ((RCC->CR & RCC_CR_PLLI2SRDY) == 0U) {
+    }
+
+    /* Configure I2S3 as a 16-bit Philips-format master transmitter. */
+    SPI3->I2SCFGR = 0;
+    SPI3->I2SPR = (2U & SPI_I2SPR_I2SDIV_Msk) | SPI_I2SPR_MCKOE;
     SPI3->I2SCFGR = SPI_I2SCFGR_I2SMOD | SPI_I2SCFGR_I2SCFG_1 |
                     SPI_I2SCFGR_I2SE;
 }
@@ -234,7 +245,7 @@ void audio_hardware_dac_init(void)
     /* Initialize TIM4 for 32-sample Direct Digital Synthesis (DDS) */
     RCC->APB1ENR |= RCC_APB1ENR_TIM4EN;
     TIM4->PSC = 83; /* 1 MHz count resolution */
-    TIM4->ARR = 1000;
+    TIM4->ARR = 20; /* Fixed ~47.6 kHz PCM sample rate */
     TIM4->DIER |= TIM_DIER_UIE;
     TIM4->CR1 = TIM_CR1_CEN;
 
@@ -280,18 +291,8 @@ void audio_hardware_dac_set_tone(float note_period_ms, uint8_t volume_percent)
     /* Calculate timer period for 32 samples per note period:
      * note_period_ms * 1000 us / 32 = period_us_per_sample
      */
-    uint32_t step_period_us = (uint32_t)((note_period_ms * 1000.0f) / 32.0f + 0.5f);
-    if (step_period_us < 10) {
-        step_period_us = 10;
-    }
-    if (step_period_us > 5000) {
-        step_period_us = 5000;
-    }
-
-    TIM4->ARR = step_period_us - 1;
-    if (TIM4->CNT >= (step_period_us - 1)) {
-        TIM4->CNT = 0;
-    }
+    float frequency_hz = 1000.0f / note_period_ms;
+    s_phase_increment = (uint32_t)((frequency_hz * 4294967296.0f / 47619.0f) + 0.5f);
 
     s_dac_active = true;
 }

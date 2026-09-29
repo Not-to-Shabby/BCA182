@@ -62,12 +62,17 @@ extern "C" {
 #define LED_BLUE_PIN                    11      /* On-board Blue LED */
 
 /* -------------------------------------------------------------------------- */
-/* Audio & Volume ADC Configuration                                           */
+/* Volume Control Configuration (Button-Driven)                               */
 /* -------------------------------------------------------------------------- */
-#define POTENTIOMETER_ADC_PORT          "GPIOA"
-#define POTENTIOMETER_ADC_PIN           1       /* ADC1 Channel 1 */
-#define ADC_RESOLUTION_BITS             12
-#define ADC_MAX_RAW_VALUE               4095
+/* Buttons 2 (PC1 / KEY1) and 3 (PC4 / KEY2) provide Volume Down / Up when   */
+/* pressed without Button 1. Pin PA1 can optionally serve as a 5th button.    */
+#define VOLUME_BUTTON_DOWN_PORT         "GPIOC"
+#define VOLUME_BUTTON_DOWN_PIN          1       /* Button 2 (KEY1): Vol -     */
+#define VOLUME_BUTTON_UP_PORT           "GPIOC"
+#define VOLUME_BUTTON_UP_PIN            4       /* Button 3 (KEY2): Vol +     */
+#define VOLUME_AUX_BUTTON_PORT          "GPIOA"
+#define VOLUME_AUX_BUTTON_PIN           1       /* Optional PA1 button        */
+#define VOLUME_STEP_PERCENT             5       /* 5% step per adjustment     */
 
 /* -------------------------------------------------------------------------- */
 /* Timing Constraints                                                         */

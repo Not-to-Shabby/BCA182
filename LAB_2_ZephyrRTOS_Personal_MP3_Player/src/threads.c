@@ -2,7 +2,7 @@
  * @file threads.c
  * @brief Implementation of the 3 cooperative Zephyr RTOS threads for the
  *        Personal MP3 Player with ST7789 LCD graphics, physical GPIO button
- *        scanning, binary selection gesture, 5s confirmation, and ADC volume.
+ *        scanning, binary selection gesture, 5s confirmation, and button-driven volume.
  *
  * Course: BCA182 Embedded Systems Programming
  * Laboratory Activity 2: Personal MP3 Player
@@ -30,14 +30,13 @@ K_MUTEX_DEFINE(g_lcd_mutex);
 K_MUTEX_DEFINE(g_player_mutex);
 
 /* -------------------------------------------------------------------------- */
-/* Physical GPIO Hardware Configuration (LEDs, Buttons, ADC)                  */
+/* Physical GPIO Hardware Configuration (LEDs, Buttons)                       */
 /* -------------------------------------------------------------------------- */
 static void init_hardware_peripherals(void)
 {
-    /* 1. Enable Clocks for GPIOA, GPIOC, GPIOE, GPIOF, and ADC1 */
+    /* 1. Enable Clocks for GPIOA, GPIOC, GPIOE, GPIOF */
     RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOCEN |
                      RCC_AHB1ENR_GPIOEEN | RCC_AHB1ENR_GPIOFEN);
-    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
 
     /* 2. Configure LEDs: PF11 (Blue) and PF12 (Red) as Push-Pull Outputs */
     GPIOF->MODER = (GPIOF->MODER & ~((3U << 22) | (3U << 24))) |
@@ -57,8 +56,10 @@ static void init_hardware_peripherals(void)
     GPIOE->BSRR = (1U << (3 + 16));
 
     /* 3. Configure Buttons on GPIOC:
-     *    PC0 (Button 1 / KEY0), PC1 (Button 2 / KEY1),
-     *    PC4 (Button 3 / KEY2), PC5 (Button 4 / WK_UP)
+     *    PC0 (Button 1 / KEY0: Latch & Confirm),
+     *    PC1 (Button 2 / KEY1: Bit 0 / Vol -),
+     *    PC4 (Button 3 / KEY2: Bit 1 / Vol +),
+     *    PC5 (Button 4 / WK_UP: Bit 2)
      *    Mode: Input (00b), Pull-Up (01b) -> Active LOW */
     static const uint8_t c_btn_pins[] = {0, 1, 4, 5};
     for (uint32_t i = 0; i < sizeof(c_btn_pins); i++) {
@@ -73,18 +74,11 @@ static void init_hardware_peripherals(void)
     GPIOA->MODER &= ~(3U << 0);
     GPIOA->PUPDR = (GPIOA->PUPDR & ~(3U << 0)) | (2U << 0);
 
-    /* 5. Configure Volume Potentiometer on GPIOA:
-     *    PA1 (ADC1 Channel 1)
-     *    Mode: Analog (11b), No Pull (00b) */
-    GPIOA->MODER |= (3U << 2);
-    GPIOA->PUPDR &= ~(3U << 2);
-
-    /* 6. Configure ADC1 */
-    ADC1->CR1 = 0;                           /* 12-bit resolution */
-    ADC1->CR2 = ADC_CR2_ADON;                /* Enable ADC1 */
-    ADC1->SMPR2 |= (7U << 3);                /* 480 cycles sampling for CH1 */
-    ADC1->SQR1 &= ~ADC_SQR1_L;               /* 1 conversion */
-    ADC1->SQR3 = 1U;                         /* Channel 1 */
+    /* 5. Configure Optional 5th Button on PA1:
+     *    PA1 (Auxiliary Volume Cycle Button)
+     *    Mode: Input (00b), Pull-Up (01b) -> Active LOW */
+    GPIOA->MODER &= ~(3U << 2);
+    GPIOA->PUPDR = (GPIOA->PUPDR & ~(3U << 2)) | (1U << 2);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -180,10 +174,10 @@ static void render_lcd_screen(player_state_t state, uint8_t cur_song_idx,
             lcd_fill_rect(15 + bar_width + 1, 167, 225, 179, LCD_COLOR_BLACK);
         }
 
-        /* Footer Controls Guide */
+        /* Footer Controls Guide showing Button 2 / Button 3 Volume Controls */
         lcd_draw_line(0, 192, LCD_WIDTH - 1, 192, LCD_COLOR_DARKGREY);
-        lcd_show_string(10, 200, "B2-B4: Select Binary", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
-        lcd_show_string(10, 218, "B1: Latch | USER: P/P", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+        lcd_show_string(10, 198, "B2:Vol- | B3:Vol+", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+        lcd_show_string(10, 216, "B1:Latch | USER:P/P", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
     }
 }
 
@@ -359,7 +353,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Thread 3: Adjust Volume via Potentiometer ADC Sampling                     */
+/* Thread 3: Adjust Volume via Push Buttons                                    */
 /* -------------------------------------------------------------------------- */
 void adjust_volume(void *arg1, void *arg2, void *arg3)
 {
@@ -367,40 +361,77 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
     ARG_UNUSED(arg2);
     ARG_UNUSED(arg3);
 
-    printk("[Volume_Thread] Started\n");
+    printk("[Volume_Thread] Started (Button-Controlled Volume)\n");
 
-    uint32_t adc_filter_sum = 0;
-    uint8_t filter_samples = 0;
+    bool pa1_last = false;
+    uint8_t pa1_stable = 0;
 
     while (1) {
-        /* Start ADC conversion on Channel 1 (PA1) */
-        ADC1->CR2 |= ADC_CR2_SWSTART;
-        uint32_t timeout_guard = 10000;
-        while (!(ADC1->SR & ADC_SR_EOC) && --timeout_guard) {
-            /* Wait for conversion completion */
-        }
+        /* Volume adjustment is active when NOT in confirmation mode */
+        bool can_adjust = false;
+        k_mutex_lock(&g_player_mutex, K_FOREVER);
+        can_adjust = (g_player.state != PLAYER_STATE_CONFIRMING);
+        k_mutex_unlock(&g_player_mutex);
 
-        if (timeout_guard > 0) {
-            uint16_t raw_adc = (uint16_t)ADC1->DR;
-            adc_filter_sum += raw_adc;
-            filter_samples++;
+        if (can_adjust) {
+            /* Button 1 (PC0) must NOT be pressed to avoid conflicting with song selection */
+            bool b1_held = ((GPIOC->IDR & (1U << 0)) == 0);
+            if (!b1_held) {
+                /* Read Volume Down (Button 2 / PC1) and Volume Up (Button 3 / PC4) */
+                bool b2_pressed = ((GPIOC->IDR & (1U << 1)) == 0);
+                bool b3_pressed = ((GPIOC->IDR & (1U << 4)) == 0);
 
-            /* Moving average filter over 4 samples */
-            if (filter_samples >= 4) {
-                uint16_t avg_adc = (uint16_t)(adc_filter_sum / 4U);
-                adc_filter_sum = 0;
-                filter_samples = 0;
-
-                uint8_t vol = normalize_adc_volume(avg_adc, 0, 4095);
-
-                k_mutex_lock(&g_player_mutex, K_FOREVER);
-                /* Update only on significant volume deviation (>= 2%) to reduce redraw churn */
-                int diff = (int)vol - (int)g_player.volume_percent;
-                if (diff < -1 || diff > 1) {
-                    g_player.volume_percent = vol;
-                    g_player.state_changed = true;
+                /* Read optional external 5th button on PA1 (active LOW) */
+                bool pa1_raw = ((GPIOA->IDR & (1U << 1)) == 0);
+                bool pa1_event = false;
+                if (pa1_raw) {
+                    if (pa1_stable < 3) {
+                        pa1_stable++;
+                        if (pa1_stable == 3 && !pa1_last) {
+                            pa1_event = true;
+                            pa1_last = true;
+                        }
+                    }
+                } else {
+                    pa1_stable = 0;
+                    pa1_last = false;
                 }
-                k_mutex_unlock(&g_player_mutex);
+
+                if (b2_pressed && !b3_pressed) {
+                    /* Volume Down step */
+                    k_mutex_lock(&g_player_mutex, K_FOREVER);
+                    if (g_player.volume_percent >= VOLUME_STEP_PERCENT) {
+                        g_player.volume_percent -= VOLUME_STEP_PERCENT;
+                    } else {
+                        g_player.volume_percent = 0;
+                    }
+                    g_player.state_changed = true;
+                    printk("[Volume] Volume Down (Button 2): %u%%\n", g_player.volume_percent);
+                    k_mutex_unlock(&g_player_mutex);
+                    k_sleep(K_MSEC(120)); /* Rate limiter for smooth repeat */
+                } else if (b3_pressed && !b2_pressed) {
+                    /* Volume Up step */
+                    k_mutex_lock(&g_player_mutex, K_FOREVER);
+                    if (g_player.volume_percent <= (100 - VOLUME_STEP_PERCENT)) {
+                        g_player.volume_percent += VOLUME_STEP_PERCENT;
+                    } else {
+                        g_player.volume_percent = 100;
+                    }
+                    g_player.state_changed = true;
+                    printk("[Volume] Volume Up (Button 3): %u%%\n", g_player.volume_percent);
+                    k_mutex_unlock(&g_player_mutex);
+                    k_sleep(K_MSEC(120)); /* Rate limiter for smooth repeat */
+                } else if (pa1_event) {
+                    /* Cycle preset volume levels: 25% -> 50% -> 75% -> 100% -> 0% */
+                    k_mutex_lock(&g_player_mutex, K_FOREVER);
+                    g_player.volume_percent = (g_player.volume_percent + 25) % 125;
+                    if (g_player.volume_percent > 100) {
+                        g_player.volume_percent = 0;
+                    }
+                    g_player.state_changed = true;
+                    printk("[Volume] Preset Cycle (PA1 Button): %u%%\n", g_player.volume_percent);
+                    k_mutex_unlock(&g_player_mutex);
+                }
             }
         }
 

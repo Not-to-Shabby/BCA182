@@ -47,8 +47,10 @@ static void print_uart_instructions(void)
     printk("     - If no action is taken within 5 seconds, selection aborts.\n");
     printk("  3. Play / Pause / Replay Control:\n");
     printk("     - Press USER_BUTTON to toggle Play and Pause.\n");
-    printk("  4. Volume Adjustment:\n");
-    printk("     - Rotate 10k potentiometer to adjust volume (0%% - 100%%).\n");
+    printk("  4. Volume Adjustment (Button-Controlled):\n");
+    printk("     - Press / Hold Button 2 (KEY1) to Decrease Volume (-5%%)\n");
+    printk("     - Press / Hold Button 3 (KEY2) to Increase Volume (+5%%)\n");
+    printk("     - Optional: Press Button on PA1 to cycle volume presets\n");
     printk("  5. RGB LED State Indicators:\n");
     printk("     - BLUE LED  : Song is PLAYING\n");
     printk("     - RED LED   : Song is PAUSED or STOPPED\n");

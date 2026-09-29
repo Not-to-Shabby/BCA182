@@ -35,14 +35,17 @@ The application fulfills all engineering requirements specified in **Laboratory 
   - Hardware backlight power activation on **`PF9`**.
   - High-performance bitmap font engine (`16×8` DejaVu Sans Mono ASCII characters).
   - Mutex-guarded display telemetry (`k_mutex g_lcd_mutex`).
-- **Live Potentiometer ADC Volume Sampling (Phase 4 Completed)**:
-  - 10 k$\Omega$ linear potentiometer sampled via ADC1 Channel 1 (`PA1`).
-  - Moving-average 4-sample filter with deadband hysteresis to eliminate display jitter.
-  - Renders a live graphical progress bar and numeric percentage ($0\%\text{--}100\%$).
+- **Button-Driven Volume Adjustment (Phase 4 Completed)**:
+  - Supports digital push-button volume control without requiring an external potentiometer.
+  - In normal playback mode (when Button 1 is not held):
+    - **Button 2 (`PC1` / KEY1)**: Decrements volume by $5\%$ per step down to $0\%$.
+    - **Button 3 (`PC4` / KEY2)**: Increments volume by $5\%$ per step up to $100\%$.
+    - **Optional Auxiliary Button (`PA1`)**: Cycles preset volume steps ($25\% \to 50\% \to 75\% \to 100\% \to 0\%$).
+  - Renders a live graphical progress bar and numeric percentage ($0\%\text{--}100\%$) on the ST7789 display.
 - **3 Concurrent Cooperative Zephyr Threads**:
   1. `update_lcd_leds_thread`: Manages graphical display rendering and physical RGB state LEDs.
   2. `polling_buttons`: Handles debounced button reading, binary index decoding, and 5-second confirmation timing.
-  3. `adjust_volume`: Reads ADC potentiometer and updates volume level.
+  3. `adjust_volume`: Dedicated thread monitoring volume adjustment buttons and updating shared volume state.
 - **Low-Power Idle Sleep**: The main thread puts the MCU into low-power idle sleep (`k_sleep(K_FOREVER)` / `k_cpu_idle()`), minimizing energy consumption.
 
 ---
@@ -70,7 +73,9 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **LCD Command/Data ($\text{A18}$)** | `PD13` | Alternate Function 12 (`AF12_FSMC`) | Address bit 18 ($\text{LOW}=\text{CMD}$, $\text{HIGH}=\text{DATA}$) |
 | **LCD Write Enable ($\overline{\text{NWE}}$)** | `PD5` | Alternate Function 12 (`AF12_FSMC`) | FSMC Write Strobe ($\overline{\text{WR}}$) |
 | **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
-| **Volume Potentiometer** | `PA1` | ADC1 Channel 1 (Analog) | 10 k$\Omega$ volume control voltage divider |
+| **Volume Down (Button 2)** | `PC1` | GPIO Input (Pull-Up) | Volume decrease (-5% per step) when B1 not held |
+| **Volume Up (Button 3)** | `PC4` | GPIO Input (Pull-Up) | Volume increase (+5% per step) when B1 not held |
+| **Auxiliary Volume Button** | `PA1` | GPIO Input (Pull-Up) | Optional 5th button: Cycles volume presets (25%, 50%, 75%, 100%, 0%) |
 | **Headphone / Codec** | `PB10 (SCL), PB11 (SDA)` | I2C2 / I2S | ES8388 stereo codec & 3.5mm audio jack |
 
 ---
@@ -126,8 +131,8 @@ The 8 playable classical songs are indexed via Buttons 2–4 ($B_4 B_3 B_2$ in b
    - Handles `USER_BUTTON` Play/Pause toggle.
    - Cooperatively sleeps for 20 ms (`k_sleep(K_MSEC(20))`).
 3. **`adjust_volume` (Priority 3, Stack 1024 B)**:
-   - Periodically samples ADC Channel 1 (`PA1`).
-   - Normalizes raw ADC reading into a calibrated $0\%\text{--}100\%$ volume scale via a 4-sample moving average filter.
+   - Dedicated volume adjustment thread reading Button 2 (`PC1` / Vol-) and Button 3 (`PC4` / Vol+).
+   - Allows smooth volume stepping (5% per step) and supports optional PA1 preset cycling.
    - Cooperatively sleeps for 100 ms (`k_sleep(K_MSEC(100))`).
 
 ---

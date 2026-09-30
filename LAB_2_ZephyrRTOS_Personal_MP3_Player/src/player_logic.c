@@ -73,8 +73,23 @@ uint8_t normalize_adc_volume(uint16_t raw_adc, uint16_t min_raw, uint16_t max_ra
     return (uint8_t)scaled;
 }
 
+#include "sd_card_reader.h"
+
+static song_info_t s_dynamic_song;
+
 const song_info_t* get_song_info(uint8_t song_index)
 {
+    uint8_t sd_tracks = sd_card_get_track_count();
+    if (song_index < sd_tracks) {
+        const sd_track_t *t = sd_card_get_track(song_index);
+        s_dynamic_song.id = song_index;
+        s_dynamic_song.name1 = t->filename;
+        s_dynamic_song.name2 = "[SD Card .WAV]";
+        s_dynamic_song.tempo = 0.0f;
+        s_dynamic_song.length = 0;
+        return &s_dynamic_song;
+    }
+    song_index -= sd_tracks;
     if (song_index >= 8U) {
         song_index = 0U;
     }

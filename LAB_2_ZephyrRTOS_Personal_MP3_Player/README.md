@@ -97,6 +97,9 @@ The system targets the **RT-Thread Spark Development Board (STM32F407ZGT6)** wit
 | **LCD Read Enable ($\overline{\text{NOE}}$)** | `PD4` | Alternate Function 12 (`AF12_FSMC`) | FSMC Read Strobe ($\overline{\text{RD}}$) |
 | **3.5mm Headphone Jack (`CN3`)** | `PB10 (SCL), PB11 (SDA)` + I2S3 | ES8388 Stereo Codec (`U11`) + Headphone Amp (`LOUT1`/`ROUT1`) |
 | **Analog Audio DAC1 Output** | `PA4` | Analog Mode (`DAC_OUT1`) | Direct 12-bit analog sinusoidal audio output for external speaker/earphones |
+| **Micro-SD / TF Card Socket** | `PC8..11, PC12, PD2` | 4-bit High-Speed SDIO | Micro-SD card slot for FAT32 music files (`/SD:`) |
+| **SD Card Detect Pin** | `PF3` | GPIO Input (Pull-Up) | Detects physical card insertion (Active LOW) |
+| **Native USB Port (`CN4`)** | `PA11 (DM), PA12 (DP)` | USB OTG Full-Speed | USB Mass Storage U-Disk bridge to PC (drag & drop) |
 | **Onboard Buzzer Audio** | `PB0` | Alternate Function 2 (`TIM3_CH3`) | Hardware PWM audio synthesis on onboard buzzer (`BUZ1`) |
 | **Expansion Speaker Audio** | `PB1` | Alternate Function 2 (`TIM3_CH4`) | Simultaneous PWM audio output on expansion header |
 
@@ -150,7 +153,51 @@ The audio playback subsystem supports multiple simultaneous acoustic output chan
 
 ---
 
-## 5. Software Architecture & Concurrency Model
+## 5. Micro-SD FAT32 Filesystem & USB Mass Storage Card Reader Bridge
+
+The firmware bridges the onboard **Micro-SD card socket** and the **native USB Type-C port (`CN4`)**, providing a dual-mode workflow:
+
+```text
+               Windows / PC (File Explorer)
+                           │
+             [ Drag & Drop .WAV / .MP3 ]
+                           │  USB Cable (CN4)
+                           ▼
+            STM32F407 USB Mass Storage Bridge
+                           │
+                           ▼  High-Speed 4-bit SDIO
+            ┌─────────────────────────────┐
+            │   Micro-SD Card (FAT32)     │
+            │   ├── Für_Elise.wav         │
+            │   ├── Canon_In_D.wav        │
+            │   └── Turkish_March.wav     │
+            └─────────────────────────────┘
+                           ▲
+                           │  Mounts FAT32 (FatFs)
+                           │  fs_open() / fs_read()
+                           │
+            STM32F407 Audio Player Engine
+                           │
+          ┌────────────────┴────────────────┐
+          ▼                                 ▼
+   ST7789 Color LCD                3.5mm Headphone Jack
+(Displays Song Names)             (Plays Real Audio Data)
+```
+
+### A. USB Card Reader (U-Disk Bridge) Mode
+- **Activation**: Press and hold **`PA0` (USER_BUTTON, $\ge 500\text{ ms}$)**.
+- **Hardware Bridge**: The microcontroller unmounts the local FAT32 volume to prevent filesystem corruption and activates the **Zephyr USB Mass Storage Class (MSC)** stack on `PA11` ($D-$) and `PA12` ($D+$).
+- **Computer Access**: Windows instantly mounts the Micro-SD card as a **Removable Disk (Flash Drive)** in File Explorer. You can format the card (FAT32), create folders, and drag-and-drop audio files directly into the SD card without taking it out of the board.
+- **Display**: The ST7789 LCD renders a dedicated yellow-bordered **`USB SD CARD READER`** status screen.
+- **Exit**: Click `PA0` to safely exit Card Reader mode, re-mount the FAT32 volume on the microcontroller, and scan for newly added tracks.
+
+### B. Standalone SD Card Player Mode
+- **Hardware Interface**: High-speed **4-bit SDIO** running on pins `PC8..11` (Data), `PC12` (Clock), and `PD2` (Command), with automatic card presence detection on `PF3` (`GPIO_CARD_DETECT`, active LOW).
+- **Filesystem Engine**: Native **FatFs (ELM FAT)** engine supporting Long Filenames (LFN) and directory scanning on the `/SD:` mountpoint.
+
+---
+
+## 6. Software Architecture & Concurrency Model
 
 ```text
        +--------------------------------------------------------------+
@@ -190,7 +237,7 @@ The audio playback subsystem supports multiple simultaneous acoustic output chan
 
 ---
 
-## 6. Build, Verification & Toolchain
+## 7. Build, Verification & Toolchain
 
 The firmware builds cleanly under PlatformIO with Zephyr RTOS:
 
@@ -199,14 +246,14 @@ The firmware builds cleanly under PlatformIO with Zephyr RTOS:
 pio run -d LAB_2_ZephyrRTOS_Personal_MP3_Player
 
 # Terminal Output:
-# RAM:   [=         ]   9.8% (used 12823 bytes from 131072 bytes)
-# Flash: [=         ]   6.8% (used 71640 bytes from 1048576 bytes)
-# [SUCCESS] Took 27.08 seconds
+# RAM:   [==        ]  18.8% (used 24625 bytes from 131072 bytes)
+# Flash: [=         ]  11.0% (used 115192 bytes from 1048576 bytes)
+# [SUCCESS] Took 4.06 seconds
 ```
 
 ---
 
-## 7. Repository Layout & File Navigation
+## 8. Repository Layout & File Navigation
 
 ```text
 LAB_2_ZephyrRTOS_Personal_MP3_Player/
@@ -214,19 +261,25 @@ LAB_2_ZephyrRTOS_Personal_MP3_Player/
 ├── platformio.ini                  # PlatformIO configuration for black_f407zg
 ├── zephyr/
 │   ├── CMakeLists.txt              # Application CMake target configuration
-│   └── prj.conf                    # Zephyr kernel subsystem enablement (GPIO, UART, PM, C++)
+│   ├── prj.conf                    # Zephyr subsystems: SDIO, FATFS, USB MSC, GPIO, PM
+│   └── boards/
+│       └── black_f407zg_pro.overlay# USART1 console & 4-bit SDIO hardware overlay
 ├── include/
 │   ├── app_config.h                # Hardware pinouts, timings, and player constants
+│   ├── audio_codec_es8388.h        # ES8388 codec (I2C/I2S) and DAC1 API
 │   ├── audio_engine.h              # Audio engine API and musical piece structures
 │   ├── lcd_font.h                  # 16x8 DejaVu Sans Mono ASCII font table
 │   ├── lcd_st7789.h                # ST7789 FSMC graphics and drawing API
 │   ├── player_logic.h              # Pure decision logic and state definitions
+│   ├── sd_card_reader.h            # Micro-SD FAT32 & USB Card Reader interface
 │   └── threads.h                   # Thread prototypes, stacks, and mutex declarations
 ├── src/
+│   ├── audio_codec_es8388.c        # ES8388 I2C2/I2S3 driver & DDS waveform generator
 │   ├── audio_engine.c              # TIM3_CH3 PWM buzzer driver, k_timer note ticker, song data
 │   ├── lcd_st7789.c                # Hardware FSMC 8080 driver, reset & backlight
 │   ├── main.c                      # Application startup, UART guide, thread creation
 │   ├── player_logic.c              # Binary decoding, 5s timeout, and volume normalization
+│   ├── sd_card_reader.c            # 4-bit SDIO FatFs mounting & USB U-Disk bridge
 │   ├── song_data.inc               # Note and beat arrays for 8 classical compositions
 │   └── threads.c                   # 3 cooperative Zephyr RTOS threads
 ├── reference/                      # Course-provided reference headers and sources

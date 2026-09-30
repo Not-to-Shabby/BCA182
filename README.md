@@ -19,7 +19,7 @@ All firmware in this repository is built using **PlatformIO** and production-gra
 | Laboratory Directory | Project Title | Target Hardware & RTOS | Description | Status |
 |---|---|---|---|---|
 | [**`LAB_1_FreeRTOS_Multisensor`**](./LAB_1_FreeRTOS_Multisensor) | Real-Time Multisensor Room Monitoring System | STM32 Blue Pill (STM32F103C8T6)<br>**FreeRTOS Kernel v10.3.1** | Concurrent 6-task FreeRTOS telemetry node integrating DHT22, LDR, PIR, rotary encoder, SSD1306 OLED, and buzzer alarm. | Done |
-| [**`LAB_2_ZephyrRTOS_Personal_MP3_Player`**](./LAB_2_ZephyrRTOS_Personal_MP3_Player) | Personal MP3 Player | RT-Thread Spark Board (STM32F407ZGT6)<br>**Zephyr RTOS v4.x** | Concurrent 3-thread Zephyr audio player with directional D-pad controls (UP/DOWN track scroll, LEFT/RIGHT volume, PRESS play/pause), hardware TIM3_CH3 PWM note synthesis, ST7789 LCD telemetry, and RGB LED indicators. | Phase 5: Audio Synthesizer & Music Playback Verified |
+| [**`LAB_2_ZephyrRTOS_Personal_MP3_Player`**](./LAB_2_ZephyrRTOS_Personal_MP3_Player) | Personal MP3 Player | RT-Thread Spark Board (STM32F407ZGT6)<br>**Zephyr RTOS v4.x** | Concurrent 3-thread Zephyr audio player with directional D-pad controls, 4-bit SDIO FAT32 filesystem, USB Mass Storage Card Reader U-Disk bridge, ES8388 3.5mm audio, and ST7789 LCD telemetry. | Phase 5: Audio Engine, SDIO FAT32 & USB Card Reader Verified |
 
 ---
 

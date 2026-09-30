@@ -1,10 +1,6 @@
 /*
- * Board overlay: route the Zephyr console to USART1 (PA9/PA10).
- *
- * The RT-Thread Spark board wires its ST-LINK V2.1 virtual COM port to
- * USART1, but the upstream black_f407zg_pro board defaults the Zephyr
- * console to USART2 (PA2/PA3). Without this overlay, all printk output
- * (including the ES8388 codec diagnostics) is sent to an unconnected UART.
+ * Board overlay: route the Zephyr console to USART1 (PA9/PA10)
+ * and enable 4-bit high-speed SDIO for the Micro-SD card slot.
  */
 
 / {
@@ -31,4 +27,14 @@
 	current-speed = <115200>;
 	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
 	pinctrl-names = "default";
+};
+
+/* Enable 4-bit SDIO for the onboard Micro-SD / TF card socket */
+&sdmmc1 {
+	status = "okay";
+	pinctrl-0 = <&sdio_d0_pc8 &sdio_d1_pc9 &sdio_d2_pc10 &sdio_d3_pc11 &sdio_ck_pc12 &sdio_cmd_pd2>;
+	pinctrl-names = "default";
+	cd-gpios = <&gpiof 3 GPIO_ACTIVE_LOW>;
+	disk-name = "SD";
+	bus-width = <4>;
 };

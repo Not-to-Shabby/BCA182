@@ -15,6 +15,7 @@
 #include "lcd_st7789.h"
 #include "audio_engine.h"
 #include "audio_codec_es8388.h"
+#include "sd_card_reader.h"
 #include "threads.h"
 
 /* -------------------------------------------------------------------------- */
@@ -50,11 +51,15 @@ static void print_uart_instructions(void)
         "     - Hold UP + DOWN together (>= 450ms) OR Click AUX (PA1) to Cycle Waveform:\n"
         "       SINE -> TRIANGLE -> SAWTOOTH -> SQUARE\n"
         "  4. Audio Transport Control (PLAY / PAUSE / STOP):\n"
-        "     - PA0 (USER_BUTTON)  : Click -> Play/Pause | Hold -> Stop Playback\n"
+        "     - PA0 (USER_BUTTON)  : Click -> Play/Pause | Hold -> Enter/Exit USB Card Reader Mode\n"
         "     - DOWN (Long-Press)  : Hold >= 450ms -> Play/Pause Toggle on current track\n"
-        "  5. Buzzer Mute Toggle (Headphone Mode):\n"
+        "  5. USB Micro-SD Card Reader (U-Disk Bridge):\n"
+        "     - Hold PA0 (>= 500ms) to mount SD card on PC via CN4 USB port\n"
+        "     - Drag & drop .WAV / .MP3 audio files directly into Windows!\n"
+        "     - Click PA0 again to exit Card Reader mode and re-mount for playback\n"
+        "  6. Buzzer Mute Toggle (Headphone Mode):\n"
         "     - Hold LEFT + RIGHT together (>= 450ms) to Mute / Unmute the Buzzer\n"
-        "  6. RGB LED State Indicators:\n"
+        "  7. RGB LED State Indicators:\n"
         "     - BLUE LED (PF11) : Song is PLAYING\n"
         "     - RED LED (PF12)  : Song is PAUSED or STOPPED\n"
         "=====================================================\n";
@@ -83,12 +88,17 @@ int main(void)
     uart1_direct_print("[System] ST7789 hardware display ready.\n");
     k_mutex_unlock(&g_lcd_mutex);
 
-    /* 4. Initialize hardware audio synthesizer (ES8388 Codec + 12-bit Analog DAC1) */
+    /* 4. Initialize Micro-SD Card and FAT32 Filesystem */
+    printk("[System] Initializing Micro-SD Card FAT32 Filesystem...\n");
+    uart1_direct_print("[System] Initializing Micro-SD Card FAT32 Filesystem...\n");
+    sd_card_reader_init();
+
+    /* 5. Initialize hardware audio synthesizer (ES8388 Codec + 12-bit Analog DAC1) */
     printk("[System] Initializing audio synthesizer (ES8388 CN3 + PA4 DAC)...\n");
     uart1_direct_print("[System] Initializing audio synthesizer (ES8388 CN3 + PA4 DAC)...\n");
     audio_engine_init();
 
-    /* 5. Start all 3 cooperative Zephyr threads */
+    /* 6. Start all 3 cooperative Zephyr threads */
     printk("[System] Spawning 3 application threads...\n");
     uart1_direct_print("[System] Spawning 3 application threads...\n");
 

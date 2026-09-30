@@ -18,6 +18,7 @@
 #include "lcd_st7789.h"
 #include "audio_engine.h"
 #include "audio_codec_es8388.h"
+#include "sd_card_reader.h"
 #include <zephyr/sys/printk.h>
 #include <stm32f4xx.h>
 #include <stdio.h>
@@ -276,13 +277,55 @@ static void render_diag_box(void)
              buz_muted ? "MUTED" : "ON");
     lcd_show_string(12, 154, buf, wave_col, LCD_COLOR_DARKGREY);
 
-    /* Line 3: I2S Samples streamed */
-    snprintf(buf, sizeof(buf), "I2S TX:%-7u SAMPLES", diag->i2s_tx_samples);
+    /* Line 3: SD Card Status & I2S samples */
+    if (sd_card_is_present()) {
+        if (sd_card_is_mounted()) {
+            snprintf(buf, sizeof(buf), "SD:FAT32 %uTRK|I2S:%uK",
+                     sd_card_get_track_count(), (unsigned int)(diag->i2s_tx_samples / 1000U));
+        } else {
+            snprintf(buf, sizeof(buf), "SD:CARD IN (READY)|I2S");
+        }
+    } else {
+        snprintf(buf, sizeof(buf), "SD:NO CARD |I2S:%uK",
+                 (unsigned int)(diag->i2s_tx_samples / 1000U));
+    }
     lcd_show_string(12, 172, buf, LCD_COLOR_CYAN, LCD_COLOR_DARKGREY);
+}
+
+static void render_usb_msc_screen(void)
+{
+    /* 1. Top Header Banner */
+    lcd_fill_rect(0, 0, LCD_WIDTH - 1, 24, LCD_COLOR_NAVY);
+    lcd_show_string(16, 4, "USB SD CARD READER", LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+    lcd_draw_line(0, 25, LCD_WIDTH - 1, 25, LCD_COLOR_YELLOW);
+
+    /* 2. Main Body Clear */
+    lcd_fill_rect(0, 26, LCD_WIDTH - 1, LCD_HEIGHT - 1, LCD_COLOR_BLACK);
+    lcd_show_string(14, 34, "STATUS: U-DISK BRIDGE", LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    lcd_show_string(14, 52, "Connected via USB CN4", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+
+    /* Info card */
+    lcd_fill_rect(8, 76, LCD_WIDTH - 9, 184, LCD_COLOR_DARKGREY);
+    lcd_draw_rect(8, 76, LCD_WIDTH - 9, 184, LCD_COLOR_YELLOW);
+    lcd_show_string(12, 84,  "Windows File Explorer", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+    lcd_show_string(12, 102, "Mounted Removable Disk", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(12, 122, "Drag & Drop .WAV/.MP3", LCD_COLOR_GREEN, LCD_COLOR_DARKGREY);
+    lcd_show_string(12, 142, "Files directly to SD!", LCD_COLOR_GREEN, LCD_COLOR_DARKGREY);
+    lcd_show_string(12, 162, "Filesystem: FAT32", LCD_COLOR_CYAN, LCD_COLOR_DARKGREY);
+
+    /* Footer Controls */
+    lcd_draw_line(0, 196, LCD_WIDTH - 1, 196, LCD_COLOR_DARKGREY);
+    lcd_show_string(10, 202, "Click PA0 to Exit &", LCD_COLOR_ORANGE, LCD_COLOR_BLACK);
+    lcd_show_string(10, 218, "Re-Mount for Playback", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
 }
 
 static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8_t volume)
 {
+    if (sd_card_get_mode() == SD_MODE_USB_CARD_READER) {
+        render_usb_msc_screen();
+        return;
+    }
+
     char buf[32];
 
     /* 1. Top Header Banner */
@@ -321,7 +364,7 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
     /* Directional D-Pad Controls Footer with Waveform & Buzzer Mute Hints */
     lcd_draw_line(0, 196, LCD_WIDTH - 1, 196, LCD_COLOR_DARKGREY);
     lcd_show_string(10, 202, "UP/DN:Track | L/R:Vol", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
-    lcd_show_string(10, 218, "U+D:Wave | L+R:MuteBuz", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    lcd_show_string(10, 218, "Hold PA0:USB Disk Mode", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -342,6 +385,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
     uint32_t last_rendered_samples = 0xFFFFFFFF;
     bool last_rendered_buzzer = false;
     audio_waveform_t last_rendered_wave = (audio_waveform_t)0xFF;
+    sd_reader_mode_t last_rendered_sd_mode = (sd_reader_mode_t)0xFF;
 
     uint8_t last_audio_song = 0xFF;
     player_state_t last_audio_state = (player_state_t)0xFF;
@@ -394,10 +438,12 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         uint32_t current_samples = diag->i2s_tx_samples;
         bool current_buzzer = audio_engine_is_buzzer_muted();
         audio_waveform_t current_wave = audio_hardware_dac_get_waveform();
+        sd_reader_mode_t current_sd_mode = sd_card_get_mode();
 
         bool full_redraw = force_redraw ||
                            (current_state != last_rendered_state) ||
-                           (current_song != last_rendered_song);
+                           (current_song != last_rendered_song) ||
+                           (current_sd_mode != last_rendered_sd_mode);
         bool vol_changed = (volume != last_rendered_vol);
         bool note_changed = (current_note != last_rendered_note);
         bool diag_changed = (current_samples / 5000U != last_rendered_samples / 5000U) ||
@@ -414,6 +460,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                 last_rendered_samples = current_samples;
                 last_rendered_buzzer = current_buzzer;
                 last_rendered_wave = current_wave;
+                last_rendered_sd_mode = current_sd_mode;
                 k_mutex_unlock(&g_lcd_mutex);
             }
         } else {
@@ -572,21 +619,38 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
 
         /* 3. PRESS / PA0 (USER_BUTTON) Events */
         if (press_evt == BTN_EVT_SHORT_PRESS) {
-            /* Short Click: Toggle Play / Pause */
-            k_mutex_lock(&g_player_mutex, K_FOREVER);
-            g_player.state = toggle_play_pause(g_player.state);
-            g_player.state_changed = true;
-            const song_info_t *s = get_song_info(g_player.current_song_index);
-            printk("[Nav] USER_BUTTON (Click) -> Track [%u] '%s %s' is now %s\n",
-                   g_player.current_song_index + 1, s->name1, s->name2,
-                   get_player_state_str(g_player.state));
-            k_mutex_unlock(&g_player_mutex);
+            if (sd_card_get_mode() == SD_MODE_USB_CARD_READER) {
+                /* Exit card reader mode back to player */
+                sd_card_set_mode(SD_MODE_STANDALONE);
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.state_changed = true;
+                k_mutex_unlock(&g_player_mutex);
+            } else {
+                /* Short Click: Toggle Play / Pause */
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.state = toggle_play_pause(g_player.state);
+                g_player.state_changed = true;
+                const song_info_t *s = get_song_info(g_player.current_song_index);
+                printk("[Nav] USER_BUTTON (Click) -> Track [%u] '%s %s' is now %s\n",
+                       g_player.current_song_index + 1, s->name1, s->name2,
+                       get_player_state_str(g_player.state));
+                k_mutex_unlock(&g_player_mutex);
+            }
         } else if (press_evt == BTN_EVT_LONG_PRESS) {
-            /* Long Press: Full Stop Playback */
+            if (sd_card_get_mode() == SD_MODE_USB_CARD_READER) {
+                /* Exit card reader mode */
+                sd_card_set_mode(SD_MODE_STANDALONE);
+            } else {
+                /* Long Press: Enter USB Card Reader mode! */
+                audio_engine_stop();
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.state = PLAYER_STATE_STOPPED;
+                g_player.state_changed = true;
+                k_mutex_unlock(&g_player_mutex);
+                sd_card_set_mode(SD_MODE_USB_CARD_READER);
+            }
             k_mutex_lock(&g_player_mutex, K_FOREVER);
-            g_player.state = PLAYER_STATE_STOPPED;
             g_player.state_changed = true;
-            printk("[Nav] USER_BUTTON (Hold) -> STOPPED playback.\n");
             k_mutex_unlock(&g_player_mutex);
         }
 

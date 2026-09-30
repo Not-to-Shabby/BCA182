@@ -14,6 +14,7 @@
 #include "player_logic.h"
 #include "lcd_st7789.h"
 #include "audio_engine.h"
+#include "audio_codec_es8388.h"
 #include "threads.h"
 
 /* -------------------------------------------------------------------------- */
@@ -66,9 +67,18 @@ int main(void)
     printk("[System] Initializing buttons (PC0,PC1,PC4,PC5,PA0) and peripheral pins...\n");
     init_player_peripherals();
 
-    /* 3. Initialize Hardware Timer TIM3_CH3 PWM Audio Synthesizer (PB0) */
-    printk("[System] Initializing hardware audio synthesizer (TIM3_CH3 on PB0)...\n");
+    /* 3. Initialize hardware audio synthesizer (ES8388 on 3.5mm jack) */
+    printk("[System] Initializing hardware audio synthesizer (ES8388 on CN3)...\n");
     audio_engine_init();
+
+    /* 3b. Boot self-test: 2-second 440 Hz tone on the 3.5mm jack + LCD status.
+     * If this tone is silent, the codec/I2S path is dead regardless of buttons. */
+    printk("[System] Boot test tone: 440 Hz for 2s on CN3...\n");
+    audio_engine_start_song(0);
+    k_sleep(K_MSEC(2000));
+    audio_engine_stop();
+    printk("[System] Boot test tone finished. Codec status: %s\n",
+           audio_hardware_dac_status());
 
     /* 4. Initialize ST7789 LCD display, FSMC 8080 bus, and Backlight (PF9) */
     k_mutex_lock(&g_lcd_mutex, K_FOREVER);

@@ -195,7 +195,6 @@ static void audio_timer_handler(struct k_timer *timer_id)
     ARG_UNUSED(timer_id);
 
     if (!s_is_playing) {
-        hw_stop_tone();
         audio_hardware_dac_stop();
         return;
     }

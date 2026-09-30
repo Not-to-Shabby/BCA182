@@ -43,6 +43,13 @@ void audio_hardware_dac_stop(void);
  */
 void audio_hardware_dac_set_volume(uint8_t volume_percent);
 
+/**
+ * @brief Get a short diagnostic string describing codec/I2S init status.
+ *
+ * @return Pointer to a static NUL-terminated buffer (e.g. "ES8388:ACK PLL:OK")
+ */
+const char *audio_hardware_dac_status(void);
+
 #ifdef __cplusplus
 }
 #endif

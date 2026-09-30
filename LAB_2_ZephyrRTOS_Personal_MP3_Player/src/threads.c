@@ -17,6 +17,7 @@
 #include "threads.h"
 #include "lcd_st7789.h"
 #include "audio_engine.h"
+#include "audio_codec_es8388.h"
 #include <zephyr/sys/printk.h>
 #include <stm32f4xx.h>
 #include <stdio.h>
@@ -251,6 +252,10 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
     lcd_draw_line(0, 188, LCD_WIDTH - 1, 188, LCD_COLOR_DARKGREY);
     lcd_show_string(10, 196, "UP/DN:Track (Hold:P/P)", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
     lcd_show_string(10, 216, "L/R:Vol | PA0:Play/Stop", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+
+    /* Codec/I2S diagnostic line (ground truth for the audio path) */
+    lcd_show_string(10, 232, audio_hardware_dac_status(),
+                    LCD_COLOR_MAGENTA, LCD_COLOR_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */

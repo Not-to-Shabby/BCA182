@@ -352,14 +352,28 @@ void sd_card_set_mode(sd_reader_mode_t mode)
             printk("[SD_FS] Unmounted FAT32 volume from MCU for exclusive PC access.\n");
         }
 
-        /* Note: USB is now initialized at boot to satisfy Windows enumeration timing.
-         * We just connect/disconnect the Mass Storage class logic.
-         */
+        /* Force USB Re-enumeration (simulate physical replug) */
+        RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+        uint32_t old_moder = GPIOA->MODER;
+        uint32_t old_otyper = GPIOA->OTYPER;
+        uint32_t old_pupdr = GPIOA->PUPDR;
+        
+        GPIOA->MODER = (GPIOA->MODER & ~(3U << 24)) | (1U << 24); /* Output */
+        GPIOA->OTYPER &= ~(1U << 12); /* Push-Pull */
+        GPIOA->PUPDR &= ~(3U << 24); /* No pull */
+        GPIOA->ODR &= ~(1U << 12); /* Drive LOW */
+        
+        k_msleep(150); /* Hold low long enough for Windows to see disconnect */
+        
+        /* Restore Alternate Function */
+        GPIOA->MODER = old_moder;
+        GPIOA->OTYPER = old_otyper;
+        GPIOA->PUPDR = old_pupdr;
+        k_msleep(50);
 
         /* 2. Enable Zephyr USB Device Stack with Mass Storage Class */
-        int ret = 0;
+        int ret = usb_enable(NULL);
         if (ret == 0) {
-            usb_enable(NULL); // Re-enable logical connection
             s_current_mode = SD_MODE_USB_CARD_READER;
             printk("[USB_MSC] USB Card Reader active! Plug cable into CN4 to view SD card in Windows.\n");
             uart1_direct_print("[USB_MSC] USB Card Reader active! Connect CN4 to PC.\n");
@@ -370,7 +384,7 @@ void sd_card_set_mode(sd_reader_mode_t mode)
         printk("\n[USB_MSC] Disabling USB Card Reader mode...\n");
         uart1_direct_print("[USB_MSC] Disabling USB Card Reader mode...\n");
 
-        /* 1. Disable USB Logical Connection */
+        /* 1. Disable USB Device */
         usb_disable();
         k_msleep(200);
 

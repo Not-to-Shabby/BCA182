@@ -1,3 +1,4 @@
+#include "wav_player.h"
 /**
  * @file main.c
  * @brief Main entry point for Laboratory Activity 2: Personal MP3 Player.
@@ -75,6 +76,7 @@ int main(void)
 {
     /* 1. Initialize GPIO buttons, LEDs, and direct hardware USART1 on PA9/PA10 */
     init_player_peripherals();
+    wav_player_init();
 
     /* 2. Transmit user operating guide via direct USART1 (ST-LINK VCP on COM7) */
     print_uart_instructions();

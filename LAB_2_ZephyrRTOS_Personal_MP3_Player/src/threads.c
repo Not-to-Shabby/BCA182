@@ -1,3 +1,5 @@
+#include "wav_player.h"
+#include "sd_card_reader.h"
 /**
  * @file threads.c
  * @brief Implementation of the 3 cooperative Zephyr RTOS threads for the
@@ -347,7 +349,7 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
 
     /* Track Number and Title */
     const song_info_t *c_song = get_song_info(cur_song_idx);
-    snprintf(buf, sizeof(buf), "Track #%u of %u", cur_song_idx + 1, TOTAL_PLAYABLE_SONGS);
+    snprintf(buf, sizeof(buf), "Track #%u of %u", cur_song_idx + 1, (8 + sd_card_get_track_count()));
     lcd_show_string(14, 44, buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 
     lcd_show_string(14, 60, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
@@ -413,18 +415,22 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         /* 2. Synchronize Audio Synthesizer Engine */
         if (current_state == PLAYER_STATE_PLAYING) {
             if (last_audio_state != PLAYER_STATE_PLAYING || current_song != last_audio_song) {
-                audio_engine_start_song(current_song);
+                if (current_song < sd_card_get_track_count()) {
+                    wav_player_start(sd_card_get_track(current_song)->filename);
+                } else {
+                    audio_engine_start_song(current_song - sd_card_get_track_count());
+                }
                 last_audio_song = current_song;
-            } else if (!audio_engine_is_playing()) {
-                audio_engine_resume();
+            } else if (!(audio_engine_is_playing() || wav_player_is_active())) {
+                if (current_song < sd_card_get_track_count()) { wav_player_resume(); } else { audio_engine_resume(); }
             }
         } else if (current_state == PLAYER_STATE_PAUSED) {
-            if (audio_engine_is_playing()) {
-                audio_engine_pause();
+            if (audio_engine_is_playing() || wav_player_is_active()) {
+                if (wav_player_is_active()) { wav_player_pause(); } else { audio_engine_pause(); }
             }
         } else if (current_state == PLAYER_STATE_STOPPED) {
-            if (audio_engine_is_playing()) {
-                audio_engine_stop();
+            if (audio_engine_is_playing() || wav_player_is_active()) {
+                wav_player_stop(); audio_engine_stop();
             }
         }
         last_audio_state = current_state;
@@ -588,7 +594,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
             if (up_evt == BTN_EVT_SHORT_PRESS) {
                 /* Short Click: Next Track (+1) */
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
-                g_player.current_song_index = (g_player.current_song_index + 1) % TOTAL_PLAYABLE_SONGS;
+                g_player.current_song_index = (g_player.current_song_index + 1) % (8 + sd_card_get_track_count());
                 g_player.state_changed = true;
                 const song_info_t *s = get_song_info(g_player.current_song_index);
                 printk("[Nav] UP (Click) -> Next Track [%u/8]: %s %s\n",
@@ -596,7 +602,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
                 k_mutex_unlock(&g_player_mutex);
             } else if (up_evt == BTN_EVT_LONG_PRESS) {
                 /* Long Press on UP: Enter USB Card Reader mode! */
-                audio_engine_stop();
+                wav_player_stop(); audio_engine_stop();
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
                 g_player.state = PLAYER_STATE_STOPPED;
                 g_player.state_changed = true;
@@ -610,7 +616,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
             if (down_evt == BTN_EVT_SHORT_PRESS) {
                 /* Short Click: Previous Track (-1) */
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
-                g_player.current_song_index = (g_player.current_song_index + TOTAL_PLAYABLE_SONGS - 1) % TOTAL_PLAYABLE_SONGS;
+                g_player.current_song_index = (g_player.current_song_index + (8 + sd_card_get_track_count()) - 1) % (8 + sd_card_get_track_count());
                 g_player.state_changed = true;
                 const song_info_t *s = get_song_info(g_player.current_song_index);
                 printk("[Nav] DOWN (Click) -> Prev Track [%u/8]: %s %s\n",
@@ -644,7 +650,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
             }
         } else if (press_evt == BTN_EVT_LONG_PRESS) {
             /* Long Press: Stop playback */
-            audio_engine_stop();
+            wav_player_stop(); audio_engine_stop();
             k_mutex_lock(&g_player_mutex, K_FOREVER);
             g_player.state = PLAYER_STATE_STOPPED;
             g_player.state_changed = true;
@@ -705,7 +711,7 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
                 s_fmt_triggered = false;
             } else if (!s_fmt_triggered && (now - s_fmt_start_ms) >= 1200) {
                 s_fmt_triggered = true;
-                audio_engine_stop();
+                wav_player_stop(); audio_engine_stop();
                 k_mutex_lock(&g_lcd_mutex, K_FOREVER);
                 lcd_show_string(12, 172, "FORMATTING FAT32... ", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
                 k_mutex_unlock(&g_lcd_mutex);

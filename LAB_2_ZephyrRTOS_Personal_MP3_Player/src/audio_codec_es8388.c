@@ -10,6 +10,7 @@
  */
 
 #include "audio_codec_es8388.h"
+#include "wav_player.h"
 #include <stdio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
@@ -76,10 +77,32 @@ static void spi3_i2s_isr(const void *arg)
     ARG_UNUSED(arg);
 
     while (SPI3->SR & SPI_SR_TXE) {
-        if (!s_dac_active || s_phase_inc == 0) {
+        if (!s_dac_active) {
             SPI3->DR = 0;
             DAC->DHR12R1 = 2048; /* Mid-rail bias */
-        } else {
+        } else if (wav_player_is_active()) {
+            /* 1. WAV Player Streaming Mode */
+            int16_t out_sample;
+            if (wav_player_get_next_sample(&out_sample)) {
+                SPI3->DR = (uint16_t)out_sample;
+                
+                /* Downmix signed 16-bit to unsigned 12-bit for DAC1 PA4 */
+                int32_t val12 = (int32_t)out_sample / 16 + 2048;
+                if (val12 < 0) val12 = 0;
+                if (val12 > 4095) val12 = 4095;
+                
+                /* Only update the analog DAC once per stereo pair to avoid doubling pitch */
+                if (s_channel_toggle) {
+                    DAC->DHR12R1 = (uint16_t)val12;
+                }
+                s_channel_toggle = !s_channel_toggle;
+                s_diag.i2s_tx_samples++;
+            } else {
+                SPI3->DR = 0; /* Underflow */
+                DAC->DHR12R1 = 2048;
+            }
+        } else if (s_phase_inc > 0) {
+            /* 2. Legacy DDS Synthesizer Mode */
             /* 12-bit sine sample (0 to 4095) */
             uint16_t sample = s_dac_scaled_table[(s_phase_acc >> 27) & 31];
 

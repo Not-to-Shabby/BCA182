@@ -278,18 +278,20 @@ static void render_diag_box(void)
     lcd_show_string(12, 154, buf, wave_col, LCD_COLOR_DARKGREY);
 
     /* Line 3: SD Card Status & I2S samples */
-    if (sd_card_is_present()) {
-        if (sd_card_is_mounted()) {
-            snprintf(buf, sizeof(buf), "SD:FAT32 %uTRK|I2S:%uK",
-                     sd_card_get_track_count(), (unsigned int)(diag->i2s_tx_samples / 1000U));
-        } else {
-            snprintf(buf, sizeof(buf), "SD:CARD IN (READY)|I2S");
-        }
+    const sd_card_inspection_t *sd_insp = sd_card_get_inspection();
+    if (sd_card_is_mounted()) {
+        snprintf(buf, sizeof(buf), "SD:FAT32 %uTRK|I2S:%uK",
+                 sd_card_get_track_count(), (unsigned int)(diag->i2s_tx_samples / 1000U));
+        lcd_show_string(12, 172, buf, LCD_COLOR_GREEN, LCD_COLOR_DARKGREY);
+    } else if (sd_insp->card_initialized) {
+        snprintf(buf, sizeof(buf), "SD:%-5s(L+R+D:FMT)|I2S",
+                 sd_insp->detected_fs_name);
+        lcd_show_string(12, 172, buf, LCD_COLOR_ORANGE, LCD_COLOR_DARKGREY);
     } else {
         snprintf(buf, sizeof(buf), "SD:NO CARD |I2S:%uK",
                  (unsigned int)(diag->i2s_tx_samples / 1000U));
+        lcd_show_string(12, 172, buf, LCD_COLOR_CYAN, LCD_COLOR_DARKGREY);
     }
-    lcd_show_string(12, 172, buf, LCD_COLOR_CYAN, LCD_COLOR_DARKGREY);
 }
 
 static void render_usb_msc_screen(void)
@@ -685,51 +687,90 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
          */
         bool left_active  = ((GPIOC->IDR & (1U << 0)) == 0);
         bool right_active = ((GPIOC->IDR & (1U << 4)) == 0);
+        bool down_active  = ((GPIOC->IDR & (1U << 1)) == 0);
         bool aux_active   = ((GPIOA->IDR & (1U << 1)) == 0);
 
         bool both_raw = (left_active && right_active);
+        bool triple_fmt_raw = (left_active && right_active && down_active);
 
-        /* Dual-button detection: hold LEFT + RIGHT together (>= 450 ms) to toggle buzzer mute */
-        if (both_raw) {
-            if (!s_both_lr_active) {
-                if (s_both_lr_stable < 3) {
-                    s_both_lr_stable++;
-                    if (s_both_lr_stable == 3) {
-                        s_both_lr_active = true;
-                        s_both_lr_start_ms = now;
-                        s_both_lr_triggered = false;
-                    }
-                }
-            } else {
-                if (!s_both_lr_triggered && (now - s_both_lr_start_ms) >= 450) {
-                    s_both_lr_triggered = true;
-                    bool muted = audio_engine_toggle_buzzer();
-                    k_mutex_lock(&g_player_mutex, K_FOREVER);
-                    g_player.state_changed = true;
-                    k_mutex_unlock(&g_player_mutex);
+        static bool s_fmt_active = false;
+        static bool s_fmt_triggered = false;
+        static uint32_t s_fmt_start_ms = 0;
 
-                    if (muted) {
-                        printk("[Audio] BUZZER MUTED (Headphone Only Mode)!\n");
-                        uart1_direct_print("[Audio] BUZZER MUTED (Headphone Only Mode)!\n");
-                    } else {
-                        printk("[Audio] BUZZER ENABLED (Dual Audio Mode)!\n");
-                        uart1_direct_print("[Audio] BUZZER ENABLED (Dual Audio Mode)!\n");
-                    }
+        /* 1. Triple-button detection: hold LEFT + RIGHT + DOWN (>= 1200 ms) to FORMAT SD to FAT32 */
+        if (triple_fmt_raw) {
+            if (!s_fmt_active) {
+                s_fmt_active = true;
+                s_fmt_start_ms = now;
+                s_fmt_triggered = false;
+            } else if (!s_fmt_triggered && (now - s_fmt_start_ms) >= 1200) {
+                s_fmt_triggered = true;
+                audio_engine_stop();
+                k_mutex_lock(&g_lcd_mutex, K_FOREVER);
+                lcd_show_string(12, 172, "FORMATTING FAT32... ", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+                k_mutex_unlock(&g_lcd_mutex);
+
+                int fmt_res = sd_card_format_fat32();
+
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.state_changed = true;
+                k_mutex_unlock(&g_player_mutex);
+
+                if (fmt_res == 0) {
+                    printk("[SD] Micro-SD formatted to FAT32 successfully!\n");
+                    uart1_direct_print("[SD] Micro-SD formatted to FAT32 successfully!\n");
                 }
             }
-            /* Suppress individual click/repeat events while both are held */
             btn_left.long_triggered = true;
             btn_right.long_triggered = true;
         } else {
-            if (s_both_lr_triggered) {
+            s_fmt_active = false;
+            s_fmt_start_ms = 0;
+            if (!left_active && !right_active && !down_active) {
+                s_fmt_triggered = false;
+            }
+
+            /* 2. Dual-button detection: hold LEFT + RIGHT together (>= 450 ms) to toggle buzzer mute */
+            if (both_raw) {
+                if (!s_both_lr_active) {
+                    if (s_both_lr_stable < 3) {
+                        s_both_lr_stable++;
+                        if (s_both_lr_stable == 3) {
+                            s_both_lr_active = true;
+                            s_both_lr_start_ms = now;
+                            s_both_lr_triggered = false;
+                        }
+                    }
+                } else {
+                    if (!s_both_lr_triggered && (now - s_both_lr_start_ms) >= 450) {
+                        s_both_lr_triggered = true;
+                        bool muted = audio_engine_toggle_buzzer();
+                        k_mutex_lock(&g_player_mutex, K_FOREVER);
+                        g_player.state_changed = true;
+                        k_mutex_unlock(&g_player_mutex);
+
+                        if (muted) {
+                            printk("[Audio] BUZZER MUTED (Headphone Only Mode)!\n");
+                            uart1_direct_print("[Audio] BUZZER MUTED (Headphone Only Mode)!\n");
+                        } else {
+                            printk("[Audio] BUZZER ENABLED (Dual Audio Mode)!\n");
+                            uart1_direct_print("[Audio] BUZZER ENABLED (Dual Audio Mode)!\n");
+                        }
+                    }
+                }
                 btn_left.long_triggered = true;
                 btn_right.long_triggered = true;
-            }
-            s_both_lr_active = false;
-            s_both_lr_stable = 0;
-            s_both_lr_start_ms = 0;
-            if (!left_active && !right_active) {
-                s_both_lr_triggered = false;
+            } else {
+                if (s_both_lr_triggered) {
+                    btn_left.long_triggered = true;
+                    btn_right.long_triggered = true;
+                }
+                s_both_lr_active = false;
+                s_both_lr_stable = 0;
+                s_both_lr_start_ms = 0;
+                if (!left_active && !right_active) {
+                    s_both_lr_triggered = false;
+                }
             }
         }
 

@@ -195,6 +195,15 @@ The firmware bridges the onboard **Micro-SD card socket** and the **native USB T
 - **Hardware Interface**: High-speed **4-bit SDIO** running on pins `PC8..11` (Data), `PC12` (Clock), and `PD2` (Command), with automatic card presence detection on `PF3` (`GPIO_CARD_DETECT`, active LOW).
 - **Filesystem Engine**: Native **FatFs (ELM FAT)** engine supporting Long Filenames (LFN) and directory scanning on the `/SD:` mountpoint.
 
+### C. Low-Level Filesystem Inspection & On-Device Formatting
+- **Automatic Format Detection**:
+  - The firmware reads Sector 0 (MBR) and the Volume Boot Record (VBR) to inspect partition types and OEM strings.
+  - Automatically identifies whether the card is formatted as **FAT32**, **exFAT**, **NTFS**, **FAT16**, or **RAW/Unformatted**.
+  - Prints a comprehensive hardware inspection report over `USART1` (ST-Link VCP on `COM7`).
+- **On-Device FAT32 Formatting (`LEFT + RIGHT + DOWN`)**:
+  - If a Micro-SD card has an unsupported filesystem (like exFAT or NTFS), the screen shows `SD: exFAT (L+R+D:FMT)`.
+  - Pressing and holding **`LEFT + RIGHT + DOWN` together ($\ge 1200\text{ ms}$)** automatically runs FatFs `f_mkfs()` to format the card directly to FAT32 on the board, re-mounts it, and creates a clean root directory!
+
 ---
 
 ## 6. Software Architecture & Concurrency Model

@@ -265,11 +265,16 @@ static void render_diag_box(void)
         lcd_show_string(12, 138, buf, LCD_COLOR_RED, LCD_COLOR_DARKGREY);
     }
 
-    /* Line 2: PLLI2S & Live Buzzer State */
-    snprintf(buf, sizeof(buf), "PLL:%-4s|BUZZER:%-5s",
-             diag->pll_locked ? "LOCK" : "FAIL",
+    /* Line 2: Waveform & Live Buzzer State */
+    audio_waveform_t wave = audio_hardware_dac_get_waveform();
+    uint16_t wave_col = (wave == AUDIO_WAVE_SINE)     ? LCD_COLOR_CYAN :
+                        (wave == AUDIO_WAVE_TRIANGLE) ? LCD_COLOR_YELLOW :
+                        (wave == AUDIO_WAVE_SAWTOOTH) ? LCD_COLOR_ORANGE :
+                                                        LCD_COLOR_MAGENTA;
+    snprintf(buf, sizeof(buf), "WAVE:%-4s|BUZZER:%-5s",
+             audio_hardware_dac_get_waveform_name(),
              buz_muted ? "MUTED" : "ON");
-    lcd_show_string(12, 154, buf, buz_muted ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(12, 154, buf, wave_col, LCD_COLOR_DARKGREY);
 
     /* Line 3: I2S Samples streamed */
     snprintf(buf, sizeof(buf), "I2S TX:%-7u SAMPLES", diag->i2s_tx_samples);
@@ -313,10 +318,10 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
     /* Live Hardware Diagnostic Card */
     render_diag_box();
 
-    /* Directional D-Pad Controls Footer with Buzzer Mute Hint */
+    /* Directional D-Pad Controls Footer with Waveform & Buzzer Mute Hints */
     lcd_draw_line(0, 196, LCD_WIDTH - 1, 196, LCD_COLOR_DARKGREY);
     lcd_show_string(10, 202, "UP/DN:Track | L/R:Vol", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
-    lcd_show_string(10, 218, "PA0:Play | L+R:MuteBuz", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    lcd_show_string(10, 218, "U+D:Wave | L+R:MuteBuz", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -336,6 +341,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
     uint16_t last_rendered_note = 0xFFFF;
     uint32_t last_rendered_samples = 0xFFFFFFFF;
     bool last_rendered_buzzer = false;
+    audio_waveform_t last_rendered_wave = (audio_waveform_t)0xFF;
 
     uint8_t last_audio_song = 0xFF;
     player_state_t last_audio_state = (player_state_t)0xFF;
@@ -387,6 +393,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         const audio_diagnostics_t *diag = audio_get_diagnostics();
         uint32_t current_samples = diag->i2s_tx_samples;
         bool current_buzzer = audio_engine_is_buzzer_muted();
+        audio_waveform_t current_wave = audio_hardware_dac_get_waveform();
 
         bool full_redraw = force_redraw ||
                            (current_state != last_rendered_state) ||
@@ -394,7 +401,8 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         bool vol_changed = (volume != last_rendered_vol);
         bool note_changed = (current_note != last_rendered_note);
         bool diag_changed = (current_samples / 5000U != last_rendered_samples / 5000U) ||
-                            (current_buzzer != last_rendered_buzzer);
+                            (current_buzzer != last_rendered_buzzer) ||
+                            (current_wave != last_rendered_wave);
 
         if (full_redraw) {
             if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
@@ -405,6 +413,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                 last_rendered_note = current_note;
                 last_rendered_samples = current_samples;
                 last_rendered_buzzer = current_buzzer;
+                last_rendered_wave = current_wave;
                 k_mutex_unlock(&g_lcd_mutex);
             }
         } else {
@@ -428,6 +437,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                     render_diag_box();
                     last_rendered_samples = current_samples;
                     last_rendered_buzzer = current_buzzer;
+                    last_rendered_wave = current_wave;
                     k_mutex_unlock(&g_lcd_mutex);
                 }
             }
@@ -453,6 +463,11 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
     static button_tracker_t btn_down  = {0};
     static button_tracker_t btn_press = {0};
 
+    static bool s_both_ud_active = false;
+    static bool s_both_ud_triggered = false;
+    static uint32_t s_both_ud_start_ms = 0;
+    static uint8_t s_both_ud_stable = 0;
+
     while (1) {
         uint32_t now = k_uptime_get_32();
 
@@ -465,50 +480,94 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
         bool down_active  = ((GPIOC->IDR & (1U << 1)) == 0);
         bool press_active = ((GPIOA->IDR & (1U << 0)) != 0);
 
+        bool both_ud_raw = (up_active && down_active);
+
+        /* Dual-button detection: hold UP + DOWN together (>= 450 ms) to cycle waveform */
+        if (both_ud_raw) {
+            if (!s_both_ud_active) {
+                if (s_both_ud_stable < 3) {
+                    s_both_ud_stable++;
+                    if (s_both_ud_stable == 3) {
+                        s_both_ud_active = true;
+                        s_both_ud_start_ms = now;
+                        s_both_ud_triggered = false;
+                    }
+                }
+            } else {
+                if (!s_both_ud_triggered && (now - s_both_ud_start_ms) >= 450) {
+                    s_both_ud_triggered = true;
+                    audio_hardware_dac_cycle_waveform();
+                    k_mutex_lock(&g_player_mutex, K_FOREVER);
+                    g_player.state_changed = true;
+                    k_mutex_unlock(&g_player_mutex);
+
+                    printk("[Audio] WAVEFORM CYCLED -> %s!\n", audio_hardware_dac_get_waveform_name());
+                    uart1_direct_print("[Audio] WAVEFORM CYCLED -> ");
+                    uart1_direct_print(audio_hardware_dac_get_waveform_name());
+                    uart1_direct_print("!\n");
+                }
+            }
+            btn_up.long_triggered = true;
+            btn_down.long_triggered = true;
+        } else {
+            if (s_both_ud_triggered) {
+                btn_up.long_triggered = true;
+                btn_down.long_triggered = true;
+            }
+            s_both_ud_active = false;
+            s_both_ud_stable = 0;
+            s_both_ud_start_ms = 0;
+            if (!up_active && !down_active) {
+                s_both_ud_triggered = false;
+            }
+        }
+
         button_event_t up_evt    = update_button_state(&btn_up, up_active, now, 450, 0);
         button_event_t down_evt  = update_button_state(&btn_down, down_active, now, 450, 0);
         button_event_t press_evt = update_button_state(&btn_press, press_active, now, 500, 0);
 
-        /* 1. UP Button Events */
-        if (up_evt == BTN_EVT_SHORT_PRESS) {
-            /* Short Click: Next Track (+1) */
-            k_mutex_lock(&g_player_mutex, K_FOREVER);
-            g_player.current_song_index = (g_player.current_song_index + 1) % TOTAL_PLAYABLE_SONGS;
-            g_player.state_changed = true;
-            const song_info_t *s = get_song_info(g_player.current_song_index);
-            printk("[Nav] UP (Click) -> Next Track [%u/8]: %s %s\n",
-                   g_player.current_song_index + 1, s->name1, s->name2);
-            k_mutex_unlock(&g_player_mutex);
-        } else if (up_evt == BTN_EVT_LONG_PRESS) {
-            /* Long Press: Jump to Track 1 (Für Elise) */
-            k_mutex_lock(&g_player_mutex, K_FOREVER);
-            g_player.current_song_index = 0;
-            g_player.state_changed = true;
-            const song_info_t *s = get_song_info(0);
-            printk("[Nav] UP (Hold) -> Jump to Track [1/8]: %s %s\n", s->name1, s->name2);
-            k_mutex_unlock(&g_player_mutex);
-        }
+        if (!both_ud_raw && !s_both_ud_triggered) {
+            /* 1. UP Button Events */
+            if (up_evt == BTN_EVT_SHORT_PRESS) {
+                /* Short Click: Next Track (+1) */
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.current_song_index = (g_player.current_song_index + 1) % TOTAL_PLAYABLE_SONGS;
+                g_player.state_changed = true;
+                const song_info_t *s = get_song_info(g_player.current_song_index);
+                printk("[Nav] UP (Click) -> Next Track [%u/8]: %s %s\n",
+                       g_player.current_song_index + 1, s->name1, s->name2);
+                k_mutex_unlock(&g_player_mutex);
+            } else if (up_evt == BTN_EVT_LONG_PRESS) {
+                /* Long Press: Jump to Track 1 (Für Elise) */
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.current_song_index = 0;
+                g_player.state_changed = true;
+                const song_info_t *s = get_song_info(0);
+                printk("[Nav] UP (Hold) -> Jump to Track [1/8]: %s %s\n", s->name1, s->name2);
+                k_mutex_unlock(&g_player_mutex);
+            }
 
-        /* 2. DOWN Button Events */
-        if (down_evt == BTN_EVT_SHORT_PRESS) {
-            /* Short Click: Previous Track (-1) */
-            k_mutex_lock(&g_player_mutex, K_FOREVER);
-            g_player.current_song_index = (g_player.current_song_index + TOTAL_PLAYABLE_SONGS - 1) % TOTAL_PLAYABLE_SONGS;
-            g_player.state_changed = true;
-            const song_info_t *s = get_song_info(g_player.current_song_index);
-            printk("[Nav] DOWN (Click) -> Prev Track [%u/8]: %s %s\n",
-                   g_player.current_song_index + 1, s->name1, s->name2);
-            k_mutex_unlock(&g_player_mutex);
-        } else if (down_evt == BTN_EVT_LONG_PRESS) {
-            /* Long Press: Toggle Play / Pause on current track without changing tracks */
-            k_mutex_lock(&g_player_mutex, K_FOREVER);
-            g_player.state = toggle_play_pause(g_player.state);
-            g_player.state_changed = true;
-            const song_info_t *s = get_song_info(g_player.current_song_index);
-            printk("[Nav] DOWN (Hold) -> PLAY/PAUSE: Track [%u] '%s %s' is now %s\n",
-                   g_player.current_song_index + 1, s->name1, s->name2,
-                   get_player_state_str(g_player.state));
-            k_mutex_unlock(&g_player_mutex);
+            /* 2. DOWN Button Events */
+            if (down_evt == BTN_EVT_SHORT_PRESS) {
+                /* Short Click: Previous Track (-1) */
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.current_song_index = (g_player.current_song_index + TOTAL_PLAYABLE_SONGS - 1) % TOTAL_PLAYABLE_SONGS;
+                g_player.state_changed = true;
+                const song_info_t *s = get_song_info(g_player.current_song_index);
+                printk("[Nav] DOWN (Click) -> Prev Track [%u/8]: %s %s\n",
+                       g_player.current_song_index + 1, s->name1, s->name2);
+                k_mutex_unlock(&g_player_mutex);
+            } else if (down_evt == BTN_EVT_LONG_PRESS) {
+                /* Long Press: Toggle Play / Pause on current track without changing tracks */
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.state = toggle_play_pause(g_player.state);
+                g_player.state_changed = true;
+                const song_info_t *s = get_song_info(g_player.current_song_index);
+                printk("[Nav] DOWN (Hold) -> PLAY/PAUSE: Track [%u] '%s %s' is now %s\n",
+                       g_player.current_song_index + 1, s->name1, s->name2,
+                       get_player_state_str(g_player.state));
+                k_mutex_unlock(&g_player_mutex);
+            }
         }
 
         /* 3. PRESS / PA0 (USER_BUTTON) Events */
@@ -652,14 +711,14 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
 
         /* 3. AUX Button Events (PA1) */
         if (aux_evt == BTN_EVT_SHORT_PRESS) {
-            /* Short Click: Cycle presets 25% -> 50% -> 75% -> 100% -> 0% */
+            /* Short Click: Cycle Waveform (SINE -> TRIANGLE -> SAWTOOTH -> SQUARE) */
+            audio_hardware_dac_cycle_waveform();
             k_mutex_lock(&g_player_mutex, K_FOREVER);
-            g_player.volume_percent = (g_player.volume_percent + 25) % 125;
-            if (g_player.volume_percent > 100) {
-                g_player.volume_percent = 0;
-            }
             g_player.state_changed = true;
-            printk("[Volume] AUX (Click) -> Preset: %u%%\n", g_player.volume_percent);
+            printk("[Audio] AUX (Click) -> Waveform: %s\n", audio_hardware_dac_get_waveform_name());
+            uart1_direct_print("[Audio] AUX (Click) -> Waveform: ");
+            uart1_direct_print(audio_hardware_dac_get_waveform_name());
+            uart1_direct_print("\n");
             k_mutex_unlock(&g_player_mutex);
         } else if (aux_evt == BTN_EVT_LONG_PRESS) {
             /* Long Press: Instant Mute / Unmute Toggle */

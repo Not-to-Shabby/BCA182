@@ -44,6 +44,38 @@ void audio_hardware_dac_stop(void);
 void audio_hardware_dac_set_volume(uint8_t volume_percent);
 
 /**
+ * @brief Selectable synthesis waveforms for the analog DAC and ES8388 codec.
+ */
+typedef enum {
+    AUDIO_WAVE_SINE = 0,
+    AUDIO_WAVE_TRIANGLE,
+    AUDIO_WAVE_SAWTOOTH,
+    AUDIO_WAVE_SQUARE,
+    AUDIO_WAVE_COUNT
+} audio_waveform_t;
+
+/**
+ * @brief Set the active audio synthesizer waveform.
+ */
+void audio_hardware_dac_set_waveform(audio_waveform_t wave);
+
+/**
+ * @brief Get the current audio synthesizer waveform.
+ */
+audio_waveform_t audio_hardware_dac_get_waveform(void);
+
+/**
+ * @brief Cycle to the next waveform (SINE -> TRIANGLE -> SAWTOOTH -> SQUARE).
+ * @return New active waveform
+ */
+audio_waveform_t audio_hardware_dac_cycle_waveform(void);
+
+/**
+ * @brief Get human-readable name of the current waveform.
+ */
+const char* audio_hardware_dac_get_waveform_name(void);
+
+/**
  * @brief Live hardware audio diagnostic metrics.
  */
 typedef struct {

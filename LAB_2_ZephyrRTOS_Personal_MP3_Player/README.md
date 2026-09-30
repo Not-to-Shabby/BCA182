@@ -24,6 +24,8 @@ The application fulfills all engineering requirements specified in **Laboratory 
   - **DOWN Button (`PC1` / SW4)**:
     - *Short Click*: Cycles backward to the previous track ($-1$, Track 8 to 1).
     - *Long Hold ($\ge 450\,\text{ms}$)*: Toggles **Play / Pause** on the currently selected track without changing tracks!
+  - **UP + DOWN Simultaneous Hold ($\ge 450\,\text{ms}$)**:
+    - **Waveform / Instrument Timbre Cycle**: Switches the active synthesis waveform across **SINE** $\to$ **TRIANGLE** $\to$ **SAWTOOTH** $\to$ **SQUARE**. Track scrolling is automatically suppressed while both buttons are held.
   - **LEFT Button (`PC0` / SW3 - Volume Down)**:
     - *Short Click*: Decreases volume by $5\%$ per step.
     - *Long Hold / Repeat*: Rapidly and smoothly decreases volume down to $0\%$ (Mute) at 90 ms intervals.
@@ -37,8 +39,14 @@ The application fulfills all engineering requirements specified in **Laboratory 
     - *Short Click*: Toggles Play (`PLAYER_STATE_PLAYING`) and Pause (`PLAYER_STATE_PAUSED`).
     - *Long Hold ($\ge 500\,\text{ms}$)*: Fully stops playback (`PLAYER_STATE_STOPPED`).
   - **AUX Button (`PA1`)**:
-    - *Short Click*: Cycles volume presets ($25\% \to 50\% \to 75\% \to 100\% \to 0\%$).
-    - *Long Hold ($\ge 450\,\text{ms}$)*: Instant Mute / Unmute toggle, preserving and restoring previous volume level.
+    - *Short Click*: Cycles synthesis waveform (Sine, Triangle, Sawtooth, Square).
+    - *Long Hold ($\ge 450\,\text{ms}$)*: Instant Mute / Unmute volume toggle.
+- **Selectable Multi-Waveform Synthesis Engine**:
+  - **Sine Wave**: Ultra-pure harmonic fundamental, ideal for mellow classical music listening with zero harsh overtones.
+  - **Triangle Wave**: Soft, flute-like timbre with gentle odd harmonics rolling off at $1/n^2$.
+  - **Sawtooth Wave**: Bright, rich, brass/string-like timbre with full harmonic spectrum.
+  - **Square Wave**: Authentic retro 8-bit chiptune sound with strong odd harmonics.
+  - Waveform is rendered live on the ST7789 display card with color-coded badges (`SINE` in Cyan, `TRIANGLE` in Yellow, `SAWTOOTH` in Orange, `SQUARE` in Magenta).
 - **Audio Synthesizer & Note Playback Engine (Phase 5 Completed)**:
   - Generates authentic musical pitches via **hardware timer TIM3 Channel 3 (`PB0`) PWM**.
   - Direct microsecond period tuning ($f = 1000.0 / T\text{ Hz}$) covering notes $G_3$ to $D_6$.

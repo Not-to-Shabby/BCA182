@@ -17,7 +17,7 @@
 #include <stm32f4xx.h>
 
 /* -------------------------------------------------------------------------- */
-/* 32-Point Pure Harmonic Sinusoidal Waveform Table (12-bit, 0 to 4095)       */
+/* 32-Point Waveform Tables for Audio Synthesis (12-bit, 0 to 4095)           */
 /* -------------------------------------------------------------------------- */
 static const uint16_t SINE_32[32] = {
     2048, 2447, 2831, 3185, 3495, 3750, 3939, 4056,
@@ -26,6 +26,28 @@ static const uint16_t SINE_32[32] = {
        0,   39,  156,  345,  600,  910, 1264, 1648
 };
 
+static const uint16_t TRIANGLE_32[32] = {
+       0,  264,  528,  792, 1056, 1320, 1585, 1849,
+    2113, 2377, 2641, 2906, 3170, 3434, 3698, 3962,
+    3962, 3698, 3434, 3170, 2906, 2641, 2377, 2113,
+    1849, 1585, 1320, 1056,  792,  528,  264,    0
+};
+
+static const uint16_t SAWTOOTH_32[32] = {
+       0,  132,  264,  396,  528,  660,  792,  924,
+    1056, 1188, 1320, 1453, 1585, 1717, 1849, 1981,
+    2113, 2245, 2377, 2509, 2641, 2774, 2906, 3038,
+    3170, 3302, 3434, 3566, 3698, 3830, 3962, 4095
+};
+
+static const uint16_t SQUARE_32[32] = {
+    4095, 4095, 4095, 4095, 4095, 4095, 4095, 4095,
+    4095, 4095, 4095, 4095, 4095, 4095, 4095, 4095,
+       0,    0,    0,    0,    0,    0,    0,    0,
+       0,    0,    0,    0,    0,    0,    0,    0
+};
+
+static audio_waveform_t s_current_waveform = AUDIO_WAVE_SINE;
 static volatile uint16_t s_dac_scaled_table[32];
 static volatile bool s_dac_active = false;
 static volatile uint8_t s_current_volume = 70;
@@ -408,6 +430,17 @@ void audio_hardware_dac_init(void)
     printk("[Audio_DAC] Dual-Output Audio Synthesizer (PA4 + 3.5mm Jack CN3) active.\n");
 }
 
+static const uint16_t* get_waveform_raw_table(audio_waveform_t wave)
+{
+    switch (wave) {
+        case AUDIO_WAVE_TRIANGLE: return TRIANGLE_32;
+        case AUDIO_WAVE_SAWTOOTH: return SAWTOOTH_32;
+        case AUDIO_WAVE_SQUARE:   return SQUARE_32;
+        case AUDIO_WAVE_SINE:
+        default:                  return SINE_32;
+    }
+}
+
 void audio_hardware_dac_set_volume(uint8_t volume_percent)
 {
     if (volume_percent > 100) {
@@ -415,9 +448,11 @@ void audio_hardware_dac_set_volume(uint8_t volume_percent)
     }
     s_current_volume = volume_percent;
 
+    const uint16_t *raw_table = get_waveform_raw_table(s_current_waveform);
+
     /* Recompute scaled 32-sample table */
     for (int i = 0; i < 32; i++) {
-        int32_t centered = (int32_t)SINE_32[i] - 2048;
+        int32_t centered = (int32_t)raw_table[i] - 2048;
         int32_t scaled = (centered * (int32_t)volume_percent) / 100;
         s_dac_scaled_table[i] = (uint16_t)(scaled + 2048);
     }
@@ -426,6 +461,38 @@ void audio_hardware_dac_set_volume(uint8_t volume_percent)
     uint8_t es_vol = (uint8_t)((100 - volume_percent) * 192 / 100);
     es8388_reg_write(0x1A, es_vol); /* DAC L */
     es8388_reg_write(0x1B, es_vol); /* DAC R */
+}
+
+void audio_hardware_dac_set_waveform(audio_waveform_t wave)
+{
+    if (wave >= AUDIO_WAVE_COUNT) {
+        wave = AUDIO_WAVE_SINE;
+    }
+    s_current_waveform = wave;
+    audio_hardware_dac_set_volume(s_current_volume);
+}
+
+audio_waveform_t audio_hardware_dac_get_waveform(void)
+{
+    return s_current_waveform;
+}
+
+audio_waveform_t audio_hardware_dac_cycle_waveform(void)
+{
+    s_current_waveform = (audio_waveform_t)((s_current_waveform + 1) % AUDIO_WAVE_COUNT);
+    audio_hardware_dac_set_volume(s_current_volume);
+    return s_current_waveform;
+}
+
+const char* audio_hardware_dac_get_waveform_name(void)
+{
+    switch (s_current_waveform) {
+        case AUDIO_WAVE_TRIANGLE: return "TRIANGLE";
+        case AUDIO_WAVE_SAWTOOTH: return "SAWTOOTH";
+        case AUDIO_WAVE_SQUARE:   return "SQUARE";
+        case AUDIO_WAVE_SINE:
+        default:                  return "SINE";
+    }
 }
 
 void audio_hardware_dac_set_tone(float note_period_ms, uint8_t volume_percent)
@@ -464,9 +531,9 @@ const audio_diagnostics_t* audio_get_diagnostics(void)
 
 const char *audio_hardware_dac_status(void)
 {
-    snprintf(s_diag_str, sizeof(s_diag_str), "ES:%s R04:%02X PLL:%s",
+    snprintf(s_diag_str, sizeof(s_diag_str), "ES:%s R04:%02X W:%s",
              s_diag.es_detected ? (s_diag.es_addr == 0x10 ? "0x10" : "0x11") : "NACK",
              s_diag.reg04_readback,
-             s_diag.pll_locked ? "OK" : "FAIL");
+             audio_hardware_dac_get_waveform_name());
     return s_diag_str;
 }

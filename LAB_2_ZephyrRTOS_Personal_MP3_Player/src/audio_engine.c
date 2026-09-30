@@ -126,9 +126,11 @@ static void hw_pwm_init(void)
     TIM3->CR1 = TIM_CR1_CEN;
 }
 
+static volatile bool s_buzzer_muted = false;
+
 static void hw_set_tone(float note_period_ms, uint8_t volume_percent)
 {
-    if (note_period_ms <= 0.001f || volume_percent == 0) {
+    if (note_period_ms <= 0.001f || volume_percent == 0 || s_buzzer_muted) {
         TIM3->CCR3 = 0;
         TIM3->CCR4 = 0;
         return;
@@ -325,4 +327,26 @@ const musical_piece_t* audio_engine_get_piece(uint8_t song_index)
         song_index = 0;
     }
     return &s_catalog[song_index];
+}
+
+bool audio_engine_toggle_buzzer(void)
+{
+    s_buzzer_muted = !s_buzzer_muted;
+    if (s_buzzer_muted) {
+        hw_stop_tone();
+    }
+    return s_buzzer_muted;
+}
+
+bool audio_engine_is_buzzer_muted(void)
+{
+    return s_buzzer_muted;
+}
+
+void audio_engine_set_buzzer_muted(bool muted)
+{
+    s_buzzer_muted = muted;
+    if (s_buzzer_muted) {
+        hw_stop_tone();
+    }
 }

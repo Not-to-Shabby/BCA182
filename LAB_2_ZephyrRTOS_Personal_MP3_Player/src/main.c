@@ -50,7 +50,9 @@ static void print_uart_instructions(void)
         "  3. Audio Transport Control (PLAY / PAUSE / STOP):\n"
         "     - PA0 (USER_BUTTON)  : Click -> Play/Pause | Hold -> Stop Playback\n"
         "     - DOWN (Long-Press)  : Hold >= 450ms -> Play/Pause Toggle on current track\n"
-        "  4. RGB LED State Indicators:\n"
+        "  4. Buzzer Mute Toggle (Headphone Mode):\n"
+        "     - Hold LEFT + RIGHT together (>= 450ms) to Mute / Unmute the Buzzer\n"
+        "  5. RGB LED State Indicators:\n"
         "     - BLUE LED (PF11) : Song is PLAYING\n"
         "     - RED LED (PF12)  : Song is PAUSED or STOPPED\n"
         "=====================================================\n";

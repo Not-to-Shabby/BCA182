@@ -246,6 +246,7 @@ static void render_volume_row(uint8_t volume)
 static void render_diag_box(void)
 {
     const audio_diagnostics_t *diag = audio_get_diagnostics();
+    bool buz_muted = audio_engine_is_buzzer_muted();
     char buf[36];
 
     /* Card background box: y=134 to y=192 */
@@ -264,11 +265,11 @@ static void render_diag_box(void)
         lcd_show_string(12, 138, buf, LCD_COLOR_RED, LCD_COLOR_DARKGREY);
     }
 
-    /* Line 2: PLLI2S & Analog DAC1 status */
-    snprintf(buf, sizeof(buf), "PLL:%-4s|DAC1(PA4):%-4s",
+    /* Line 2: PLLI2S & Live Buzzer State */
+    snprintf(buf, sizeof(buf), "PLL:%-4s|BUZZER:%-5s",
              diag->pll_locked ? "LOCK" : "FAIL",
-             diag->dac_active ? "SINE" : "IDLE");
-    lcd_show_string(12, 154, buf, diag->pll_locked ? LCD_COLOR_WHITE : LCD_COLOR_ORANGE, LCD_COLOR_DARKGREY);
+             buz_muted ? "MUTED" : "ON");
+    lcd_show_string(12, 154, buf, buz_muted ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
 
     /* Line 3: I2S Samples streamed */
     snprintf(buf, sizeof(buf), "I2S TX:%-7u SAMPLES", diag->i2s_tx_samples);
@@ -312,10 +313,10 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
     /* Live Hardware Diagnostic Card */
     render_diag_box();
 
-    /* Directional D-Pad Controls Footer */
+    /* Directional D-Pad Controls Footer with Buzzer Mute Hint */
     lcd_draw_line(0, 196, LCD_WIDTH - 1, 196, LCD_COLOR_DARKGREY);
-    lcd_show_string(10, 202, "UP/DN:Track (Hold:P/P)", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
-    lcd_show_string(10, 218, "L/R:Vol | PA0:Play/Stop", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    lcd_show_string(10, 202, "UP/DN:Track | L/R:Vol", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    lcd_show_string(10, 218, "PA0:Play | L+R:MuteBuz", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -334,6 +335,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
     uint8_t last_rendered_vol = 0xFF;
     uint16_t last_rendered_note = 0xFFFF;
     uint32_t last_rendered_samples = 0xFFFFFFFF;
+    bool last_rendered_buzzer = false;
 
     uint8_t last_audio_song = 0xFF;
     player_state_t last_audio_state = (player_state_t)0xFF;
@@ -384,13 +386,15 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         uint16_t current_note = audio_engine_get_note_index();
         const audio_diagnostics_t *diag = audio_get_diagnostics();
         uint32_t current_samples = diag->i2s_tx_samples;
+        bool current_buzzer = audio_engine_is_buzzer_muted();
 
         bool full_redraw = force_redraw ||
                            (current_state != last_rendered_state) ||
                            (current_song != last_rendered_song);
         bool vol_changed = (volume != last_rendered_vol);
         bool note_changed = (current_note != last_rendered_note);
-        bool diag_changed = (current_samples / 5000U != last_rendered_samples / 5000U);
+        bool diag_changed = (current_samples / 5000U != last_rendered_samples / 5000U) ||
+                            (current_buzzer != last_rendered_buzzer);
 
         if (full_redraw) {
             if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
@@ -400,6 +404,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                 last_rendered_vol = volume;
                 last_rendered_note = current_note;
                 last_rendered_samples = current_samples;
+                last_rendered_buzzer = current_buzzer;
                 k_mutex_unlock(&g_lcd_mutex);
             }
         } else {
@@ -422,6 +427,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                 if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
                     render_diag_box();
                     last_rendered_samples = current_samples;
+                    last_rendered_buzzer = current_buzzer;
                     k_mutex_unlock(&g_lcd_mutex);
                 }
             }
@@ -545,6 +551,11 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
     static button_tracker_t btn_right = {0};
     static button_tracker_t btn_aux   = {0};
 
+    static bool s_both_lr_active = false;
+    static bool s_both_lr_triggered = false;
+    static uint32_t s_both_lr_start_ms = 0;
+    static uint8_t s_both_lr_stable = 0;
+
     while (1) {
         uint32_t now = k_uptime_get_32();
 
@@ -557,38 +568,86 @@ void adjust_volume(void *arg1, void *arg2, void *arg3)
         bool right_active = ((GPIOC->IDR & (1U << 4)) == 0);
         bool aux_active   = ((GPIOA->IDR & (1U << 1)) == 0);
 
+        bool both_raw = (left_active && right_active);
+
+        /* Dual-button detection: hold LEFT + RIGHT together (>= 450 ms) to toggle buzzer mute */
+        if (both_raw) {
+            if (!s_both_lr_active) {
+                if (s_both_lr_stable < 3) {
+                    s_both_lr_stable++;
+                    if (s_both_lr_stable == 3) {
+                        s_both_lr_active = true;
+                        s_both_lr_start_ms = now;
+                        s_both_lr_triggered = false;
+                    }
+                }
+            } else {
+                if (!s_both_lr_triggered && (now - s_both_lr_start_ms) >= 450) {
+                    s_both_lr_triggered = true;
+                    bool muted = audio_engine_toggle_buzzer();
+                    k_mutex_lock(&g_player_mutex, K_FOREVER);
+                    g_player.state_changed = true;
+                    k_mutex_unlock(&g_player_mutex);
+
+                    if (muted) {
+                        printk("[Audio] BUZZER MUTED (Headphone Only Mode)!\n");
+                        uart1_direct_print("[Audio] BUZZER MUTED (Headphone Only Mode)!\n");
+                    } else {
+                        printk("[Audio] BUZZER ENABLED (Dual Audio Mode)!\n");
+                        uart1_direct_print("[Audio] BUZZER ENABLED (Dual Audio Mode)!\n");
+                    }
+                }
+            }
+            /* Suppress individual click/repeat events while both are held */
+            btn_left.long_triggered = true;
+            btn_right.long_triggered = true;
+        } else {
+            if (s_both_lr_triggered) {
+                btn_left.long_triggered = true;
+                btn_right.long_triggered = true;
+            }
+            s_both_lr_active = false;
+            s_both_lr_stable = 0;
+            s_both_lr_start_ms = 0;
+            if (!left_active && !right_active) {
+                s_both_lr_triggered = false;
+            }
+        }
+
         button_event_t left_evt  = update_button_state(&btn_left, left_active, now, 400, 90);
         button_event_t right_evt = update_button_state(&btn_right, right_active, now, 400, 90);
         button_event_t aux_evt   = update_button_state(&btn_aux, aux_active, now, 450, 0);
 
-        /* 1. LEFT Button Events (Volume Down) */
-        if (left_evt == BTN_EVT_SHORT_PRESS || left_evt == BTN_EVT_LONG_PRESS || left_evt == BTN_EVT_HOLD_REPEAT) {
-            k_mutex_lock(&g_player_mutex, K_FOREVER);
-            if (g_player.volume_percent >= VOLUME_STEP_PERCENT) {
-                g_player.volume_percent -= VOLUME_STEP_PERCENT;
-            } else {
-                g_player.volume_percent = 0;
+        if (!both_raw && !s_both_lr_triggered) {
+            /* 1. LEFT Button Events (Volume Down) */
+            if (left_evt == BTN_EVT_SHORT_PRESS || left_evt == BTN_EVT_LONG_PRESS || left_evt == BTN_EVT_HOLD_REPEAT) {
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                if (g_player.volume_percent >= VOLUME_STEP_PERCENT) {
+                    g_player.volume_percent -= VOLUME_STEP_PERCENT;
+                } else {
+                    g_player.volume_percent = 0;
+                }
+                g_player.state_changed = true;
+                printk("[Volume] LEFT (%s) -> Vol: %u%%\n",
+                       (left_evt == BTN_EVT_SHORT_PRESS) ? "Click" : "Hold",
+                       g_player.volume_percent);
+                k_mutex_unlock(&g_player_mutex);
             }
-            g_player.state_changed = true;
-            printk("[Volume] LEFT (%s) -> Vol: %u%%\n",
-                   (left_evt == BTN_EVT_SHORT_PRESS) ? "Click" : "Hold",
-                   g_player.volume_percent);
-            k_mutex_unlock(&g_player_mutex);
-        }
 
-        /* 2. RIGHT Button Events (Volume Up) */
-        if (right_evt == BTN_EVT_SHORT_PRESS || right_evt == BTN_EVT_LONG_PRESS || right_evt == BTN_EVT_HOLD_REPEAT) {
-            k_mutex_lock(&g_player_mutex, K_FOREVER);
-            if (g_player.volume_percent <= (100 - VOLUME_STEP_PERCENT)) {
-                g_player.volume_percent += VOLUME_STEP_PERCENT;
-            } else {
-                g_player.volume_percent = 100;
+            /* 2. RIGHT Button Events (Volume Up) */
+            if (right_evt == BTN_EVT_SHORT_PRESS || right_evt == BTN_EVT_LONG_PRESS || right_evt == BTN_EVT_HOLD_REPEAT) {
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                if (g_player.volume_percent <= (100 - VOLUME_STEP_PERCENT)) {
+                    g_player.volume_percent += VOLUME_STEP_PERCENT;
+                } else {
+                    g_player.volume_percent = 100;
+                }
+                g_player.state_changed = true;
+                printk("[Volume] RIGHT (%s) -> Vol: %u%%\n",
+                       (right_evt == BTN_EVT_SHORT_PRESS) ? "Click" : "Hold",
+                       g_player.volume_percent);
+                k_mutex_unlock(&g_player_mutex);
             }
-            g_player.state_changed = true;
-            printk("[Volume] RIGHT (%s) -> Vol: %u%%\n",
-                   (right_evt == BTN_EVT_SHORT_PRESS) ? "Click" : "Hold",
-                   g_player.volume_percent);
-            k_mutex_unlock(&g_player_mutex);
         }
 
         /* 3. AUX Button Events (PA1) */

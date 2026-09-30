@@ -30,6 +30,9 @@ The application fulfills all engineering requirements specified in **Laboratory 
   - **RIGHT Button (`PC4` / SW5 - Volume Up)**:
     - *Short Click*: Increases volume by $5\%$ per step.
     - *Long Hold / Repeat*: Rapidly and smoothly increases volume up to $100\%$ at 90 ms intervals.
+  - **LEFT + RIGHT Simultaneous Hold ($\ge 450\,\text{ms}$)**:
+    - **Buzzer Mute Toggle (Headphone Mode)**: Silences the on-board buzzer (`PB0`/`PB1`) completely so that only the 3.5mm headphone jack (`CN3`) emits sound. Pressing and holding both again re-enables dual buzzer/headphone playback.
+    - Zero volume jumping: individual volume adjustments are automatically suppressed while both buttons are held.
   - **PRESS / USER_BUTTON (`PA0`)**:
     - *Short Click*: Toggles Play (`PLAYER_STATE_PLAYING`) and Pause (`PLAYER_STATE_PAUSED`).
     - *Long Hold ($\ge 500\,\text{ms}$)*: Fully stops playback (`PLAYER_STATE_STOPPED`).

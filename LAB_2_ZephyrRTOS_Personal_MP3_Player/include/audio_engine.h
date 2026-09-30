@@ -83,6 +83,22 @@ bool audio_engine_is_playing(void);
  */
 const musical_piece_t* audio_engine_get_piece(uint8_t song_index);
 
+/**
+ * @brief Toggle buzzer mute state (silences PB0/PB1 PWM while 3.5mm jack continues playing).
+ * @return True if buzzer is now muted, false if active
+ */
+bool audio_engine_toggle_buzzer(void);
+
+/**
+ * @brief Check if buzzer is currently muted.
+ */
+bool audio_engine_is_buzzer_muted(void);
+
+/**
+ * @brief Set buzzer mute state directly.
+ */
+void audio_engine_set_buzzer_muted(bool muted);
+
 #ifdef __cplusplus
 }
 #endif

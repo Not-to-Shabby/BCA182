@@ -415,6 +415,9 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         /* 2. Synchronize Audio Synthesizer Engine */
         if (current_state == PLAYER_STATE_PLAYING) {
             if (last_audio_state != PLAYER_STATE_PLAYING || current_song != last_audio_song) {
+                wav_player_stop();
+                audio_engine_stop();
+                k_msleep(10);
                 if (current_song < sd_card_get_track_count()) {
                     wav_player_start(sd_card_get_track(current_song)->filename);
                 } else {

@@ -352,6 +352,14 @@ void sd_card_set_mode(sd_reader_mode_t mode)
             printk("[SD_FS] Unmounted FAT32 volume from MCU for exclusive PC access.\n");
         }
 
+        /* Force USB Re-enumeration (simulate physical replug) */
+        RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+        uint32_t old_moder = GPIOA->MODER;
+        GPIOA->MODER = (GPIOA->MODER & ~(3U << 24)) | (1U << 24);
+        GPIOA->ODR &= ~(1U << 12);
+        k_msleep(100);
+        GPIOA->MODER = old_moder;
+
         /* 2. Enable Zephyr USB Device Stack with Mass Storage Class */
         int ret = usb_enable(NULL);
         if (ret == 0) {

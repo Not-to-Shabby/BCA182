@@ -222,7 +222,7 @@ static uint8_t es8388_reg_read(uint8_t reg)
 }
 
 /* -------------------------------------------------------------------------- */
-/* ES8388 Codec Setup (Matching RT-Spark Official Board Driver)               */
+/* ES8388 Complete Codec Configuration Matching RT-Thread drv_es8388.c        */
 /* -------------------------------------------------------------------------- */
 static void es8388_codec_init(void)
 {
@@ -254,34 +254,52 @@ static void es8388_codec_init(void)
         printk("[ES8388] Notice: NACK on both 0x10 and 0x11 (check I2C bus)\n");
     }
 
-    /* 2. Configure ES8388 registers */
+    /* 2. Full ES8388 register configuration from drv_es8388.c */
     es8388_reg_write(0x19, 0x04); /* DACCONTROL3: mute during setup */
-    es8388_reg_write(0x01, 0x50); /* CONTROL2 */
-    es8388_reg_write(0x02, 0x00); /* CHIPPOWER: power up all */
+    es8388_reg_write(0x01, 0x50); /* CONTROL2: chip power mgmt */
+    es8388_reg_write(0x02, 0x00); /* CHIPPOWER: normal all, power up all */
     es8388_reg_write(0x08, 0x00); /* MASTERMODE: slave mode */
+
+    /* DAC setup */
     es8388_reg_write(0x04, 0xC0); /* DACPOWER: disable DAC temporarily */
     es8388_reg_write(0x00, 0x12); /* CONTROL1: Play & Record mode */
     es8388_reg_write(0x17, 0x18); /* DACCONTROL1: 16-bit I2S format */
     es8388_reg_write(0x18, 0x02); /* DACCONTROL2: Single speed, ratio 256 */
     es8388_reg_write(0x26, 0x00); /* DACCONTROL16: audio on LIN1/RIN1 */
-    es8388_reg_write(0x27, 0x9C); /* DACCONTROL17: L DAC to L mixer 0dB */
-    es8388_reg_write(0x2A, 0x9C); /* DACCONTROL20: R DAC to R mixer 0dB */
+    es8388_reg_write(0x27, 0x9C); /* DACCONTROL17: L DAC to L mixer enable 0dB */
+    es8388_reg_write(0x2A, 0x9C); /* DACCONTROL20: R DAC to R mixer enable 0dB */
     es8388_reg_write(0x2B, 0x80); /* DACCONTROL21: internal LRCK */
-    es8388_reg_write(0x2D, 0x00); /* DACCONTROL23 */
+    es8388_reg_write(0x2D, 0x00); /* DACCONTROL23: vroi=0 */
+
+    /* Digital volume: 0dB */
+    es8388_reg_write(0x1A, 0x00); /* DACCONTROL4: L Digital Vol 0dB */
+    es8388_reg_write(0x1B, 0x00); /* DACCONTROL5: R Digital Vol 0dB */
+    es8388_reg_write(0x04, 0x3C); /* DACPOWER: Enable DAC and Lout/Rout */
+
+    /* ADC setup: required for internal clock generation when reg 0x2B = 0x80 */
+    es8388_reg_write(0x03, 0xFF); /* ADCPOWER: power down */
+    es8388_reg_write(0x09, 0xBB); /* ADCCONTROL1: MIC PGA gain */
+    es8388_reg_write(0x0A, 0x00); /* ADCCONTROL2: LINSEL/RINSEL */
+    es8388_reg_write(0x0B, 0x02); /* ADCCONTROL3 */
+    es8388_reg_write(0x0C, 0x0D); /* ADCCONTROL4: 16-bit I2S format */
+    es8388_reg_write(0x0D, 0x02); /* ADCCONTROL5: single speed, ratio 256 */
+    es8388_reg_write(0x10, 0x00); /* ADCCONTROL8: 0dB */
+    es8388_reg_write(0x11, 0x00); /* ADCCONTROL9: 0dB */
+    es8388_reg_write(0x03, 0x09); /* ADCPOWER: Power on ADC */
 
     /* Headphone volume: LOUT1 / ROUT1 (+3.0 dB output boost) */
     es8388_reg_write(0x2E, 0x21); /* DACCONTROL24: LOUT1VOL (3.5mm Left) */
     es8388_reg_write(0x2F, 0x21); /* DACCONTROL25: ROUT1VOL (3.5mm Right) */
 
-    /* Digital volume (0x00 = 0dB max, 0x20 = -16dB) */
-    es8388_reg_write(0x1A, 0x00); /* DACCONTROL4: L Digital Vol */
-    es8388_reg_write(0x1B, 0x00); /* DACCONTROL5: R Digital Vol */
+    /* Start State Machine */
+    es8388_reg_write(0x02, 0xF0); /* CHIPPOWER: reset state machine */
+    k_msleep(5);
+    es8388_reg_write(0x02, 0x00); /* CHIPPOWER: start state machine */
+    k_msleep(5);
 
-    /* Power on DAC and LOUT1 / ROUT1 output amplifiers */
-    es8388_reg_write(0x04, 0x3C); /* DACPOWER: Enable DAC and Lout/Rout */
-
-    /* Un-mute DAC */
-    es8388_reg_write(0x19, 0x00); /* DACCONTROL3: Un-mute */
+    /* Final un-mute */
+    es8388_reg_write(0x04, 0x3C); /* DACPOWER */
+    es8388_reg_write(0x19, 0x00); /* DACCONTROL3: UNMUTE! */
     k_msleep(10);
 
     /* 3. Read back register 0x04 (DACPOWER) to verify communication */
@@ -303,6 +321,9 @@ static void i2s3_hw_init(void)
     /* 1. Enable peripheral clocks */
     RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOCEN);
     RCC->APB1ENR |= RCC_APB1ENR_SPI3EN;
+
+    /* Explicitly route I2S clock source to PLLI2S (RCC->CFGR bit 23 = 0) */
+    RCC->CFGR &= ~RCC_CFGR_I2SSRC;
 
     /* 2. Configure PLLI2S for 44.1 kHz audio:
      *    HSE (8 MHz) / 8 * 271 / 2 = 135.5 MHz I2SxCLK
@@ -414,7 +435,10 @@ void audio_hardware_dac_set_tone(float note_period_ms, uint8_t volume_percent)
         return;
     }
 
-    audio_hardware_dac_set_volume(volume_percent);
+    /* Only update volume table if it changed */
+    if (volume_percent != s_current_volume) {
+        audio_hardware_dac_set_volume(volume_percent);
+    }
 
     /* DDS phase increment for 44.1 kHz stereo sample rate:
      * f_target = 1000.0 / note_period_ms

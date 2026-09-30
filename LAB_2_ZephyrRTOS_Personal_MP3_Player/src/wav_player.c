@@ -56,10 +56,23 @@ bool wav_player_start(const char* filepath)
     }
 
     char full_path[64];
+    
+    /* Zephyr VFS standard path formatting */
     snprintf(full_path, sizeof(full_path), "/SD:/%s", filepath);
-
-    if (fs_open(&s_file, full_path, FS_O_READ) != 0) {
-        printk("[WAV] Failed to open %s\n", full_path);
+    int err = fs_open(&s_file, full_path, FS_O_READ);
+    if (err != 0) {
+        /* Fallback 1: No slash */
+        snprintf(full_path, sizeof(full_path), "/SD:%s", filepath);
+        err = fs_open(&s_file, full_path, FS_O_READ);
+    }
+    if (err != 0) {
+        /* Fallback 2: Absolute without colon */
+        snprintf(full_path, sizeof(full_path), "/SD/%s", filepath);
+        err = fs_open(&s_file, full_path, FS_O_READ);
+    }
+    
+    if (err != 0) {
+        printk("[WAV] Failed to open %s (err %d)\n", filepath, err);
         return false;
     }
 

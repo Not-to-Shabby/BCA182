@@ -51,9 +51,14 @@ extern struct k_mutex g_player_mutex;
 /* Peripheral & Thread Function Prototypes                                    */
 /* -------------------------------------------------------------------------- */
 /**
- * @brief Initialize button GPIOs, status LEDs, and ADC1 for potentiometer.
+ * @brief Initialize button GPIOs, status LEDs, and direct UART1 ST-Link VCP.
  */
 void init_player_peripherals(void);
+
+/**
+ * @brief Direct hardware polled transmit to onboard ST-LINK VCP on USART1 (PA9/PA10).
+ */
+void uart1_direct_print(const char *str);
 
 /**
  * @brief Thread 1: Updates LCD display and RGB status LEDs.

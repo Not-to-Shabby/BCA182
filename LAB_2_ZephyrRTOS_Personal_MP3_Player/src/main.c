@@ -33,26 +33,30 @@ static struct k_thread thread_volume_data;
 /* -------------------------------------------------------------------------- */
 static void print_uart_instructions(void)
 {
-    printk("\n%s", APP_BANNER_LINE);
-    printk("  BCA182: Laboratory Activity 2 - Personal MP3 Player\n");
-    printk("  Target: RT-Thread Spark Board (STM32F407ZGT6)\n");
-    printk("  RTOS:   Zephyr RTOS v4.x (Cooperative Multithreading)\n");
-    printk("%s", APP_BANNER_LINE);
-    printk("OPERATING INSTRUCTIONS (Directional D-Pad Navigation):\n");
-    printk("  1. Track Selection (UP / DOWN):\n");
-    printk("     - UP Button (PC5)   : Click -> Next Track (+1) | Hold -> Jump to Track 1\n");
-    printk("     - DOWN Button (PC1) : Click -> Prev Track (-1) | Hold -> Play/Pause Toggle\n");
-    printk("  2. Volume Adjustment (LEFT / RIGHT / AUX):\n");
-    printk("     - LEFT Button (PC0)  : Click -> Vol -5%% | Hold -> Smooth Vol Down\n");
-    printk("     - RIGHT Button (PC4) : Click -> Vol +5%% | Hold -> Smooth Vol Up\n");
-    printk("     - AUX Button (PA1)   : Click -> Preset Cycle | Hold -> Mute/Unmute Toggle\n");
-    printk("  3. Audio Transport Control (PLAY / PAUSE / STOP):\n");
-    printk("     - PA0 (USER_BUTTON)  : Click -> Play/Pause | Hold -> Stop Playback\n");
-    printk("     - DOWN (Long-Press)  : Hold >= 450ms -> Play/Pause Toggle on current track\n");
-    printk("  4. RGB LED State Indicators:\n");
-    printk("     - BLUE LED (PF11) : Song is PLAYING\n");
-    printk("     - RED LED (PF12)  : Song is PAUSED or STOPPED\n");
-    printk("%s\n", APP_BANNER_LINE);
+    static const char banner[] =
+        "\n=====================================================\n"
+        "  BCA182: Laboratory Activity 2 - Personal MP3 Player\n"
+        "  Target: RT-Thread Spark Board (STM32F407ZGT6)\n"
+        "  RTOS:   Zephyr RTOS v4.x (Cooperative Multithreading)\n"
+        "=====================================================\n"
+        "OPERATING INSTRUCTIONS (Directional D-Pad Navigation):\n"
+        "  1. Track Selection (UP / DOWN):\n"
+        "     - UP Button (PC5)   : Click -> Next Track (+1) | Hold -> Jump to Track 1\n"
+        "     - DOWN Button (PC1) : Click -> Prev Track (-1) | Hold -> Play/Pause Toggle\n"
+        "  2. Volume Adjustment (LEFT / RIGHT / AUX):\n"
+        "     - LEFT Button (PC0)  : Click -> Vol -5% | Hold -> Smooth Vol Down\n"
+        "     - RIGHT Button (PC4) : Click -> Vol +5% | Hold -> Smooth Vol Up\n"
+        "     - AUX Button (PA1)   : Click -> Preset Cycle | Hold -> Mute/Unmute Toggle\n"
+        "  3. Audio Transport Control (PLAY / PAUSE / STOP):\n"
+        "     - PA0 (USER_BUTTON)  : Click -> Play/Pause | Hold -> Stop Playback\n"
+        "     - DOWN (Long-Press)  : Hold >= 450ms -> Play/Pause Toggle on current track\n"
+        "  4. RGB LED State Indicators:\n"
+        "     - BLUE LED (PF11) : Song is PLAYING\n"
+        "     - RED LED (PF12)  : Song is PAUSED or STOPPED\n"
+        "=====================================================\n";
+
+    printk("%s", banner);
+    uart1_direct_print(banner);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -60,35 +64,29 @@ static void print_uart_instructions(void)
 /* -------------------------------------------------------------------------- */
 int main(void)
 {
-    /* 1. Transmit user operating guide via UART1 */
-    print_uart_instructions();
-
-    /* 2. Initialize GPIO buttons, LEDs, and peripheral pins */
-    printk("[System] Initializing buttons (PC0,PC1,PC4,PC5,PA0) and peripheral pins...\n");
+    /* 1. Initialize GPIO buttons, LEDs, and direct hardware USART1 on PA9/PA10 */
     init_player_peripherals();
 
-    /* 3. Initialize hardware audio synthesizer (ES8388 on 3.5mm jack) */
-    printk("[System] Initializing hardware audio synthesizer (ES8388 on CN3)...\n");
-    audio_engine_init();
+    /* 2. Transmit user operating guide via direct USART1 (ST-LINK VCP on COM7) */
+    print_uart_instructions();
 
-    /* 3b. Boot self-test: 2-second 440 Hz tone on the 3.5mm jack + LCD status.
-     * If this tone is silent, the codec/I2S path is dead regardless of buttons. */
-    printk("[System] Boot test tone: 440 Hz for 2s on CN3...\n");
-    audio_engine_start_song(0);
-    k_sleep(K_MSEC(2000));
-    audio_engine_stop();
-    printk("[System] Boot test tone finished. Codec status: %s\n",
-           audio_hardware_dac_status());
-
-    /* 4. Initialize ST7789 LCD display, FSMC 8080 bus, and Backlight (PF9) */
+    /* 3. Initialize ST7789 LCD display, FSMC 8080 bus, and Backlight (PF9) */
     k_mutex_lock(&g_lcd_mutex, K_FOREVER);
     printk("[System] Initializing ST7789 240x240 LCD display...\n");
+    uart1_direct_print("[System] Initializing ST7789 240x240 LCD display...\n");
     lcd_st7789_init();
     printk("[System] ST7789 hardware display ready.\n");
+    uart1_direct_print("[System] ST7789 hardware display ready.\n");
     k_mutex_unlock(&g_lcd_mutex);
+
+    /* 4. Initialize hardware audio synthesizer (ES8388 Codec + 12-bit Analog DAC1) */
+    printk("[System] Initializing audio synthesizer (ES8388 CN3 + PA4 DAC)...\n");
+    uart1_direct_print("[System] Initializing audio synthesizer (ES8388 CN3 + PA4 DAC)...\n");
+    audio_engine_init();
 
     /* 5. Start all 3 cooperative Zephyr threads */
     printk("[System] Spawning 3 application threads...\n");
+    uart1_direct_print("[System] Spawning 3 application threads...\n");
 
     /* Thread 1: Update LCD and RGB LEDs */
     k_thread_create(&thread_lcd_leds_data, stack_lcd_leds,

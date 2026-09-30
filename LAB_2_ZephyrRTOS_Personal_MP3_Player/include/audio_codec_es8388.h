@@ -44,9 +44,27 @@ void audio_hardware_dac_stop(void);
 void audio_hardware_dac_set_volume(uint8_t volume_percent);
 
 /**
+ * @brief Live hardware audio diagnostic metrics.
+ */
+typedef struct {
+    bool es_detected;
+    uint8_t es_addr;
+    uint8_t reg04_readback;
+    bool reg04_verified;
+    bool pll_locked;
+    uint32_t i2s_tx_samples;
+    bool dac_active;
+} audio_diagnostics_t;
+
+/**
+ * @brief Retrieve live audio hardware diagnostics.
+ */
+const audio_diagnostics_t* audio_get_diagnostics(void);
+
+/**
  * @brief Get a short diagnostic string describing codec/I2S init status.
  *
- * @return Pointer to a static NUL-terminated buffer (e.g. "ES8388:ACK PLL:OK")
+ * @return Pointer to a static NUL-terminated buffer (e.g. "ES8388:0x10 PLL:OK")
  */
 const char *audio_hardware_dac_status(void);
 

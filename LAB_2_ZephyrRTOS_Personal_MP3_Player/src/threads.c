@@ -156,6 +156,36 @@ static void init_hardware_peripherals(void)
      *    Mode: Input (00b), Pull-Up (01b) -> Active LOW */
     GPIOA->MODER &= ~(3U << 2);
     GPIOA->PUPDR = (GPIOA->PUPDR & ~(3U << 2)) | (1U << 2);
+
+    /* 6. Configure Direct Hardware USART1 on PA9/PA10 for ST-LINK VCP (COM7) */
+    RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
+    GPIOA->MODER = (GPIOA->MODER & ~((3U << (9 * 2)) | (3U << (10 * 2)))) |
+                   ((2U << (9 * 2)) | (2U << (10 * 2)));
+    GPIOA->OTYPER &= ~(1U << 9);
+    GPIOA->OSPEEDR |= (3U << (9 * 2)) | (3U << (10 * 2));
+    GPIOA->PUPDR = (GPIOA->PUPDR & ~((3U << (9 * 2)) | (3U << (10 * 2)))) |
+                   ((1U << (9 * 2)) | (1U << (10 * 2))); /* Pull-up */
+    GPIOA->AFR[1] = (GPIOA->AFR[1] & ~((0xFU << ((9 - 8) * 4)) | (0xFU << ((10 - 8) * 4)))) |
+                    ((7U << ((9 - 8) * 4)) | (7U << ((10 - 8) * 4))); /* AF7 */
+    USART1->BRR = 0x2D9; /* 84 MHz / 115200 baud */
+    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
+}
+
+void uart1_direct_send_char(char c)
+{
+    while (!(USART1->SR & USART_SR_TXE));
+    USART1->DR = (uint8_t)c;
+}
+
+void uart1_direct_print(const char *str)
+{
+    if (str == NULL) return;
+    while (*str) {
+        if (*str == '\n') {
+            uart1_direct_send_char('\r');
+        }
+        uart1_direct_send_char(*str++);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -185,12 +215,12 @@ static void render_note_row(uint16_t current_note, uint16_t total_notes, player_
     char buf[32];
     if (state == PLAYER_STATE_PLAYING) {
         snprintf(buf, sizeof(buf), "NOTE: %-3u / %-3u     ", current_note + 1, total_notes);
-        lcd_show_string(14, 130, buf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+        lcd_show_string(14, 90, buf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
     } else if (state == PLAYER_STATE_PAUSED) {
         snprintf(buf, sizeof(buf), "PAUSED AT NOTE %-3u ", current_note + 1);
-        lcd_show_string(14, 130, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+        lcd_show_string(14, 90, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
     } else {
-        lcd_show_string(14, 130, "PRESS PA0 TO PLAY   ", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+        lcd_show_string(14, 90, "PRESS PA0 TO PLAY   ", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
     }
 }
 
@@ -202,15 +232,47 @@ static void render_volume_row(uint8_t volume)
     } else {
         snprintf(buf, sizeof(buf), "VOLUME: %3u%%        ", volume);
     }
-    lcd_show_string(14, 150, buf, (volume == 0) ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+    lcd_show_string(14, 106, buf, (volume == 0) ? LCD_COLOR_ORANGE : LCD_COLOR_WHITE, LCD_COLOR_BLACK);
 
     uint16_t bar_width = (uint16_t)((volume * 210U) / 100U);
     if (bar_width > 0) {
-        lcd_fill_rect(15, 169, 15 + bar_width, 179, LCD_COLOR_GREEN);
+        lcd_fill_rect(15, 122, 15 + bar_width, 128, LCD_COLOR_GREEN);
     }
     if (bar_width < 210) {
-        lcd_fill_rect(15 + bar_width + 1, 169, 225, 179, LCD_COLOR_BLACK);
+        lcd_fill_rect(15 + bar_width + 1, 122, 225, 128, LCD_COLOR_BLACK);
     }
+}
+
+static void render_diag_box(void)
+{
+    const audio_diagnostics_t *diag = audio_get_diagnostics();
+    char buf[36];
+
+    /* Card background box: y=134 to y=192 */
+    lcd_fill_rect(8, 134, LCD_WIDTH - 9, 192, LCD_COLOR_DARKGREY);
+    lcd_draw_rect(8, 134, LCD_WIDTH - 9, 192, LCD_COLOR_CYAN);
+
+    /* Line 1: ES8388 I2C detection & readback */
+    if (diag->reg04_verified) {
+        snprintf(buf, sizeof(buf), "CODEC:0x%02X R04:0x%02X(OK)", diag->es_addr, diag->reg04_readback);
+        lcd_show_string(12, 138, buf, LCD_COLOR_GREEN, LCD_COLOR_DARKGREY);
+    } else if (diag->es_detected) {
+        snprintf(buf, sizeof(buf), "CODEC:0x%02X R04:0x%02X(!)", diag->es_addr, diag->reg04_readback);
+        lcd_show_string(12, 138, buf, LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+    } else {
+        snprintf(buf, sizeof(buf), "CODEC:NACK (Check I2C)");
+        lcd_show_string(12, 138, buf, LCD_COLOR_RED, LCD_COLOR_DARKGREY);
+    }
+
+    /* Line 2: PLLI2S & Analog DAC1 status */
+    snprintf(buf, sizeof(buf), "PLL:%-4s|DAC1(PA4):%-4s",
+             diag->pll_locked ? "LOCK" : "FAIL",
+             diag->dac_active ? "SINE" : "IDLE");
+    lcd_show_string(12, 154, buf, diag->pll_locked ? LCD_COLOR_WHITE : LCD_COLOR_ORANGE, LCD_COLOR_DARKGREY);
+
+    /* Line 3: I2S Samples streamed */
+    snprintf(buf, sizeof(buf), "I2S TX:%-7u SAMPLES", diag->i2s_tx_samples);
+    lcd_show_string(12, 172, buf, LCD_COLOR_CYAN, LCD_COLOR_DARKGREY);
 }
 
 static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8_t volume)
@@ -218,44 +280,42 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
     char buf[32];
 
     /* 1. Top Header Banner */
-    lcd_fill_rect(0, 0, LCD_WIDTH - 1, 26, LCD_COLOR_NAVY);
-    lcd_show_string(16, 6, "BCA182: MP3 PLAYER", LCD_COLOR_WHITE, LCD_COLOR_NAVY);
-    lcd_draw_line(0, 27, LCD_WIDTH - 1, 27, LCD_COLOR_CYAN);
+    lcd_fill_rect(0, 0, LCD_WIDTH - 1, 24, LCD_COLOR_NAVY);
+    lcd_show_string(16, 4, "BCA182: MP3 PLAYER", LCD_COLOR_WHITE, LCD_COLOR_NAVY);
+    lcd_draw_line(0, 25, LCD_WIDTH - 1, 25, LCD_COLOR_CYAN);
 
     /* 2. Main Body Clear */
-    lcd_fill_rect(0, 28, LCD_WIDTH - 1, LCD_HEIGHT - 1, LCD_COLOR_BLACK);
+    lcd_fill_rect(0, 26, LCD_WIDTH - 1, LCD_HEIGHT - 1, LCD_COLOR_BLACK);
 
     /* Status Badge */
     uint16_t status_color = (state == PLAYER_STATE_PLAYING) ? LCD_COLOR_GREEN :
                             (state == PLAYER_STATE_PAUSED)  ? LCD_COLOR_YELLOW :
                                                               LCD_COLOR_RED;
     snprintf(buf, sizeof(buf), "STATUS: %s", get_player_state_str(state));
-    lcd_show_string(14, 34, buf, status_color, LCD_COLOR_BLACK);
+    lcd_show_string(14, 28, buf, status_color, LCD_COLOR_BLACK);
 
     /* Track Number and Title */
     const song_info_t *c_song = get_song_info(cur_song_idx);
     snprintf(buf, sizeof(buf), "Track #%u of %u", cur_song_idx + 1, TOTAL_PLAYABLE_SONGS);
-    lcd_show_string(14, 54, buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    lcd_show_string(14, 44, buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 
-    lcd_show_string(14, 74, "TITLE:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
-    lcd_show_string(14, 92, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
-    lcd_show_string(14, 110, c_song->name2, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    lcd_show_string(14, 60, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    lcd_show_string(14, 76, c_song->name2, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
 
     /* Note Progress Row */
     render_note_row(audio_engine_get_note_index(), c_song->length, state);
 
     /* Volume Level Bar */
-    lcd_draw_rect(14, 168, 226, 180, LCD_COLOR_WHITE);
+    lcd_draw_rect(14, 121, 226, 129, LCD_COLOR_WHITE);
     render_volume_row(volume);
 
-    /* Directional D-Pad Controls Footer */
-    lcd_draw_line(0, 188, LCD_WIDTH - 1, 188, LCD_COLOR_DARKGREY);
-    lcd_show_string(10, 196, "UP/DN:Track (Hold:P/P)", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
-    lcd_show_string(10, 216, "L/R:Vol | PA0:Play/Stop", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    /* Live Hardware Diagnostic Card */
+    render_diag_box();
 
-    /* Codec/I2S diagnostic line (ground truth for the audio path) */
-    lcd_show_string(10, 232, audio_hardware_dac_status(),
-                    LCD_COLOR_MAGENTA, LCD_COLOR_BLACK);
+    /* Directional D-Pad Controls Footer */
+    lcd_draw_line(0, 196, LCD_WIDTH - 1, 196, LCD_COLOR_DARKGREY);
+    lcd_show_string(10, 202, "UP/DN:Track (Hold:P/P)", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    lcd_show_string(10, 218, "L/R:Vol | PA0:Play/Stop", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -273,6 +333,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
     player_state_t last_rendered_state = (player_state_t)0xFF;
     uint8_t last_rendered_vol = 0xFF;
     uint16_t last_rendered_note = 0xFFFF;
+    uint32_t last_rendered_samples = 0xFFFFFFFF;
 
     uint8_t last_audio_song = 0xFF;
     player_state_t last_audio_state = (player_state_t)0xFF;
@@ -319,17 +380,17 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
             last_audio_vol = volume;
         }
 
-        /* 3. Flicker-Free Differential Screen Update:
-         *    - Full screen redraw ONLY when track or player state changes.
-         *    - When only the note advances or volume changes, ONLY update that specific line!
-         *    - Never clear the entire screen on note changes!
-         */
+        /* 3. Flicker-Free Differential Screen Update */
         uint16_t current_note = audio_engine_get_note_index();
+        const audio_diagnostics_t *diag = audio_get_diagnostics();
+        uint32_t current_samples = diag->i2s_tx_samples;
+
         bool full_redraw = force_redraw ||
                            (current_state != last_rendered_state) ||
                            (current_song != last_rendered_song);
         bool vol_changed = (volume != last_rendered_vol);
         bool note_changed = (current_note != last_rendered_note);
+        bool diag_changed = (current_samples / 5000U != last_rendered_samples / 5000U);
 
         if (full_redraw) {
             if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
@@ -338,6 +399,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                 last_rendered_song = current_song;
                 last_rendered_vol = volume;
                 last_rendered_note = current_note;
+                last_rendered_samples = current_samples;
                 k_mutex_unlock(&g_lcd_mutex);
             }
         } else {
@@ -353,6 +415,13 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                     const song_info_t *c_song = get_song_info(current_song);
                     render_note_row(current_note, c_song->length, current_state);
                     last_rendered_note = current_note;
+                    k_mutex_unlock(&g_lcd_mutex);
+                }
+            }
+            if (diag_changed) {
+                if (k_mutex_lock(&g_lcd_mutex, K_MSEC(50)) == 0) {
+                    render_diag_box();
+                    last_rendered_samples = current_samples;
                     k_mutex_unlock(&g_lcd_mutex);
                 }
             }

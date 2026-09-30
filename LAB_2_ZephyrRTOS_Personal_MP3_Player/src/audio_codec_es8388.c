@@ -32,10 +32,19 @@ static volatile uint8_t s_current_volume = 70;
 static volatile uint32_t s_phase_acc = 0;
 static volatile uint32_t s_phase_inc = 0;
 static volatile bool s_channel_toggle = false;
-static uint8_t s_es_addr = 0x20; /* Probed write address */
-static bool s_es_detected = false;
-static bool s_pll_ready = false;
-static char s_diag_str[48] = "ES8388:PENDING";
+
+/* Hardware live diagnostic records */
+static audio_diagnostics_t s_diag = {
+    .es_detected = false,
+    .es_addr = 0x10,
+    .reg04_readback = 0xFF,
+    .reg04_verified = false,
+    .pll_locked = false,
+    .i2s_tx_samples = 0,
+    .dac_active = false
+};
+
+static char s_diag_str[64] = "ES8388:PROBING";
 
 /* -------------------------------------------------------------------------- */
 /* Direct Digital Synthesis (DDS) Interrupt via SPI3 / I2S3 TXE               */
@@ -63,6 +72,7 @@ static void spi3_i2s_isr(const void *arg)
                 s_phase_acc += s_phase_inc;
             }
             s_channel_toggle = !s_channel_toggle;
+            s_diag.i2s_tx_samples++;
         }
     }
 }
@@ -89,7 +99,8 @@ static void i2c2_gpio_init(void)
 
 static inline void i2c_delay(void)
 {
-    for (volatile int i = 0; i < 40; i++) {
+    /* ~4.5 us delay at 168 MHz for reliable 100 kHz standard-mode I2C */
+    for (volatile int i = 0; i < 200; i++) {
         __NOP();
     }
 }
@@ -140,14 +151,74 @@ static bool i2c_write_byte(uint8_t byte)
     return ack;
 }
 
+static uint8_t i2c_read_byte(bool send_ack)
+{
+    uint8_t byte = 0;
+    GPIOF->BSRR = (1U << 0); /* Release / Float SDA */
+
+    for (int i = 7; i >= 0; i--) {
+        i2c_delay();
+        GPIOF->BSRR = (1U << 1); /* SCL HIGH */
+        i2c_delay();
+        if (GPIOF->IDR & (1U << 0)) {
+            byte |= (1U << i);
+        }
+        GPIOF->BSRR = (1U << (1 + 16)); /* SCL LOW */
+        i2c_delay();
+    }
+
+    /* Send ACK (LOW) or NACK (HIGH) */
+    if (send_ack) {
+        GPIOF->BSRR = (1U << (0 + 16)); /* ACK: pull SDA low */
+    } else {
+        GPIOF->BSRR = (1U << 0);        /* NACK: float SDA high */
+    }
+    i2c_delay();
+    GPIOF->BSRR = (1U << 1); /* SCL HIGH */
+    i2c_delay();
+    GPIOF->BSRR = (1U << (1 + 16)); /* SCL LOW */
+    GPIOF->BSRR = (1U << 0); /* Float SDA */
+    i2c_delay();
+
+    return byte;
+}
+
 static bool es8388_reg_write(uint8_t reg, uint8_t val)
 {
+    uint8_t write_addr = (uint8_t)(s_diag.es_addr << 1);
     i2c_start();
-    bool ack_addr = i2c_write_byte(s_es_addr);
+    bool ack_addr = i2c_write_byte(write_addr);
     bool ack_reg  = i2c_write_byte(reg);
     bool ack_val  = i2c_write_byte(val);
     i2c_stop();
     return (ack_addr && ack_reg && ack_val);
+}
+
+static uint8_t es8388_reg_read(uint8_t reg)
+{
+    uint8_t write_addr = (uint8_t)(s_diag.es_addr << 1);
+    uint8_t read_addr  = (uint8_t)((s_diag.es_addr << 1) | 0x01);
+
+    i2c_start();
+    if (!i2c_write_byte(write_addr)) {
+        i2c_stop();
+        return 0xFF;
+    }
+    if (!i2c_write_byte(reg)) {
+        i2c_stop();
+        return 0xFF;
+    }
+
+    /* Repeated start */
+    i2c_start();
+    if (!i2c_write_byte(read_addr)) {
+        i2c_stop();
+        return 0xFF;
+    }
+
+    uint8_t val = i2c_read_byte(false); /* Send NACK to end read */
+    i2c_stop();
+    return val;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -158,39 +229,32 @@ static void es8388_codec_init(void)
     i2c2_gpio_init();
     k_msleep(20);
 
-    /* Probe I2C address: 0x20 (7-bit 0x10) or 0x22 (7-bit 0x11) */
+    /* 1. Probe I2C address: 0x10 (write 0x20) or 0x11 (write 0x22) */
     i2c_start();
     bool ack10 = i2c_write_byte(0x20);
     i2c_stop();
-    k_msleep(5);
+    k_msleep(10);
 
     i2c_start();
     bool ack11 = i2c_write_byte(0x22);
     i2c_stop();
-    k_msleep(5);
+    k_msleep(10);
 
     if (ack10) {
-        s_es_addr = 0x20;
-        s_es_detected = true;
-        printk("[ES8388] Codec detected at I2C address 0x10!\n");
+        s_diag.es_addr = 0x10;
+        s_diag.es_detected = true;
+        printk("[ES8388] Codec ACK on I2C address 0x10!\n");
     } else if (ack11) {
-        s_es_addr = 0x22;
-        s_es_detected = true;
-        printk("[ES8388] Codec detected at I2C address 0x11!\n");
+        s_diag.es_addr = 0x11;
+        s_diag.es_detected = true;
+        printk("[ES8388] Codec ACK on I2C address 0x11!\n");
     } else {
-        s_es_addr = 0x20;
-        s_es_detected = false;
-        printk("[ES8388] Notice: Defaulting to I2C 0x10 (NACK)\n");
+        s_diag.es_addr = 0x10;
+        s_diag.es_detected = false;
+        printk("[ES8388] Notice: NACK on both 0x10 and 0x11 (check I2C bus)\n");
     }
 
-    /* ES8388 Register Sequence from drv_es8388.c:
-     * - Mute DAC during configuration
-     * - Power up all blocks
-     * - Configure 16-bit I2S format, single speed
-     * - Route DAC Left/Right to LOUT1 / ROUT1 mixer
-     * - Set headphone volume gain to 0dB (0x1E)
-     * - Power on DAC output stage and unmute
-     */
+    /* 2. Configure ES8388 registers */
     es8388_reg_write(0x19, 0x04); /* DACCONTROL3: mute during setup */
     es8388_reg_write(0x01, 0x50); /* CONTROL2 */
     es8388_reg_write(0x02, 0x00); /* CHIPPOWER: power up all */
@@ -205,15 +269,30 @@ static void es8388_codec_init(void)
     es8388_reg_write(0x2B, 0x80); /* DACCONTROL21: internal LRCK */
     es8388_reg_write(0x2D, 0x00); /* DACCONTROL23 */
 
-    /* Headphone volume: LOUT1 / ROUT1 */
+    /* Headphone volume: LOUT1 / ROUT1 (+3.0 dB output boost) */
     es8388_reg_write(0x2E, 0x21); /* DACCONTROL24: LOUT1VOL (3.5mm Left) */
     es8388_reg_write(0x2F, 0x21); /* DACCONTROL25: ROUT1VOL (3.5mm Right) */
+
+    /* Digital volume (0x00 = 0dB max, 0x20 = -16dB) */
+    es8388_reg_write(0x1A, 0x00); /* DACCONTROL4: L Digital Vol */
+    es8388_reg_write(0x1B, 0x00); /* DACCONTROL5: R Digital Vol */
 
     /* Power on DAC and LOUT1 / ROUT1 output amplifiers */
     es8388_reg_write(0x04, 0x3C); /* DACPOWER: Enable DAC and Lout/Rout */
 
     /* Un-mute DAC */
     es8388_reg_write(0x19, 0x00); /* DACCONTROL3: Un-mute */
+    k_msleep(10);
+
+    /* 3. Read back register 0x04 (DACPOWER) to verify communication */
+    s_diag.reg04_readback = es8388_reg_read(0x04);
+    s_diag.reg04_verified = (s_diag.reg04_readback == 0x3C);
+
+    if (s_diag.reg04_verified) {
+        printk("[ES8388] Verified: Reg 0x04 readback = 0x3C (Codec fully operational)!\n");
+    } else {
+        printk("[ES8388] Diagnostic: Reg 0x04 readback = 0x%02X\n", s_diag.reg04_readback);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -233,7 +312,7 @@ static void i2s3_hw_init(void)
     RCC->CR |= RCC_CR_PLLI2SON;
     uint32_t timeout = 100000;
     while (!(RCC->CR & RCC_CR_PLLI2SRDY) && --timeout);
-    s_pll_ready = ((RCC->CR & RCC_CR_PLLI2SRDY) != 0);
+    s_diag.pll_locked = ((RCC->CR & RCC_CR_PLLI2SRDY) != 0);
 
     /* 3. Configure GPIO Alternate Function 6 for I2S3 pins:
      *    PC7:  I2S3_MCK (AF6)
@@ -343,19 +422,27 @@ void audio_hardware_dac_set_tone(float note_period_ms, uint8_t volume_percent)
      */
     s_phase_inc = (uint32_t)(97391549.0f / note_period_ms + 0.5f);
     s_dac_active = true;
+    s_diag.dac_active = true;
 }
 
 void audio_hardware_dac_stop(void)
 {
     s_dac_active = false;
+    s_diag.dac_active = false;
     s_phase_inc = 0;
     DAC->DHR12R1 = 2048;
 }
 
+const audio_diagnostics_t* audio_get_diagnostics(void)
+{
+    return &s_diag;
+}
+
 const char *audio_hardware_dac_status(void)
 {
-    snprintf(s_diag_str, sizeof(s_diag_str), "ES8388:%s PLL:%s",
-             s_es_detected ? (s_es_addr == 0x20 ? "0x10" : "0x11") : "NACK",
-             s_pll_ready ? "OK" : "FAIL");
+    snprintf(s_diag_str, sizeof(s_diag_str), "ES:%s R04:%02X PLL:%s",
+             s_diag.es_detected ? (s_diag.es_addr == 0x10 ? "0x10" : "0x11") : "NACK",
+             s_diag.reg04_readback,
+             s_diag.pll_locked ? "OK" : "FAIL");
     return s_diag_str;
 }

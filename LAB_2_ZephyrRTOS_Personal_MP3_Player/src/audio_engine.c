@@ -182,6 +182,9 @@ static void audio_timer_handler(struct k_timer *timer_id);
 
 void audio_engine_init(void)
 {
+    printk("[Audio] Initializing hardware PWM buzzer (PB0/PB1)...\n");
+    hw_pwm_init();
+
     printk("[Audio] Initializing ES8388 audio on the 3.5mm headphone jack...\n");
     audio_hardware_dac_init();
 
@@ -195,6 +198,7 @@ static void audio_timer_handler(struct k_timer *timer_id)
     ARG_UNUSED(timer_id);
 
     if (!s_is_playing) {
+        hw_stop_tone();
         audio_hardware_dac_stop();
         return;
     }
@@ -232,6 +236,7 @@ static void audio_timer_handler(struct k_timer *timer_id)
         vol = g_player.volume_percent;
         k_mutex_unlock(&g_player_mutex);
 
+        hw_set_tone(note, vol);
         audio_hardware_dac_set_tone(note, vol);
         s_in_gap_phase = true;
         k_timer_start(&s_audio_timer, K_MSEC(play_ms), K_NO_WAIT);
@@ -242,6 +247,7 @@ static void audio_timer_handler(struct k_timer *timer_id)
             gap_ms = 15;
         }
 
+        hw_stop_tone();
         audio_hardware_dac_stop();
         s_in_gap_phase = false;
         s_note_idx++; /* Advance to next note */
@@ -266,6 +272,7 @@ void audio_engine_start_song(uint8_t song_index)
 void audio_engine_pause(void)
 {
     s_is_playing = false;
+    hw_stop_tone();
     audio_hardware_dac_stop();
     k_timer_stop(&s_audio_timer);
 }
@@ -282,6 +289,7 @@ void audio_engine_resume(void)
 void audio_engine_stop(void)
 {
     s_is_playing = false;
+    hw_stop_tone();
     audio_hardware_dac_stop();
     k_timer_stop(&s_audio_timer);
     s_note_idx = 0;
@@ -293,6 +301,7 @@ void audio_engine_set_volume(uint8_t volume_percent)
     if (s_is_playing && !s_in_gap_phase) {
         const musical_piece_t *piece = &s_catalog[s_active_song];
         if (s_note_idx < piece->length) {
+            hw_set_tone(piece->notes[s_note_idx], volume_percent);
             audio_hardware_dac_set_tone(piece->notes[s_note_idx], volume_percent);
         }
     } else {

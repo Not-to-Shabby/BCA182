@@ -315,7 +315,7 @@ static void render_usb_msc_screen(void)
 
     /* Footer Controls */
     lcd_draw_line(0, 196, LCD_WIDTH - 1, 196, LCD_COLOR_DARKGREY);
-    lcd_show_string(10, 202, "Click PA0 to Exit &", LCD_COLOR_ORANGE, LCD_COLOR_BLACK);
+    lcd_show_string(10, 202, "Click UP to Exit &", LCD_COLOR_ORANGE, LCD_COLOR_BLACK);
     lcd_show_string(10, 218, "Re-Mount for Playback", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
 }
 
@@ -364,7 +364,7 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
     /* Directional D-Pad Controls Footer with Waveform & Buzzer Mute Hints */
     lcd_draw_line(0, 196, LCD_WIDTH - 1, 196, LCD_COLOR_DARKGREY);
     lcd_show_string(10, 202, "UP/DN:Track | L/R:Vol", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
-    lcd_show_string(10, 218, "Hold PA0:USB Disk Mode", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+    lcd_show_string(10, 218, "Hold UP:USB Disk Mode", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -573,7 +573,15 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
         button_event_t down_evt  = update_button_state(&btn_down, down_active, now, 450, 0);
         button_event_t press_evt = update_button_state(&btn_press, press_active, now, 500, 0);
 
-        if (!both_ud_raw && !s_both_ud_triggered) {
+        if (sd_card_get_mode() == SD_MODE_USB_CARD_READER) {
+            /* While in USB Card Reader mode, pressing UP, DOWN, or PA0 exits back to player! */
+            if (up_evt == BTN_EVT_SHORT_PRESS || down_evt == BTN_EVT_SHORT_PRESS || press_evt == BTN_EVT_SHORT_PRESS) {
+                sd_card_set_mode(SD_MODE_STANDALONE);
+                k_mutex_lock(&g_player_mutex, K_FOREVER);
+                g_player.state_changed = true;
+                k_mutex_unlock(&g_player_mutex);
+            }
+        } else if (!both_ud_raw && !s_both_ud_triggered) {
             /* 1. UP Button Events */
             if (up_evt == BTN_EVT_SHORT_PRESS) {
                 /* Short Click: Next Track (+1) */
@@ -585,13 +593,15 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
                        g_player.current_song_index + 1, s->name1, s->name2);
                 k_mutex_unlock(&g_player_mutex);
             } else if (up_evt == BTN_EVT_LONG_PRESS) {
-                /* Long Press: Jump to Track 1 (Für Elise) */
+                /* Long Press on UP: Enter USB Card Reader mode! */
+                audio_engine_stop();
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
-                g_player.current_song_index = 0;
+                g_player.state = PLAYER_STATE_STOPPED;
                 g_player.state_changed = true;
-                const song_info_t *s = get_song_info(0);
-                printk("[Nav] UP (Hold) -> Jump to Track [1/8]: %s %s\n", s->name1, s->name2);
                 k_mutex_unlock(&g_player_mutex);
+                sd_card_set_mode(SD_MODE_USB_CARD_READER);
+                printk("[Nav] UP (Hold) -> Entered USB SD Card Reader Mode!\n");
+                uart1_direct_print("[Nav] UP (Hold) -> Entered USB SD Card Reader Mode!\n");
             }
 
             /* 2. DOWN Button Events */
@@ -619,13 +629,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
 
         /* 3. PRESS / PA0 (USER_BUTTON) Events */
         if (press_evt == BTN_EVT_SHORT_PRESS) {
-            if (sd_card_get_mode() == SD_MODE_USB_CARD_READER) {
-                /* Exit card reader mode back to player */
-                sd_card_set_mode(SD_MODE_STANDALONE);
-                k_mutex_lock(&g_player_mutex, K_FOREVER);
-                g_player.state_changed = true;
-                k_mutex_unlock(&g_player_mutex);
-            } else {
+            if (sd_card_get_mode() == SD_MODE_STANDALONE) {
                 /* Short Click: Toggle Play / Pause */
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
                 g_player.state = toggle_play_pause(g_player.state);
@@ -637,21 +641,13 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
                 k_mutex_unlock(&g_player_mutex);
             }
         } else if (press_evt == BTN_EVT_LONG_PRESS) {
-            if (sd_card_get_mode() == SD_MODE_USB_CARD_READER) {
-                /* Exit card reader mode */
-                sd_card_set_mode(SD_MODE_STANDALONE);
-            } else {
-                /* Long Press: Enter USB Card Reader mode! */
-                audio_engine_stop();
-                k_mutex_lock(&g_player_mutex, K_FOREVER);
-                g_player.state = PLAYER_STATE_STOPPED;
-                g_player.state_changed = true;
-                k_mutex_unlock(&g_player_mutex);
-                sd_card_set_mode(SD_MODE_USB_CARD_READER);
-            }
+            /* Long Press: Stop playback */
+            audio_engine_stop();
             k_mutex_lock(&g_player_mutex, K_FOREVER);
+            g_player.state = PLAYER_STATE_STOPPED;
             g_player.state_changed = true;
             k_mutex_unlock(&g_player_mutex);
+            printk("[Nav] USER_BUTTON (Hold) -> Stopped.\n");
         }
 
         /* Cooperative sleep */

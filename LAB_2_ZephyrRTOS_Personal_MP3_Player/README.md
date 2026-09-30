@@ -20,7 +20,7 @@ The application fulfills all engineering requirements specified in **Laboratory 
   - **Zero Race Condition**: Every button utilizes an explicit release-versus-threshold state machine guaranteeing that holding a button never triggers an accidental short click on press or release.
   - **UP Button (`PC5` / SW2)**:
     - *Short Click*: Cycles forward to the next track ($+1$, Track 1 to 8).
-    - *Long Hold ($\ge 450\,\text{ms}$)*: Instantly resets and jumps back to Track 1 (*Für Elise*).
+    - *Long Hold ($\ge 450\,\text{ms}$)*: Enters / Exits **USB Micro-SD Card Reader (U-Disk Bridge)** mode! When in Card Reader mode, clicking UP immediately exits back to standalone playback.
   - **DOWN Button (`PC1` / SW4)**:
     - *Short Click*: Cycles backward to the previous track ($-1$, Track 8 to 1).
     - *Long Hold ($\ge 450\,\text{ms}$)*: Toggles **Play / Pause** on the currently selected track without changing tracks!

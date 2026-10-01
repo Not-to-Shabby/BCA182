@@ -386,16 +386,20 @@ void sd_card_set_mode(sd_reader_mode_t mode)
 
         /* 1. Disable USB Device */
         usb_disable();
-        k_msleep(200);
+        k_msleep(500);
 
         /* 2. Re-mount FAT32 volume on the microcontroller */
         int ret = disk_access_init(DISK_DRIVE_NAME);
-        for (uint8_t attempt = 0; ret != 0 && attempt < 3; attempt++) {
-            k_msleep(300);
+        for (uint8_t attempt = 0; ret != 0 && attempt < 5; attempt++) {
+            k_msleep(200);
             ret = disk_access_init(DISK_DRIVE_NAME);
         }
         if (ret == 0) {
             ret = fs_mount(&s_mp);
+            for (uint8_t attempt = 0; ret != 0 && attempt < 3; attempt++) {
+                k_msleep(200);
+                ret = fs_mount(&s_mp);
+            }
         }
         if (ret == 0) {
             s_is_mounted = true;

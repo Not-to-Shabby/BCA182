@@ -10,6 +10,7 @@
  */
 
 #include "audio_codec_es8388.h"
+#include "wav_player.h"
 #include <stdio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
@@ -75,8 +76,22 @@ static void spi3_i2s_isr(const void *arg)
 {
     ARG_UNUSED(arg);
 
-    while (SPI3->SR & SPI_SR_TXE) {
-        if (!s_dac_active || s_phase_inc == 0) {
+    if (SPI3->SR & SPI_SR_TXE) {
+        if (wav_player_is_active()) {
+            int16_t sample;
+            if (wav_player_get_next_sample(&sample)) {
+                SPI3->DR = (uint16_t)sample;
+                int32_t value = (int32_t)sample / 16 + 2048;
+                if (value < 0) value = 0;
+                if (value > 4095) value = 4095;
+                if (s_channel_toggle) DAC->DHR12R1 = (uint16_t)value;
+                s_channel_toggle = !s_channel_toggle;
+                s_diag.i2s_tx_samples++;
+            } else {
+                SPI3->DR = 0;
+                DAC->DHR12R1 = 2048;
+            }
+        } else if (!s_dac_active || s_phase_inc == 0) {
             SPI3->DR = 0;
             DAC->DHR12R1 = 2048; /* Mid-rail bias */
         } else {

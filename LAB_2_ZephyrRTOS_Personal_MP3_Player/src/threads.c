@@ -18,6 +18,8 @@
 #include "lcd_st7789.h"
 #include "audio_engine.h"
 #include "audio_codec_es8388.h"
+#include "sd_card_reader.h"
+#include "wav_player.h"
 #include <zephyr/sys/printk.h>
 #include <stm32f4xx.h>
 #include <stdio.h>
@@ -301,15 +303,21 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
     lcd_show_string(14, 28, buf, status_color, LCD_COLOR_BLACK);
 
     /* Track Number and Title */
-    const song_info_t *c_song = get_song_info(cur_song_idx);
-    snprintf(buf, sizeof(buf), "Track #%u of %u", cur_song_idx + 1, TOTAL_PLAYABLE_SONGS);
+    uint8_t total_tracks = TOTAL_PLAYABLE_SONGS + sd_card_get_track_count();
+    snprintf(buf, sizeof(buf), "Track #%u of %u", cur_song_idx + 1, total_tracks);
     lcd_show_string(14, 44, buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 
-    lcd_show_string(14, 60, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
-    lcd_show_string(14, 76, c_song->name2, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
-
-    /* Note Progress Row */
-    render_note_row(audio_engine_get_note_index(), c_song->length, state);
+    if (cur_song_idx < TOTAL_PLAYABLE_SONGS) {
+        const song_info_t *c_song = get_song_info(cur_song_idx);
+        lcd_show_string(14, 60, c_song->name1, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+        lcd_show_string(14, 76, c_song->name2, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+        render_note_row(audio_engine_get_note_index(), c_song->length, state);
+    } else {
+        const sd_track_t *track = sd_card_get_track(cur_song_idx - TOTAL_PLAYABLE_SONGS);
+        lcd_show_string(14, 60, "SD CARD WAV", LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+        lcd_show_string(14, 76, track ? track->filename : "NO TRACK", LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+        lcd_show_string(14, 90, state == PLAYER_STATE_PLAYING ? "PLAYING WAV FILE" : "WAV FILE READY", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+    }
 
     /* Volume Level Bar */
     lcd_draw_rect(14, 121, 226, 129, LCD_COLOR_WHITE);
@@ -365,21 +373,37 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
         update_status_leds(current_state);
 
         /* 2. Synchronize Audio Synthesizer Engine */
+        bool sd_track = current_song >= TOTAL_PLAYABLE_SONGS &&
+                (current_song - TOTAL_PLAYABLE_SONGS) < sd_card_get_track_count();
         if (current_state == PLAYER_STATE_PLAYING) {
-            if (last_audio_state != PLAYER_STATE_PLAYING || current_song != last_audio_song) {
-                audio_engine_start_song(current_song);
+            if (last_audio_state == PLAYER_STATE_PAUSED && current_song == last_audio_song) {
+                if (sd_track) wav_player_resume();
+                else audio_engine_resume();
+            } else if (last_audio_state != PLAYER_STATE_PLAYING || current_song != last_audio_song) {
+                wav_player_stop();
+                audio_engine_stop();
+                if (sd_track) {
+                    if (!wav_player_start(sd_card_get_track(current_song - TOTAL_PLAYABLE_SONGS)->filename)) {
+                        k_mutex_lock(&g_player_mutex, K_FOREVER);
+                        g_player.state = PLAYER_STATE_STOPPED;
+                        g_player.state_changed = true;
+                        k_mutex_unlock(&g_player_mutex);
+                        printk("[WAV] Playback start failed; returning to STOPPED state.\n");
+                    }
+                } else {
+                    audio_engine_start_song(current_song);
+                }
                 last_audio_song = current_song;
-            } else if (!audio_engine_is_playing()) {
-                audio_engine_resume();
+            } else if (sd_track ? !wav_player_is_active() : !audio_engine_is_playing()) {
+                if (sd_track) wav_player_resume();
+                else audio_engine_resume();
             }
         } else if (current_state == PLAYER_STATE_PAUSED) {
-            if (audio_engine_is_playing()) {
-                audio_engine_pause();
-            }
+            if (sd_track) wav_player_pause();
+            else if (audio_engine_is_playing()) audio_engine_pause();
         } else if (current_state == PLAYER_STATE_STOPPED) {
-            if (audio_engine_is_playing()) {
-                audio_engine_stop();
-            }
+            wav_player_stop();
+            if (audio_engine_is_playing()) audio_engine_stop();
         }
         last_audio_state = current_state;
 
@@ -531,11 +555,11 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
             if (up_evt == BTN_EVT_SHORT_PRESS) {
                 /* Short Click: Next Track (+1) */
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
-                g_player.current_song_index = (g_player.current_song_index + 1) % TOTAL_PLAYABLE_SONGS;
+                    uint8_t total_tracks = TOTAL_PLAYABLE_SONGS + sd_card_get_track_count();
+                    g_player.current_song_index = (g_player.current_song_index + 1) % total_tracks;
                 g_player.state_changed = true;
-                const song_info_t *s = get_song_info(g_player.current_song_index);
-                printk("[Nav] UP (Click) -> Next Track [%u/8]: %s %s\n",
-                       g_player.current_song_index + 1, s->name1, s->name2);
+                    printk("[Nav] UP (Click) -> Next Track [%u/%u]\n",
+                           g_player.current_song_index + 1, total_tracks);
                 k_mutex_unlock(&g_player_mutex);
             } else if (up_evt == BTN_EVT_LONG_PRESS) {
                 /* Long Press: Jump to Track 1 (Für Elise) */
@@ -551,21 +575,19 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
             if (down_evt == BTN_EVT_SHORT_PRESS) {
                 /* Short Click: Previous Track (-1) */
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
-                g_player.current_song_index = (g_player.current_song_index + TOTAL_PLAYABLE_SONGS - 1) % TOTAL_PLAYABLE_SONGS;
+                    uint8_t total_tracks = TOTAL_PLAYABLE_SONGS + sd_card_get_track_count();
+                    g_player.current_song_index = (g_player.current_song_index + total_tracks - 1) % total_tracks;
                 g_player.state_changed = true;
-                const song_info_t *s = get_song_info(g_player.current_song_index);
-                printk("[Nav] DOWN (Click) -> Prev Track [%u/8]: %s %s\n",
-                       g_player.current_song_index + 1, s->name1, s->name2);
+                    printk("[Nav] DOWN (Click) -> Prev Track [%u/%u]\n",
+                           g_player.current_song_index + 1, total_tracks);
                 k_mutex_unlock(&g_player_mutex);
             } else if (down_evt == BTN_EVT_LONG_PRESS) {
                 /* Long Press: Toggle Play / Pause on current track without changing tracks */
                 k_mutex_lock(&g_player_mutex, K_FOREVER);
                 g_player.state = toggle_play_pause(g_player.state);
                 g_player.state_changed = true;
-                const song_info_t *s = get_song_info(g_player.current_song_index);
-                printk("[Nav] DOWN (Hold) -> PLAY/PAUSE: Track [%u] '%s %s' is now %s\n",
-                       g_player.current_song_index + 1, s->name1, s->name2,
-                       get_player_state_str(g_player.state));
+                  printk("[Nav] DOWN (Hold) -> PLAY/PAUSE: Track [%u] is now %s\n",
+                      g_player.current_song_index + 1, get_player_state_str(g_player.state));
                 k_mutex_unlock(&g_player_mutex);
             }
         }
@@ -576,10 +598,8 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
             k_mutex_lock(&g_player_mutex, K_FOREVER);
             g_player.state = toggle_play_pause(g_player.state);
             g_player.state_changed = true;
-            const song_info_t *s = get_song_info(g_player.current_song_index);
-            printk("[Nav] USER_BUTTON (Click) -> Track [%u] '%s %s' is now %s\n",
-                   g_player.current_song_index + 1, s->name1, s->name2,
-                   get_player_state_str(g_player.state));
+                 printk("[Nav] USER_BUTTON (Click) -> Track [%u] is now %s\n",
+                     g_player.current_song_index + 1, get_player_state_str(g_player.state));
             k_mutex_unlock(&g_player_mutex);
         } else if (press_evt == BTN_EVT_LONG_PRESS) {
             /* Long Press: Full Stop Playback */

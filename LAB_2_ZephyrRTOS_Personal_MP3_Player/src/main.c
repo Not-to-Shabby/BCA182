@@ -15,6 +15,8 @@
 #include "lcd_st7789.h"
 #include "audio_engine.h"
 #include "audio_codec_es8388.h"
+#include "sd_card_reader.h"
+#include "wav_player.h"
 #include "threads.h"
 
 /* -------------------------------------------------------------------------- */
@@ -70,6 +72,7 @@ int main(void)
 {
     /* 1. Initialize GPIO buttons, LEDs, and direct hardware USART1 on PA9/PA10 */
     init_player_peripherals();
+    wav_player_init();
 
     /* 2. Transmit user operating guide via direct USART1 (ST-LINK VCP on COM7) */
     print_uart_instructions();
@@ -83,7 +86,10 @@ int main(void)
     uart1_direct_print("[System] ST7789 hardware display ready.\n");
     k_mutex_unlock(&g_lcd_mutex);
 
-    /* 4. Initialize hardware audio synthesizer (ES8388 Codec + 12-bit Analog DAC1) */
+    printk("[System] Initializing Micro-SD filesystem...\n");
+    sd_card_reader_init();
+
+    /* 5. Initialize hardware audio synthesizer (ES8388 Codec + 12-bit Analog DAC1) */
     printk("[System] Initializing audio synthesizer (ES8388 CN3 + PA4 DAC)...\n");
     uart1_direct_print("[System] Initializing audio synthesizer (ES8388 CN3 + PA4 DAC)...\n");
     audio_engine_init();

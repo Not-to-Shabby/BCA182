@@ -61,33 +61,16 @@ static int16_t s_i2s_dma_buf[I2S_DMA_BUFFER_SIZE];
 static void populate_audio_block(int16_t *dest, size_t count)
 {
     bool wav_active = wav_player_is_active();
-    bool tone_active = (s_phase_inc > 0 || s_tone_gain > s_tone_target_gain);
-    uint16_t output_target = (wav_active || tone_active) ? 256U : 0U;
+    bool tone_active = (s_dac_active && (s_phase_inc > 0 || s_tone_gain > 0));
 
     for (size_t i = 0; i < count; i++) {
-        if (s_output_gain < output_target) {
-            s_output_gain = (s_output_gain + 8U > output_target) ?
-                            output_target : s_output_gain + 8U;
-        } else if (s_output_gain > output_target) {
-            s_output_gain = (s_output_gain < output_target + 8U) ?
-                            output_target : s_output_gain - 8U;
-        }
-
-        if (!s_dac_active) {
-            dest[i] = 0;
-            if (s_channel_toggle) {
-                DAC->DHR12R1 = 2048; /* Mid-rail bias */
-            }
-            s_channel_toggle = !s_channel_toggle;
-        } else if (wav_active) {
-            int16_t out_sample;
+        if (wav_active) {
+            int16_t out_sample = 0;
             if (wav_player_get_next_sample(&out_sample)) {
-                int16_t pcm = (int16_t)(((int32_t)out_sample * s_output_gain) / 256);
-                s_last_pcm = pcm;
-                dest[i] = pcm;
+                dest[i] = out_sample;
 
                 if (s_channel_toggle) {
-                    int32_t val12 = (int32_t)pcm / 16 + 2048;
+                    int32_t val12 = (int32_t)out_sample / 16 + 2048;
                     if (val12 < 0) val12 = 0;
                     if (val12 > 4095) val12 = 4095;
                     DAC->DHR12R1 = (uint16_t)val12;
@@ -95,20 +78,15 @@ static void populate_audio_block(int16_t *dest, size_t count)
                 s_channel_toggle = !s_channel_toggle;
                 s_diag.i2s_tx_samples++;
             } else {
-                int16_t pcm = (int16_t)(((int32_t)s_last_pcm * s_output_gain) / 256);
-                dest[i] = pcm;
-                if (s_channel_toggle) {
-                    DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
-                }
-                s_channel_toggle = !s_channel_toggle;
+                dest[i] = 0;
             }
-        } else if (s_phase_inc > 0 || s_tone_gain > s_tone_target_gain) {
+        } else if (tone_active) {
             if (s_tone_gain < s_tone_target_gain) {
-                s_tone_gain = (s_tone_gain + 4U > s_tone_target_gain) ?
-                              s_tone_target_gain : s_tone_gain + 4U;
+                s_tone_gain = (s_tone_gain + 16U > s_tone_target_gain) ?
+                              s_tone_target_gain : s_tone_gain + 16U;
             } else if (s_tone_gain > s_tone_target_gain) {
-                s_tone_gain = (s_tone_gain < s_tone_target_gain + 4U) ?
-                              s_tone_target_gain : s_tone_gain - 4U;
+                s_tone_gain = (s_tone_gain < s_tone_target_gain + 16U) ?
+                              s_tone_target_gain : s_tone_gain - 16U;
             }
 
             uint8_t table_index = (uint8_t)((s_phase_acc >> 27) & 31U);
@@ -119,10 +97,8 @@ static void populate_audio_block(int16_t *dest, size_t count)
             uint16_t sample = (uint16_t)((int32_t)s_dac_scaled_table[table_index] +
                                          ((sample_delta * (int32_t)fraction) >> 8));
 
-            int32_t centered = ((int32_t)sample - 2048) * s_tone_gain / 256;
+            int32_t centered = ((int32_t)sample - 2048) * (int32_t)s_tone_gain / 256;
             int16_t pcm = (int16_t)(centered * 15);
-            pcm = (int16_t)(((int32_t)pcm * s_output_gain) / 256);
-            s_last_pcm = pcm;
             dest[i] = pcm;
 
             if (s_channel_toggle) {
@@ -132,10 +108,9 @@ static void populate_audio_block(int16_t *dest, size_t count)
             s_channel_toggle = !s_channel_toggle;
             s_diag.i2s_tx_samples++;
         } else {
-            int16_t pcm = (int16_t)(((int32_t)s_last_pcm * s_output_gain) / 256);
-            dest[i] = pcm;
+            dest[i] = 0;
             if (s_channel_toggle) {
-                DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
+                DAC->DHR12R1 = 2048; /* Mid-rail bias */
             }
             s_channel_toggle = !s_channel_toggle;
         }
@@ -410,14 +385,14 @@ static void i2s3_hw_init(void)
     /* Explicitly route I2S clock source to PLLI2S (RCC->CFGR bit 23 = 0) */
     RCC->CFGR &= ~RCC_CFGR_I2SSRC;
 
-    /* 2. Configure PLLI2S for 44.1 kHz audio with PLLM = 4 (8 MHz HSE / 4 = 2 MHz input):
-     *    VCO = 2 MHz * 192 = 384 MHz (well within 192..432 MHz operating envelope)
-     *    I2SxCLK = 384 MHz / 2 = 192 MHz
-     *    I2SDIV = 8, ODD = 1 -> Total Div = 17
-     *    Fs = 192 MHz / (256 * 17) = 44117.6 Hz (44.1 kHz exact target)
+    /* 2. Configure PLLI2S for 44.1 kHz audio with PLLM = 8 (8 MHz HSE / 8 = 1 MHz input):
+     *    VCO = 1 MHz * 271 = 271 MHz (safe within 192..432 MHz operating envelope)
+     *    I2SxCLK = 271 MHz / 2 = 135.5 MHz
+     *    I2SDIV = 6, ODD = 0 -> Total Div = 12
+     *    Fs = 135.5 MHz / (256 * 12) = 44108 Hz (44.1 kHz CD audio standard)
      */
     RCC->CR &= ~RCC_CR_PLLI2SON;
-    RCC->PLLI2SCFGR = (192U << RCC_PLLI2SCFGR_PLLI2SN_Pos) | (2U << RCC_PLLI2SCFGR_PLLI2SR_Pos);
+    RCC->PLLI2SCFGR = (271U << RCC_PLLI2SCFGR_PLLI2SN_Pos) | (2U << RCC_PLLI2SCFGR_PLLI2SR_Pos);
     RCC->CR |= RCC_CR_PLLI2SON;
     uint32_t timeout = 100000;
     while (!(RCC->CR & RCC_CR_PLLI2SRDY) && --timeout);
@@ -447,10 +422,10 @@ static void i2s3_hw_init(void)
     GPIOB->OSPEEDR |= ((3U << (3 * 2)) | (3U << (5 * 2)));
 
     /* 4. Configure SPI3 in I2S Philips Standard Master Transmit Mode:
-     *    MCKOE = 1, I2SDIV = 8, ODD = 1 -> Fs = 44.117 kHz
+     *    MCKOE = 1, I2SDIV = 6, ODD = 0 -> Fs = 44.108 kHz
      */
     SPI3->I2SCFGR = 0;
-    SPI3->I2SPR = SPI_I2SPR_MCKOE | SPI_I2SPR_ODD | 8U;
+    SPI3->I2SPR = SPI_I2SPR_MCKOE | 6U;
     SPI3->I2SCFGR = SPI_I2SCFGR_I2SMOD |   /* I2S mode */
                     SPI_I2SCFGR_I2SCFG_1;  /* Master Transmit (10b) */
 

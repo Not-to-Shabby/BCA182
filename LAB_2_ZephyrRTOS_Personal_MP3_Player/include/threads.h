@@ -21,9 +21,9 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 /* Thread Stack Sizes & Priorities                                            */
 /* -------------------------------------------------------------------------- */
-#define THREAD_STACK_SIZE_LCD_LEDS      2048
-#define THREAD_STACK_SIZE_BUTTONS       1024
-#define THREAD_STACK_SIZE_VOLUME        1024
+#define THREAD_STACK_SIZE_LCD_LEDS      4096
+#define THREAD_STACK_SIZE_BUTTONS       4096
+#define THREAD_STACK_SIZE_VOLUME        2048
 
 #define THREAD_PRIORITY_LCD_LEDS        3
 #define THREAD_PRIORITY_BUTTONS         2

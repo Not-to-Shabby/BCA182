@@ -59,31 +59,13 @@ bool wav_player_start(const char* filepath)
     fs_file_t_init(&s_file);
 
     char full_path[280];
-    
-    /* Zephyr VFS standard path formatting */
     snprintf(full_path, sizeof(full_path), "/SD:/%s", filepath);
     int err = fs_open(&s_file, full_path, FS_O_READ);
-    printk("[WAV] Attempt open '%s' -> err %d\n", full_path, err);
-
     if (err != 0) {
-        /* Fallback 1: No slash */
-        fs_file_t_init(&s_file);
-        snprintf(full_path, sizeof(full_path), "/SD:%s", filepath);
-        err = fs_open(&s_file, full_path, FS_O_READ);
-        printk("[WAV] Attempt fallback '%s' -> err %d\n", full_path, err);
-    }
-    if (err != 0) {
-        /* Fallback 2: Direct filename */
-        fs_file_t_init(&s_file);
-        snprintf(full_path, sizeof(full_path), "%s", filepath);
-        err = fs_open(&s_file, full_path, FS_O_READ);
-        printk("[WAV] Attempt fallback '%s' -> err %d\n", full_path, err);
-    }
-    
-    if (err != 0) {
-        printk("[WAV] Failed to open %s (all paths failed)\n", filepath);
+        printk("[WAV] Failed to open '%s' (err %d)\n", full_path, err);
         return false;
     }
+    printk("[WAV] Successfully opened '%s'\n", full_path);
 
     /* Parse WAV header to find data chunk */
     uint8_t header[12];

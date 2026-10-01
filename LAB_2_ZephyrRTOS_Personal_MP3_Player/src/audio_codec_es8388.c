@@ -53,16 +53,18 @@ static audio_diagnostics_t s_diag = {
 static char s_diag_str[64] = "ES8388:PROBING";
 
 /* -------------------------------------------------------------------------- */
-/* Direct Digital Synthesis (DDS) Interrupt via SPI3 / I2S3 TXE               */
+/* Hardware Circular DMA Audio Streamer (DMA1 Stream 5 Channel 0 for SPI3_TX) */
 /* -------------------------------------------------------------------------- */
-static void spi3_i2s_isr(const void *arg)
-{
-    ARG_UNUSED(arg);
+#define I2S_DMA_BUFFER_SIZE 1024
+static int16_t s_i2s_dma_buf[I2S_DMA_BUFFER_SIZE];
 
-    if (SPI3->SR & SPI_SR_TXE) {
-        bool wav_active = wav_player_is_active();
-        bool tone_active = (s_phase_inc > 0 || s_tone_gain > s_tone_target_gain);
-        uint16_t output_target = (wav_active || tone_active) ? 256U : 0U;
+static void populate_audio_block(int16_t *dest, size_t count)
+{
+    bool wav_active = wav_player_is_active();
+    bool tone_active = (s_phase_inc > 0 || s_tone_gain > s_tone_target_gain);
+    uint16_t output_target = (wav_active || tone_active) ? 256U : 0U;
+
+    for (size_t i = 0; i < count; i++) {
         if (s_output_gain < output_target) {
             s_output_gain = (s_output_gain + 8U > output_target) ?
                             output_target : s_output_gain + 8U;
@@ -72,34 +74,35 @@ static void spi3_i2s_isr(const void *arg)
         }
 
         if (!s_dac_active) {
-            SPI3->DR = 0;
-            DAC->DHR12R1 = 2048; /* Mid-rail bias */
+            dest[i] = 0;
+            if (s_channel_toggle) {
+                DAC->DHR12R1 = 2048; /* Mid-rail bias */
+            }
+            s_channel_toggle = !s_channel_toggle;
         } else if (wav_active) {
-            /* 1. WAV Player Streaming Mode */
             int16_t out_sample;
             if (wav_player_get_next_sample(&out_sample)) {
                 int16_t pcm = (int16_t)(((int32_t)out_sample * s_output_gain) / 256);
                 s_last_pcm = pcm;
-                SPI3->DR = (uint16_t)pcm;
-                
-                /* Downmix signed 16-bit to unsigned 12-bit for DAC1 PA4 */
-                int32_t val12 = (int32_t)pcm / 16 + 2048;
-                if (val12 < 0) val12 = 0;
-                if (val12 > 4095) val12 = 4095;
-                
-                /* Only update the analog DAC once per stereo pair to avoid doubling pitch */
+                dest[i] = pcm;
+
                 if (s_channel_toggle) {
+                    int32_t val12 = (int32_t)pcm / 16 + 2048;
+                    if (val12 < 0) val12 = 0;
+                    if (val12 > 4095) val12 = 4095;
                     DAC->DHR12R1 = (uint16_t)val12;
                 }
                 s_channel_toggle = !s_channel_toggle;
                 s_diag.i2s_tx_samples++;
             } else {
                 int16_t pcm = (int16_t)(((int32_t)s_last_pcm * s_output_gain) / 256);
-                SPI3->DR = (uint16_t)pcm;
-                DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
+                dest[i] = pcm;
+                if (s_channel_toggle) {
+                    DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
+                }
+                s_channel_toggle = !s_channel_toggle;
             }
         } else if (s_phase_inc > 0 || s_tone_gain > s_tone_target_gain) {
-            /* 2. Legacy DDS Synthesizer Mode */
             if (s_tone_gain < s_tone_target_gain) {
                 s_tone_gain = (s_tone_gain + 4U > s_tone_target_gain) ?
                               s_tone_target_gain : s_tone_gain + 4U;
@@ -108,8 +111,6 @@ static void spi3_i2s_isr(const void *arg)
                               s_tone_target_gain : s_tone_gain - 4U;
             }
 
-            /* Linearly interpolate the 32-point table to avoid staircase
-             * harmonics becoming audible through the headphone amplifier. */
             uint8_t table_index = (uint8_t)((s_phase_acc >> 27) & 31U);
             uint8_t next_index = (uint8_t)((table_index + 1U) & 31U);
             uint32_t fraction = (s_phase_acc >> 19) & 0xFFU;
@@ -118,26 +119,46 @@ static void spi3_i2s_isr(const void *arg)
             uint16_t sample = (uint16_t)((int32_t)s_dac_scaled_table[table_index] +
                                          ((sample_delta * (int32_t)fraction) >> 8));
 
-            /* Convert to signed 16-bit PCM for ES8388 stereo DAC */
             int32_t centered = ((int32_t)sample - 2048) * s_tone_gain / 256;
             int16_t pcm = (int16_t)(centered * 15);
             pcm = (int16_t)(((int32_t)pcm * s_output_gain) / 256);
             s_last_pcm = pcm;
-            SPI3->DR = (uint16_t)pcm;
-
-            /* Simultaneous Analog DAC on PA4 */
-            DAC->DHR12R1 = (uint16_t)(centered + 2048);
+            dest[i] = pcm;
 
             if (s_channel_toggle) {
+                DAC->DHR12R1 = (uint16_t)(centered + 2048);
                 s_phase_acc += s_phase_inc;
             }
             s_channel_toggle = !s_channel_toggle;
             s_diag.i2s_tx_samples++;
         } else {
             int16_t pcm = (int16_t)(((int32_t)s_last_pcm * s_output_gain) / 256);
-            SPI3->DR = (uint16_t)pcm;
-            DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
+            dest[i] = pcm;
+            if (s_channel_toggle) {
+                DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
+            }
+            s_channel_toggle = !s_channel_toggle;
         }
+    }
+}
+
+static void dma1_stream5_isr(const void *arg)
+{
+    ARG_UNUSED(arg);
+
+    if (DMA1->HISR & DMA_HISR_HTIF5) {
+        DMA1->HIFCR = DMA_HIFCR_CHTIF5;
+        populate_audio_block(&s_i2s_dma_buf[0], I2S_DMA_BUFFER_SIZE / 2);
+    }
+    if (DMA1->HISR & DMA_HISR_TCIF5) {
+        DMA1->HIFCR = DMA_HIFCR_CTCIF5;
+        populate_audio_block(&s_i2s_dma_buf[I2S_DMA_BUFFER_SIZE / 2], I2S_DMA_BUFFER_SIZE / 2);
+    }
+    if (DMA1->HISR & DMA_HISR_TEIF5) {
+        DMA1->HIFCR = DMA_HIFCR_CTEIF5;
+    }
+    if (DMA1->HISR & DMA_HISR_FEIF5) {
+        DMA1->HIFCR = DMA_HIFCR_CFEIF5;
     }
 }
 
@@ -432,13 +453,43 @@ static void i2s3_hw_init(void)
     SPI3->I2SPR = SPI_I2SPR_MCKOE | SPI_I2SPR_ODD | 8U;
     SPI3->I2SCFGR = SPI_I2SCFGR_I2SMOD |   /* I2S mode */
                     SPI_I2SCFGR_I2SCFG_1;  /* Master Transmit (10b) */
-    SPI3->CR2 |= SPI_CR2_TXEIE;            /* Enable TX Empty Interrupt */
-    SPI3->I2SCFGR |= SPI_I2SCFGR_I2SE;     /* Enable I2S peripheral */
 
-    /* 5. Connect SPI3 interrupt in Zephyr */
-    /* Keep audio transmission ahead of SDMMC/FatFs interrupt activity. */
-    IRQ_CONNECT(SPI3_IRQn, 0, spi3_i2s_isr, NULL, 0);
-    irq_enable(SPI3_IRQn);
+    /* 5. Configure DMA1 Stream 5 Channel 0 for Hardware Circular SPI3_TX */
+    RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
+
+    DMA1_Stream5->CR = 0;
+    while (DMA1_Stream5->CR & DMA_SxCR_EN);
+
+    /* Clear DMA1 Stream 5 interrupt flags */
+    DMA1->HIFCR = DMA_HIFCR_CTCIF5 | DMA_HIFCR_CHTIF5 | DMA_HIFCR_CTEIF5 |
+                  DMA_HIFCR_CDMEIF5 | DMA_HIFCR_CFEIF5;
+
+    DMA1_Stream5->PAR = (uint32_t)&(SPI3->DR);
+    DMA1_Stream5->M0AR = (uint32_t)s_i2s_dma_buf;
+    DMA1_Stream5->NDTR = I2S_DMA_BUFFER_SIZE;
+    DMA1_Stream5->FCR = 0;
+
+    DMA1_Stream5->CR = (0U << DMA_SxCR_CHSEL_Pos) |     /* Channel 0: SPI3_TX */
+                       DMA_SxCR_PL_1 | DMA_SxCR_PL_0 |   /* Very High Priority */
+                       DMA_SxCR_MSIZE_0 |                /* 16-bit Memory */
+                       DMA_SxCR_PSIZE_0 |                /* 16-bit Peripheral */
+                       DMA_SxCR_MINC |                   /* Memory increment */
+                       DMA_SxCR_CIRC |                   /* Circular double buffer */
+                       DMA_SxCR_DIR_0 |                  /* Memory to Peripheral */
+                       DMA_SxCR_TCIE |                   /* Transfer Complete Interrupt */
+                       DMA_SxCR_HTIE;                    /* Half Transfer Interrupt */
+
+    /* Pre-fill initial silence */
+    memset(s_i2s_dma_buf, 0, sizeof(s_i2s_dma_buf));
+
+    /* Connect and enable DMA1 Stream 5 interrupt in Zephyr */
+    IRQ_CONNECT(DMA1_Stream5_IRQn, 0, dma1_stream5_isr, NULL, 0);
+    irq_enable(DMA1_Stream5_IRQn);
+
+    /* Enable DMA request on SPI3 and start stream */
+    SPI3->CR2 |= SPI_CR2_TXDMAEN;
+    DMA1_Stream5->CR |= DMA_SxCR_EN;
+    SPI3->I2SCFGR |= SPI_I2SCFGR_I2SE;     /* Enable I2S peripheral */
 }
 
 /* -------------------------------------------------------------------------- */

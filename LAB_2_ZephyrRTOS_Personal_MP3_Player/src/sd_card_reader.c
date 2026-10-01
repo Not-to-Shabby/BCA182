@@ -321,6 +321,18 @@ uint8_t sd_card_scan_tracks(void)
                     s_tracks[s_track_count].size_bytes = entry.size;
                     printk("[SD_FS] Track [%u]: %s (%u KB)\n",
                            s_track_count + 1, entry.name, (unsigned int)(entry.size / 1024));
+
+                    /* Test opening the file right after scanning */
+                    struct fs_file_t tf;
+                    fs_file_t_init(&tf);
+                    char tp[280];
+                    snprintf(tp, sizeof(tp), "/SD:/%s", entry.name);
+                    int tr = fs_open(&tf, tp, FS_O_READ);
+                    printk("[SD_TEST] fs_open('%s') -> %d\n", tp, tr);
+                    if (tr == 0) {
+                        fs_close(&tf);
+                    }
+
                     s_track_count++;
                 }
             }

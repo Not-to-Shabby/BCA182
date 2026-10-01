@@ -631,7 +631,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
                 g_player.state = toggle_play_pause(g_player.state);
                 g_player.state_changed = true;
                 const song_info_t *s = get_song_info(g_player.current_song_index);
-                printk("[Nav] DOWN (Hold) -> PLAY/PAUSE: Track [%u] '%s %s' is now %s\n",
+                printk("[Nav] DOWN (Hold) -> PLAY/PAUSE: Track [%u/%u] '%s %s' is now %s\n",
                        g_player.current_song_index + 1, (unsigned)(8 + sd_card_get_track_count()), s->name1, s->name2,
                        get_player_state_str(g_player.state));
                 k_mutex_unlock(&g_player_mutex);
@@ -646,7 +646,7 @@ void polling_buttons(void *arg1, void *arg2, void *arg3)
                 g_player.state = toggle_play_pause(g_player.state);
                 g_player.state_changed = true;
                 const song_info_t *s = get_song_info(g_player.current_song_index);
-                printk("[Nav] USER_BUTTON (Click) -> Track [%u] '%s %s' is now %s\n",
+                printk("[Nav] USER_BUTTON (Click) -> Track [%u/%u] '%s %s' is now %s\n",
                        g_player.current_song_index + 1, (unsigned)(8 + sd_card_get_track_count()), s->name1, s->name2,
                        get_player_state_str(g_player.state));
                 k_mutex_unlock(&g_player_mutex);

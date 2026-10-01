@@ -27,27 +27,6 @@ static const uint16_t SINE_32[32] = {
        0,   39,  156,  345,  600,  910, 1264, 1648
 };
 
-static const uint16_t TRIANGLE_32[32] = {
-       0,  264,  528,  792, 1056, 1320, 1585, 1849,
-    2113, 2377, 2641, 2906, 3170, 3434, 3698, 3962,
-    3962, 3698, 3434, 3170, 2906, 2641, 2377, 2113,
-    1849, 1585, 1320, 1056,  792,  528,  264,    0
-};
-
-static const uint16_t SAWTOOTH_32[32] = {
-       0,  132,  264,  396,  528,  660,  792,  924,
-    1056, 1188, 1320, 1453, 1585, 1717, 1849, 1981,
-    2113, 2245, 2377, 2509, 2641, 2774, 2906, 3038,
-    3170, 3302, 3434, 3566, 3698, 3830, 3962, 4095
-};
-
-static const uint16_t SQUARE_32[32] = {
-    4095, 4095, 4095, 4095, 4095, 4095, 4095, 4095,
-    4095, 4095, 4095, 4095, 4095, 4095, 4095, 4095,
-       0,    0,    0,    0,    0,    0,    0,    0,
-       0,    0,    0,    0,    0,    0,    0,    0
-};
-
 static audio_waveform_t s_current_waveform = AUDIO_WAVE_SINE;
 static volatile uint16_t s_dac_scaled_table[32];
 static volatile bool s_dac_active = false;
@@ -55,6 +34,10 @@ static volatile uint8_t s_current_volume = 70;
 static volatile uint32_t s_phase_acc = 0;
 static volatile uint32_t s_phase_inc = 0;
 static volatile bool s_channel_toggle = false;
+static volatile uint16_t s_tone_gain = 0;
+static volatile uint16_t s_tone_target_gain = 0;
+static volatile uint16_t s_output_gain = 0;
+static volatile int16_t s_last_pcm = 0;
 
 /* Hardware live diagnostic records */
 static audio_diagnostics_t s_diag = {
@@ -76,18 +59,31 @@ static void spi3_i2s_isr(const void *arg)
 {
     ARG_UNUSED(arg);
 
-    while (SPI3->SR & SPI_SR_TXE) {
+    if (SPI3->SR & SPI_SR_TXE) {
+        bool wav_active = wav_player_is_active();
+        bool tone_active = (s_phase_inc > 0 || s_tone_gain > s_tone_target_gain);
+        uint16_t output_target = (wav_active || tone_active) ? 256U : 0U;
+        if (s_output_gain < output_target) {
+            s_output_gain = (s_output_gain + 8U > output_target) ?
+                            output_target : s_output_gain + 8U;
+        } else if (s_output_gain > output_target) {
+            s_output_gain = (s_output_gain < output_target + 8U) ?
+                            output_target : s_output_gain - 8U;
+        }
+
         if (!s_dac_active) {
             SPI3->DR = 0;
             DAC->DHR12R1 = 2048; /* Mid-rail bias */
-        } else if (wav_player_is_active()) {
+        } else if (wav_active) {
             /* 1. WAV Player Streaming Mode */
             int16_t out_sample;
             if (wav_player_get_next_sample(&out_sample)) {
-                SPI3->DR = (uint16_t)out_sample;
+                int16_t pcm = (int16_t)(((int32_t)out_sample * s_output_gain) / 256);
+                s_last_pcm = pcm;
+                SPI3->DR = (uint16_t)pcm;
                 
                 /* Downmix signed 16-bit to unsigned 12-bit for DAC1 PA4 */
-                int32_t val12 = (int32_t)out_sample / 16 + 2048;
+                int32_t val12 = (int32_t)pcm / 16 + 2048;
                 if (val12 < 0) val12 = 0;
                 if (val12 > 4095) val12 = 4095;
                 
@@ -98,26 +94,49 @@ static void spi3_i2s_isr(const void *arg)
                 s_channel_toggle = !s_channel_toggle;
                 s_diag.i2s_tx_samples++;
             } else {
-                SPI3->DR = 0; /* Underflow */
-                DAC->DHR12R1 = 2048;
+                int16_t pcm = (int16_t)(((int32_t)s_last_pcm * s_output_gain) / 256);
+                SPI3->DR = (uint16_t)pcm;
+                DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
             }
-        } else if (s_phase_inc > 0) {
+        } else if (s_phase_inc > 0 || s_tone_gain > s_tone_target_gain) {
             /* 2. Legacy DDS Synthesizer Mode */
-            /* 12-bit sine sample (0 to 4095) */
-            uint16_t sample = s_dac_scaled_table[(s_phase_acc >> 27) & 31];
+            if (s_tone_gain < s_tone_target_gain) {
+                s_tone_gain = (s_tone_gain + 4U > s_tone_target_gain) ?
+                              s_tone_target_gain : s_tone_gain + 4U;
+            } else if (s_tone_gain > s_tone_target_gain) {
+                s_tone_gain = (s_tone_gain < s_tone_target_gain + 4U) ?
+                              s_tone_target_gain : s_tone_gain - 4U;
+            }
+
+            /* Linearly interpolate the 32-point table to avoid staircase
+             * harmonics becoming audible through the headphone amplifier. */
+            uint8_t table_index = (uint8_t)((s_phase_acc >> 27) & 31U);
+            uint8_t next_index = (uint8_t)((table_index + 1U) & 31U);
+            uint32_t fraction = (s_phase_acc >> 19) & 0xFFU;
+            int32_t sample_delta = (int32_t)s_dac_scaled_table[next_index] -
+                                   (int32_t)s_dac_scaled_table[table_index];
+            uint16_t sample = (uint16_t)((int32_t)s_dac_scaled_table[table_index] +
+                                         ((sample_delta * (int32_t)fraction) >> 8));
 
             /* Convert to signed 16-bit PCM for ES8388 stereo DAC */
-            int16_t pcm = (int16_t)(((int32_t)sample - 2048) * 15);
+            int32_t centered = ((int32_t)sample - 2048) * s_tone_gain / 256;
+            int16_t pcm = (int16_t)(centered * 15);
+            pcm = (int16_t)(((int32_t)pcm * s_output_gain) / 256);
+            s_last_pcm = pcm;
             SPI3->DR = (uint16_t)pcm;
 
             /* Simultaneous Analog DAC on PA4 */
-            DAC->DHR12R1 = sample;
+            DAC->DHR12R1 = (uint16_t)(centered + 2048);
 
             if (s_channel_toggle) {
                 s_phase_acc += s_phase_inc;
             }
             s_channel_toggle = !s_channel_toggle;
             s_diag.i2s_tx_samples++;
+        } else {
+            int16_t pcm = (int16_t)(((int32_t)s_last_pcm * s_output_gain) / 256);
+            SPI3->DR = (uint16_t)pcm;
+            DAC->DHR12R1 = (int32_t)pcm / 16 + 2048;
         }
     }
 }
@@ -332,9 +351,9 @@ static void es8388_codec_init(void)
     es8388_reg_write(0x11, 0x00); /* ADCCONTROL9: 0dB */
     es8388_reg_write(0x03, 0x09); /* ADCPOWER: Power on ADC */
 
-    /* Headphone volume: LOUT1 / ROUT1 (+3.0 dB output boost) */
-    es8388_reg_write(0x2E, 0x21); /* DACCONTROL24: LOUT1VOL (3.5mm Left) */
-    es8388_reg_write(0x2F, 0x21); /* DACCONTROL25: ROUT1VOL (3.5mm Right) */
+    /* Headphone volume: LOUT1 / ROUT1 (0 dB clean, unclipped output) */
+    es8388_reg_write(0x2E, 0x1E); /* DACCONTROL24: LOUT1VOL (0dB) */
+    es8388_reg_write(0x2F, 0x1E); /* DACCONTROL25: ROUT1VOL (0dB) */
 
     /* Start State Machine */
     es8388_reg_write(0x02, 0xF0); /* CHIPPOWER: reset state machine */
@@ -342,9 +361,9 @@ static void es8388_codec_init(void)
     es8388_reg_write(0x02, 0x00); /* CHIPPOWER: start state machine */
     k_msleep(5);
 
-    /* Final un-mute */
+    /* Keep the codec muted until the STM32 I2S peripheral is running. */
     es8388_reg_write(0x04, 0x3C); /* DACPOWER */
-    es8388_reg_write(0x19, 0x00); /* DACCONTROL3: UNMUTE! */
+    es8388_reg_write(0x19, 0x04); /* DACCONTROL3: mute */
     k_msleep(10);
 
     /* 3. Read back register 0x04 (DACPOWER) to verify communication */
@@ -370,11 +389,14 @@ static void i2s3_hw_init(void)
     /* Explicitly route I2S clock source to PLLI2S (RCC->CFGR bit 23 = 0) */
     RCC->CFGR &= ~RCC_CFGR_I2SSRC;
 
-    /* 2. Configure PLLI2S for 44.1 kHz audio:
-     *    HSE (8 MHz) / 8 * 271 / 2 = 135.5 MHz I2SxCLK
+    /* 2. Configure PLLI2S for 44.1 kHz audio with PLLM = 4 (8 MHz HSE / 4 = 2 MHz input):
+     *    VCO = 2 MHz * 192 = 384 MHz (well within 192..432 MHz operating envelope)
+     *    I2SxCLK = 384 MHz / 2 = 192 MHz
+     *    I2SDIV = 8, ODD = 1 -> Total Div = 17
+     *    Fs = 192 MHz / (256 * 17) = 44117.6 Hz (44.1 kHz exact target)
      */
     RCC->CR &= ~RCC_CR_PLLI2SON;
-    RCC->PLLI2SCFGR = (271U << RCC_PLLI2SCFGR_PLLI2SN_Pos) | (2U << RCC_PLLI2SCFGR_PLLI2SR_Pos);
+    RCC->PLLI2SCFGR = (192U << RCC_PLLI2SCFGR_PLLI2SN_Pos) | (2U << RCC_PLLI2SCFGR_PLLI2SR_Pos);
     RCC->CR |= RCC_CR_PLLI2SON;
     uint32_t timeout = 100000;
     while (!(RCC->CR & RCC_CR_PLLI2SRDY) && --timeout);
@@ -404,17 +426,18 @@ static void i2s3_hw_init(void)
     GPIOB->OSPEEDR |= ((3U << (3 * 2)) | (3U << (5 * 2)));
 
     /* 4. Configure SPI3 in I2S Philips Standard Master Transmit Mode:
-     *    MCKOE = 1, I2SDIV = 6 -> Fs = 44.108 kHz
+     *    MCKOE = 1, I2SDIV = 8, ODD = 1 -> Fs = 44.117 kHz
      */
     SPI3->I2SCFGR = 0;
-    SPI3->I2SPR = SPI_I2SPR_MCKOE | 6U;
+    SPI3->I2SPR = SPI_I2SPR_MCKOE | SPI_I2SPR_ODD | 8U;
     SPI3->I2SCFGR = SPI_I2SCFGR_I2SMOD |   /* I2S mode */
                     SPI_I2SCFGR_I2SCFG_1;  /* Master Transmit (10b) */
     SPI3->CR2 |= SPI_CR2_TXEIE;            /* Enable TX Empty Interrupt */
     SPI3->I2SCFGR |= SPI_I2SCFGR_I2SE;     /* Enable I2S peripheral */
 
     /* 5. Connect SPI3 interrupt in Zephyr */
-    IRQ_CONNECT(SPI3_IRQn, 1, spi3_i2s_isr, NULL, 0);
+    /* Keep audio transmission ahead of SDMMC/FatFs interrupt activity. */
+    IRQ_CONNECT(SPI3_IRQn, 0, spi3_i2s_isr, NULL, 0);
     irq_enable(SPI3_IRQn);
 }
 
@@ -446,6 +469,8 @@ void audio_hardware_dac_init(void)
     printk("[Audio_Codec] Initializing ES8388 (I2C2 on PF0/PF1) & I2S3 on CN3...\n");
     es8388_codec_init();
     i2s3_hw_init();
+    k_msleep(2);
+    es8388_reg_write(0x19, 0x00); /* Unmute only after stable I2S clocks */
 
     /* Initialize scaled sine table */
     audio_hardware_dac_set_volume(s_current_volume);
@@ -455,13 +480,8 @@ void audio_hardware_dac_init(void)
 
 static const uint16_t* get_waveform_raw_table(audio_waveform_t wave)
 {
-    switch (wave) {
-        case AUDIO_WAVE_TRIANGLE: return TRIANGLE_32;
-        case AUDIO_WAVE_SAWTOOTH: return SAWTOOTH_32;
-        case AUDIO_WAVE_SQUARE:   return SQUARE_32;
-        case AUDIO_WAVE_SINE:
-        default:                  return SINE_32;
-    }
+    ARG_UNUSED(wave);
+    return SINE_32;
 }
 
 void audio_hardware_dac_set_volume(uint8_t volume_percent)
@@ -474,11 +494,13 @@ void audio_hardware_dac_set_volume(uint8_t volume_percent)
     const uint16_t *raw_table = get_waveform_raw_table(s_current_waveform);
 
     /* Recompute scaled 32-sample table */
+    unsigned int irq_key = irq_lock();
     for (int i = 0; i < 32; i++) {
         int32_t centered = (int32_t)raw_table[i] - 2048;
         int32_t scaled = (centered * (int32_t)volume_percent) / 100;
         s_dac_scaled_table[i] = (uint16_t)(scaled + 2048);
     }
+    irq_unlock(irq_key);
 
     /* Update digital volume in ES8388 codec */
     uint8_t es_vol = (uint8_t)((100 - volume_percent) * 192 / 100);
@@ -502,7 +524,7 @@ audio_waveform_t audio_hardware_dac_get_waveform(void)
 
 audio_waveform_t audio_hardware_dac_cycle_waveform(void)
 {
-    s_current_waveform = (audio_waveform_t)((s_current_waveform + 1) % AUDIO_WAVE_COUNT);
+    s_current_waveform = AUDIO_WAVE_SINE;
     audio_hardware_dac_set_volume(s_current_volume);
     return s_current_waveform;
 }
@@ -536,14 +558,18 @@ void audio_hardware_dac_set_tone(float note_period_ms, uint8_t volume_percent)
      */
     s_phase_inc = (uint32_t)(97391549.0f / note_period_ms + 0.5f);
     s_dac_active = true;
+    s_tone_target_gain = 256;
     s_diag.dac_active = true;
 }
 
 void audio_hardware_dac_stop(void)
 {
-    s_dac_active = false;
+    /* Fade the current tone instead of abruptly cutting the I2S waveform. */
+    s_dac_active = true;
     s_diag.dac_active = false;
     s_phase_inc = 0;
+    s_tone_target_gain = 0;
+    s_channel_toggle = false;
     DAC->DHR12R1 = 2048;
 }
 

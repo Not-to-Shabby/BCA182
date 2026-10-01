@@ -18,6 +18,24 @@ static K_SEM_DEFINE(s_buf_empty_sem, 2, 2);
 static struct fs_file_t s_file;
 static volatile bool s_is_playing = false;
 static volatile bool s_is_paused = false;
+static uint32_t s_data_remaining = 0;
+static uint32_t s_sample_rate = 44100;
+static uint16_t s_channels = 2;
+static volatile bool s_mono_toggle = false;
+static int16_t s_mono_sample = 0;
+
+static uint16_t read_le16(const uint8_t *data)
+{
+    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+}
+
+static uint32_t read_le32(const uint8_t *data)
+{
+    return (uint32_t)data[0] |
+           ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) |
+           ((uint32_t)data[3] << 24);
+}
 
 static void wav_reader_thread_fn(void *p1, void *p2, void *p3)
 {
@@ -36,12 +54,18 @@ static void wav_reader_thread_fn(void *p1, void *p2, void *p3)
         /* Scan both buffers and fill whichever is empty */
         for (int i = 0; i < 2; i++) {
             if (s_is_playing && !s_is_paused && s_samples_in_buf[i] == 0) {
-                ssize_t bytes_read = fs_read(&s_file, s_buffer[i], sizeof(s_buffer[i]));
+                size_t bytes_to_read = sizeof(s_buffer[i]);
+                if (s_data_remaining < bytes_to_read) {
+                    bytes_to_read = s_data_remaining;
+                }
+                ssize_t bytes_read = bytes_to_read > 0 ?
+                    fs_read(&s_file, s_buffer[i], bytes_to_read) : 0;
                 if (bytes_read > 0) {
                     s_samples_in_buf[i] = (uint16_t)(bytes_read / 2);
+                    s_data_remaining -= (uint32_t)bytes_read;
                 } else if (bytes_read == 0) {
                     s_is_playing = false;
-                    printk("[WAV] Track playback finished (EOF).\n");
+                    printk("[WAV] Track playback finished.\n");
                     break;
                 }
             }
@@ -66,7 +90,11 @@ bool wav_player_start(const char* filepath)
     fs_file_t_init(&s_file);
 
     char full_path[280];
-    snprintf(full_path, sizeof(full_path), "/SD:/%s", filepath);
+    if (strncmp(filepath, "/SD:/", 5) == 0) {
+        snprintf(full_path, sizeof(full_path), "%s", filepath);
+    } else {
+        snprintf(full_path, sizeof(full_path), "/SD:/%s", filepath);
+    }
     int err = fs_open(&s_file, full_path, FS_O_READ);
     if (err != 0) {
         printk("[WAV] Failed to open '%s' (err %d)\n", full_path, err);
@@ -74,7 +102,7 @@ bool wav_player_start(const char* filepath)
     }
     printk("[WAV] Successfully opened '%s'\n", full_path);
 
-    /* Parse WAV header to locate 'data' chunk */
+    /* Parse the RIFF header and locate a supported PCM format plus data. */
     uint8_t header[12];
     if (fs_read(&s_file, header, 12) != 12 ||
         memcmp(header, "RIFF", 4) != 0 || memcmp(&header[8], "WAVE", 4) != 0) {
@@ -83,27 +111,53 @@ bool wav_player_start(const char* filepath)
         return false;
     }
 
+    bool found_fmt = false;
     bool found_data = false;
+    uint16_t audio_format = 0;
+    uint16_t channels = 0;
+    uint16_t bits_per_sample = 0;
+    uint32_t sample_rate = 0;
+    uint32_t data_size = 0;
+
     while (!found_data) {
         uint8_t chunk_header[8];
         if (fs_read(&s_file, chunk_header, 8) != 8) break;
-        
-        uint32_t chunk_size = (uint32_t)chunk_header[4] |
-                             ((uint32_t)chunk_header[5] << 8) |
-                             ((uint32_t)chunk_header[6] << 16) |
-                             ((uint32_t)chunk_header[7] << 24);
+
+        uint32_t chunk_size = read_le32(&chunk_header[4]);
         
         if (memcmp(chunk_header, "data", 4) == 0) {
             found_data = true;
+            data_size = chunk_size;
             break;
         } else {
-            /* Skip non-audio chunk (e.g. metadata/artist/tags) */
-            fs_seek(&s_file, chunk_size, FS_SEEK_CUR);
+            if (memcmp(chunk_header, "fmt ", 4) == 0) {
+                uint8_t fmt[16];
+                if (chunk_size < sizeof(fmt) || fs_read(&s_file, fmt, sizeof(fmt)) != sizeof(fmt)) {
+                    break;
+                }
+                audio_format = read_le16(&fmt[0]);
+                channels = read_le16(&fmt[2]);
+                sample_rate = read_le32(&fmt[4]);
+                bits_per_sample = read_le16(&fmt[14]);
+                found_fmt = true;
+                if (chunk_size > sizeof(fmt) &&
+                    fs_seek(&s_file, (off_t)(chunk_size - sizeof(fmt)), FS_SEEK_CUR) != 0) {
+                    break;
+                }
+            } else if (fs_seek(&s_file, (off_t)chunk_size, FS_SEEK_CUR) != 0) {
+                break;
+            }
+            if ((chunk_size & 1U) != 0 && fs_seek(&s_file, 1, FS_SEEK_CUR) != 0) {
+                break;
+            }
         }
     }
 
-    if (!found_data) {
-        printk("[WAV] No data chunk found in WAV!\n");
+    if (!found_fmt || !found_data || audio_format != 1 ||
+        (channels != 1 && channels != 2) || bits_per_sample != 16 ||
+        (sample_rate != 44100U && sample_rate != 48000U)) {
+        printk("[WAV] Unsupported WAV: fmt=%u channels=%u rate=%u bits=%u data=%u\n",
+               audio_format, channels, sample_rate, bits_per_sample, data_size);
         fs_close(&s_file);
         return false;
     }
@@ -112,20 +166,30 @@ bool wav_player_start(const char* filepath)
     s_play_idx = 0;
     s_samples_in_buf[0] = 0;
     s_samples_in_buf[1] = 0;
+    s_data_remaining = data_size;
+    s_sample_rate = sample_rate;
+    s_channels = channels;
+    s_mono_toggle = false;
+    s_mono_sample = 0;
     
     s_is_paused = false;
     s_is_playing = true;
     
     /* Pre-fill first buffer synchronously so audio starts with zero delay */
-    ssize_t init_read = fs_read(&s_file, s_buffer[0], sizeof(s_buffer[0]));
+    size_t init_bytes = s_data_remaining < sizeof(s_buffer[0]) ?
+                        s_data_remaining : sizeof(s_buffer[0]);
+    ssize_t init_read = init_bytes > 0 ?
+                        fs_read(&s_file, s_buffer[0], init_bytes) : 0;
     if (init_read > 0) {
         s_samples_in_buf[0] = (uint16_t)(init_read / 2);
+        s_data_remaining -= (uint32_t)init_read;
     }
 
     /* Signal background reader thread to immediately pre-fill buffer 1 */
     k_sem_give(&s_buf_empty_sem);
 
-    printk("[WAV] Streaming %s over I2S/ES8388 (44.1kHz 16-bit)...\n", full_path);
+        printk("[WAV] Streaming %s over I2S/ES8388 (%uHz -> 44.1kHz, 16-bit)...\n",
+            full_path, sample_rate);
     return true;
 }
 
@@ -156,12 +220,8 @@ bool wav_player_is_active(void)
     return s_is_playing && !s_is_paused;
 }
 
-bool wav_player_get_next_sample(int16_t *out_sample)
+static bool wav_player_take_source_sample(int16_t *out_sample)
 {
-    if (!s_is_playing || s_is_paused) {
-        return false;
-    }
-
     /* Check if current buffer ran dry */
     if (s_play_idx >= s_samples_in_buf[s_play_buf] || s_samples_in_buf[s_play_buf] == 0) {
         uint8_t next_buf = 1 - s_play_buf;
@@ -186,4 +246,26 @@ bool wav_player_get_next_sample(int16_t *out_sample)
     }
 
     return true;
+}
+
+bool wav_player_get_next_sample(int16_t *out_sample)
+{
+    if (!s_is_playing || s_is_paused) {
+        return false;
+    }
+
+    if (s_channels == 1) {
+        /* Mono WAV: Duplicate single channel across Left & Right I2S slots */
+        if (!s_mono_toggle) {
+            if (!wav_player_take_source_sample(&s_mono_sample)) {
+                return false;
+            }
+        }
+        *out_sample = s_mono_sample;
+        s_mono_toggle = !s_mono_toggle;
+        return true;
+    }
+
+    /* Stereo WAV: Consecutive 16-bit PCM samples mapped directly to Left & Right */
+    return wav_player_take_source_sample(out_sample);
 }

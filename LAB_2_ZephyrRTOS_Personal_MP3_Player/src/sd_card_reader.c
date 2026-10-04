@@ -6,6 +6,7 @@
 #include <ff.h>
 #include <string.h>
 #include <strings.h>
+#include <stdio.h>
 
 #define SD_DISK_NAME "SD"
 #define SD_MOUNT_POINT "/SD:"
@@ -59,7 +60,7 @@ void sd_card_reader_init(void)
             continue;
         }
         const char *ext = strrchr(entry.name, '.');
-        if (ext == NULL || strcasecmp(ext, ".wav") != 0) {
+        if (ext == NULL || (strcasecmp(ext, ".wav") != 0 && strcasecmp(ext, ".mp3") != 0)) {
             continue;
         }
         strncpy(s_tracks[s_track_count].filename, entry.name, MAX_FILENAME_LEN - 1);
@@ -72,4 +73,24 @@ void sd_card_reader_init(void)
     }
     fs_closedir(&dir);
     printk("[SD_FS] Found %u WAV track(s)\n", s_track_count);
+
+    if (s_track_count > 0) {
+        /* Direct FatFs probe: verifies the card is readable through the same
+         * API the WAV player uses, independent of the Zephyr fs wrapper. */
+        FIL probe;
+        uint8_t header[12];
+        UINT bytes_read = 0;
+        char path[128];
+        snprintf(path, sizeof(path), "SD:/%s", s_tracks[0].filename);
+        FRESULT fr = f_open(&probe, path, FA_READ);
+        if (fr == FR_OK) {
+            fr = f_read(&probe, header, sizeof(header), &bytes_read);
+            printk("[SD_FS] FatFs probe: read=%u, RIFF=%s\n",
+                   bytes_read,
+                   (fr == FR_OK && bytes_read == sizeof(header) && memcmp(header, "RIFF", 4) == 0) ? "YES" : "NO");
+            f_close(&probe);
+        } else {
+            printk("[SD_FS] FatFs probe open failed: %s (result %d)\n", path, (int)fr);
+        }
+    }
 }

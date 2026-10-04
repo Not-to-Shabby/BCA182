@@ -12,6 +12,7 @@
 #include "audio_codec_es8388.h"
 #include "wav_player.h"
 #include <stdio.h>
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/irq.h>
@@ -68,6 +69,130 @@ static audio_diagnostics_t s_diag = {
 };
 
 static char s_diag_str[64] = "ES8388:PROBING";
+
+#define AUDIO_DMA_WORDS 512
+#define AUDIO_HALF_WORDS (AUDIO_DMA_WORDS / 2)
+static uint16_t s_audio_dma[AUDIO_DMA_WORDS];
+static uint16_t s_stage[2][AUDIO_HALF_WORDS];
+static volatile uint8_t s_stage_ready[2];
+static volatile uint32_t s_stage_misses;
+static volatile bool s_dma_channel_toggle;
+
+static uint16_t audio_next_word(void)
+{
+    if (wav_player_is_active()) {
+        int16_t sample;
+        if (wav_player_get_next_sample(&sample)) {
+            int32_t value = (int32_t)sample / 16 + 2048;
+            if (value < 0) value = 0;
+            if (value > 4095) value = 4095;
+            if (s_dma_channel_toggle) DAC->DHR12R1 = (uint16_t)value;
+            s_dma_channel_toggle = !s_dma_channel_toggle;
+            s_diag.i2s_tx_samples++;
+            return (uint16_t)sample;
+        }
+        return 0;
+    }
+
+    if (!s_dac_active || s_phase_inc == 0) {
+        DAC->DHR12R1 = 2048;
+        return 0;
+    }
+
+    uint16_t sample = s_dac_scaled_table[(s_phase_acc >> 27) & 31];
+    int16_t pcm = (int16_t)(((int32_t)sample - 2048) * 15);
+    DAC->DHR12R1 = sample;
+    if (s_dma_channel_toggle) s_phase_acc += s_phase_inc;
+    s_dma_channel_toggle = !s_dma_channel_toggle;
+    s_diag.i2s_tx_samples++;
+    return (uint16_t)pcm;
+}
+
+static void audio_dma_fill(uint16_t offset, uint16_t count)
+{
+    for (uint16_t i = 0; i < count; i++) {
+        s_audio_dma[offset + i] = audio_next_word();
+    }
+}
+
+/* Background producer: generates PCM into staging halves so the DMA ISR only
+ * performs a short memory copy. This keeps the audio interrupt brief enough
+ * that the interrupt-driven SDMMC driver can service its FIFO without overrun. */
+static void audio_producer_thread(void *a, void *b, void *c)
+{
+    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+    while (true) {
+        for (int half = 0; half < 2; half++) {
+            if (s_stage_ready[half]) {
+                continue;
+            }
+            for (uint16_t i = 0; i < AUDIO_HALF_WORDS; i++) {
+                s_stage[half][i] = audio_next_word();
+            }
+            s_stage_ready[half] = 1;
+        }
+        k_msleep(1);
+    }
+}
+/* Must outrank the MP3 reader so a long decode cannot starve the DMA staging buffers. */
+K_THREAD_DEFINE(audio_producer, 2048, audio_producer_thread, NULL, NULL, NULL, 1, 0, 0);
+
+static void dma1_stream5_isr(const void *arg)
+{
+    ARG_UNUSED(arg);
+    uint32_t status = DMA1->HISR;
+    uint32_t clear = 0;
+
+    if (status & DMA_HISR_HTIF5) {
+        if (s_stage_ready[0]) {
+            memcpy(&s_audio_dma[0], s_stage[0], sizeof(s_stage[0]));
+            s_stage_ready[0] = 0;
+        } else {
+            s_stage_misses++;
+        }
+        clear |= DMA_HIFCR_CHTIF5;
+    }
+    if (status & DMA_HISR_TCIF5) {
+        if (s_stage_ready[1]) {
+            memcpy(&s_audio_dma[AUDIO_HALF_WORDS], s_stage[1], sizeof(s_stage[1]));
+            s_stage_ready[1] = 0;
+        } else {
+            s_stage_misses++;
+        }
+        clear |= DMA_HIFCR_CTCIF5;
+    }
+    if (status & (DMA_HISR_TEIF5 | DMA_HISR_DMEIF5 | DMA_HISR_FEIF5)) {
+        clear |= DMA_HIFCR_CTEIF5 | DMA_HIFCR_CDMEIF5 | DMA_HIFCR_CFEIF5;
+    }
+    if (clear != 0) DMA1->HIFCR = clear;
+}
+
+uint32_t audio_stage_misses(void)
+{
+    return s_stage_misses;
+}
+
+static void audio_dma_init(void)
+{
+    RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
+    DMA1_Stream5->CR &= ~DMA_SxCR_EN;
+    while (DMA1_Stream5->CR & DMA_SxCR_EN) { }
+    DMA1->HIFCR = DMA_HIFCR_CFEIF5 | DMA_HIFCR_CDMEIF5 |
+                  DMA_HIFCR_CTEIF5 | DMA_HIFCR_CHTIF5 | DMA_HIFCR_CTCIF5;
+
+    audio_dma_fill(0, AUDIO_DMA_WORDS);
+    DMA1_Stream5->PAR = (uint32_t)&SPI3->DR;
+    DMA1_Stream5->M0AR = (uint32_t)s_audio_dma;
+    DMA1_Stream5->NDTR = AUDIO_DMA_WORDS;
+    DMA1_Stream5->FCR = 0;
+    DMA1_Stream5->CR = DMA_SxCR_PL_1 | DMA_SxCR_MINC | DMA_SxCR_CIRC |
+                       DMA_SxCR_DIR_0 | DMA_SxCR_PSIZE_0 | DMA_SxCR_MSIZE_0 |
+                       DMA_SxCR_HTIE | DMA_SxCR_TCIE;
+    IRQ_CONNECT(DMA1_Stream5_IRQn, 0, dma1_stream5_isr, NULL, 0);
+    irq_enable(DMA1_Stream5_IRQn);
+    SPI3->CR2 |= SPI_CR2_TXDMAEN;
+    DMA1_Stream5->CR |= DMA_SxCR_EN;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Direct Digital Synthesis (DDS) Interrupt via SPI3 / I2S3 TXE               */
@@ -402,12 +527,8 @@ static void i2s3_hw_init(void)
     SPI3->I2SPR = SPI_I2SPR_MCKOE | 6U;
     SPI3->I2SCFGR = SPI_I2SCFGR_I2SMOD |   /* I2S mode */
                     SPI_I2SCFGR_I2SCFG_1;  /* Master Transmit (10b) */
-    SPI3->CR2 |= SPI_CR2_TXEIE;            /* Enable TX Empty Interrupt */
     SPI3->I2SCFGR |= SPI_I2SCFGR_I2SE;     /* Enable I2S peripheral */
-
-    /* 5. Connect SPI3 interrupt in Zephyr */
-    IRQ_CONNECT(SPI3_IRQn, 1, spi3_i2s_isr, NULL, 0);
-    irq_enable(SPI3_IRQn);
+        audio_dma_init();
 }
 
 /* -------------------------------------------------------------------------- */

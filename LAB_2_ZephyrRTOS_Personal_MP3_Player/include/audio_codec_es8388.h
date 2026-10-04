@@ -94,6 +94,11 @@ typedef struct {
 const audio_diagnostics_t* audio_get_diagnostics(void);
 
 /**
+ * @brief Count of DMA halves replayed because the producer was not ready in time.
+ */
+uint32_t audio_stage_misses(void);
+
+/**
  * @brief Get a short diagnostic string describing codec/I2S init status.
  *
  * @return Pointer to a static NUL-terminated buffer (e.g. "ES8388:0x10 PLL:OK")

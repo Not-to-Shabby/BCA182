@@ -314,9 +314,9 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
         render_note_row(audio_engine_get_note_index(), c_song->length, state);
     } else {
         const sd_track_t *track = sd_card_get_track(cur_song_idx - TOTAL_PLAYABLE_SONGS);
-        lcd_show_string(14, 60, "SD CARD WAV", LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+        lcd_show_string(14, 60, "SD CARD AUDIO", LCD_COLOR_CYAN, LCD_COLOR_BLACK);
         lcd_show_string(14, 76, track ? track->filename : "NO TRACK", LCD_COLOR_CYAN, LCD_COLOR_BLACK);
-        lcd_show_string(14, 90, state == PLAYER_STATE_PLAYING ? "PLAYING WAV FILE" : "WAV FILE READY", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+        lcd_show_string(14, 90, state == PLAYER_STATE_PLAYING ? "PLAYING FILE" : "FILE READY", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
     }
 
     /* Volume Level Bar */
@@ -424,7 +424,7 @@ void update_lcd_leds_thread(void *arg1, void *arg2, void *arg3)
                            (current_song != last_rendered_song);
         bool vol_changed = (volume != last_rendered_vol);
         bool note_changed = (current_note != last_rendered_note);
-        bool diag_changed = (current_samples / 5000U != last_rendered_samples / 5000U) ||
+        bool diag_changed = (current_samples / 88200U != last_rendered_samples / 88200U) ||
                             (current_buzzer != last_rendered_buzzer) ||
                             (current_wave != last_rendered_wave);
 

@@ -33,10 +33,20 @@
 	pinctrl-names = "default";
 };
 
+&dma2 {
+	status = "okay";
+};
+
 &sdmmc1 {
 	status = "okay";
+	/* SDIO is served by DMA2 streams 3/6 on channel 4. */
+	dmas = <&dma2 6 4 STM32_DMA_PERIPH_TX STM32_DMA_FIFO_FULL>,
+	       <&dma2 3 4 STM32_DMA_PERIPH_RX STM32_DMA_FIFO_FULL>;
+	dma-names = "tx", "rx";
 	pinctrl-0 = <&sdio_d0_pc8 &sdio_d1_pc9 &sdio_d2_pc10 &sdio_d3_pc11 &sdio_ck_pc12 &sdio_cmd_pd2>;
 	pinctrl-names = "default";
 	disk-name = "SD";
 	bus-width = <4>;
+	/* F4 has no SDIO hardware flow control; 48 MHz / (10 + 2) = 4 MHz avoids RX FIFO overrun. */
+	clk-div = <10>;
 };

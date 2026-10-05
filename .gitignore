@@ -32,3 +32,6 @@ desktop.ini
 *.WAV
 *.MP3
 
+# Large datasets
+*.csv
+

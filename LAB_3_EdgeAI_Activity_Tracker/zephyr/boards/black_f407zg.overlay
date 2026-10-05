@@ -1,0 +1,34 @@
+/*
+ * Board overlay: route the Zephyr console to USART1 (PA9/PA10).
+ *
+ * The RT-Thread Spark board wires its ST-LINK V2.1 virtual COM port to
+ * USART1, but the upstream black_f407zg board defaults the Zephyr
+ * console to USART2 (PA2/PA3). Without this overlay, all printk/printf output
+ * is sent to an unconnected UART.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &usart1;
+		zephyr,shell-uart = &usart1;
+	};
+};
+
+&pinctrl {
+	usart1_tx_pa9: usart1_tx_pa9 {
+		pinmux = <STM32_PINMUX('A', 9, AF7)>;
+		bias-disable;
+	};
+
+	usart1_rx_pa10: usart1_rx_pa10 {
+		pinmux = <STM32_PINMUX('A', 10, AF7)>;
+		bias-disable;
+	};
+};
+
+&usart1 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
+	pinctrl-names = "default";
+};

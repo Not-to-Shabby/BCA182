@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Spark EdgeAI Tracker</string>
+    <string name="btn_scan">Scan &amp; Connect Board</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <string name="status_disconnected">Disconnected (Tap Scan)</string>
+    <string name="status_scanning">Scanning for RW007 BLE...</string>
+    <string name="status_connected">Connected to Spark Board</string>
+    <string name="label_current_activity">LIVE ACTIVITY</string>
+    <string name="label_confidence">Confidence</string>
+    <string name="label_cadence">Cadence</string>
+    <string name="label_steps">Total Steps</string>
+    <string name="label_accel_mag">Peak Acceleration</string>
+    <string name="label_history">Activity Timeline</string>
+    <string name="act_idle">IDLE</string>
+    <string name="act_stationary">STATIONARY</string>
+    <string name="act_walking">WALKING</string>
+    <string name="act_running">RUNNING</string>
+</resources>

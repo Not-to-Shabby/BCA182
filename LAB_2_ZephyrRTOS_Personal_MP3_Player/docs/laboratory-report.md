@@ -179,7 +179,7 @@ The firmware partitions system responsibilities across five concurrent execution
 3. **`adjust_volume` (Priority 3, Stack 2048 B)**:
    - Samples LEFT (`PC0`) and RIGHT (`PC4`) push buttons.
    - Adjusts volume in discrete 5% steps with smooth auto-repeat acceleration while held.
-   - Detects simultaneous `LEFT + RIGHT` holds ($\ge 450\text{ ms}$) to toggle onboard buzzer mute.
+   - Detects simultaneous `LEFT + RIGHT` holds (≥ 450 ms) to toggle onboard buzzer mute.
    - Yields cooperatively via `k_sleep(K_MSEC(100))`.
 
 4. **`audio_producer_thread` (Priority 3, Stack 2048 B)**:
@@ -196,32 +196,32 @@ The firmware partitions system responsibilities across five concurrent execution
 
 ### 4.1 Real-Time Hardware Timer PWM Synthesizer
 The classical audio synthesizer operates on **Hardware Timer 3 Channel 3 (`PB0`)** and **Channel 4 (`PB1`)**:
-- **Clock Tree**: Timer clock input is $84\text{ MHz}$ ($168\text{ MHz SYSCLK} / 4\text{ APB1} \times 2\text{ multiplier}$).
-- **Timebase**: Prescaler is configured to $83$ ($84\text{ MHz} / (83 + 1) = 1.0\text{ MHz}$, or $1.0\text{ }\mu\text{s}$ per count).
+- **Clock Tree**: Timer clock input is 84 MHz (168 MHz SYSCLK / 4 APB1 × 2 multiplier).
+- **Timebase**: Prescaler is configured to 83 (84 MHz / (83 + 1) = 1.0 MHz, or 1.0 µs per count).
 - **Pitch Period Tuning**: The period is adjusted dynamically in microseconds:
-  $$\text{ARR} = T_{\text{note}} \times 1000.0 - 1$$
-  To prevent rollover glitches when transitioning between notes, the counter register is checked and reset if $\text{CNT} \ge \text{ARR}$, and prescaler updates are forced via `TIM3->EGR = TIM_EGR_UG`.
-- **Note Articulation**: Notes are scheduled using Zephyr's `k_timer` ticker with calibrated $85\%$ active tone duration followed by a $15\%$ staccato gap for clean musical articulation.
+  - `ARR = (T_note × 1000.0) - 1`
+  To prevent rollover glitches when transitioning between notes, the counter register is checked and reset if `CNT ≥ ARR`, and prescaler updates are forced via `TIM3->EGR = TIM_EGR_UG`.
+- **Note Articulation**: Notes are scheduled using Zephyr's `k_timer` ticker with calibrated 85% active tone duration followed by a 15% staccato gap for clean musical articulation.
 
 ### 4.2 Everest Semiconductor ES8388 Stereo Codec & PLLI2S Clocking
 The onboard ES8388 codec drives the 3.5mm stereo headphone jack (`CN3`):
-- **Control Interface**: Bit-banged standard-mode I2C on `PF0` (SDA) and `PF1` (SCL) operating at $100\text{ kHz}$.
+- **Control Interface**: Bit-banged standard-mode I2C on `PF0` (SDA) and `PF1` (SCL) operating at 100 kHz.
 - **I2S Audio Clock Synthesis**:
-  To achieve exact $44.1\text{ kHz}$ sampling without phase slip, the dedicated audio PLL (`PLLI2S`) is driven from the $8\text{ MHz}$ HSE crystal:
-  $$f_{\text{VCO\_IN}} = \frac{8\text{ MHz}}{\text{PLLM (8)}} = 1.0\text{ MHz}$$
-  $$f_{\text{VCO\_OUT}} = 1.0\text{ MHz} \times \text{PLLI2SN (271)} = 271.0\text{ MHz}$$
-  $$f_{\text{I2SxCLK}} = \frac{271.0\text{ MHz}}{\text{PLLI2SR (2)}} = 135.5\text{ MHz}$$
-  SPI3 prescaler is configured with $\text{MCKOE} = 1$ and $\text{I2SDIV} = 6$:
-  $$F_s = \frac{135.5\text{ MHz}}{256 \times (\text{I2SDIV} \times 2)} = \frac{135.5\text{ MHz}}{256 \times 12} = \mathbf{44108.07\text{ Hz}} \approx 44.1\text{ kHz}$$
-  This yields a timing accuracy within $0.018\%$ of the standard CD audio clock.
+  To achieve exact 44.1 kHz sampling without phase slip, the dedicated audio PLL (`PLLI2S`) is driven from the 8 MHz HSE crystal:
+  - `f_VCO_IN = 8 MHz / PLLM(8) = 1.0 MHz`
+  - `f_VCO_OUT = 1.0 MHz × PLLI2SN(271) = 271.0 MHz`
+  - `f_I2SxCLK = 271.0 MHz / PLLI2SR(2) = 135.5 MHz`
+  SPI3 prescaler is configured with `MCKOE = 1` and `I2SDIV = 6`:
+  - `Fs = 135.5 MHz / [256 × (I2SDIV × 2)] = 135.5 MHz / (256 × 12) = 44,108.07 Hz ≈ 44.1 kHz`
+  This yields a timing accuracy within 0.018% of the standard CD audio clock.
 
 ### 4.3 Circular Hardware DMA Audio Streamer (DMA1 Stream 5)
 To completely prevent audio crackling when concurrent SDIO disk transfers occur:
 - **DMA Configuration**: DMA1 Stream 5 Channel 0 is initialized in Circular Double-Buffer Mode (`DMA_SxCR_CIRC | DMA_SxCR_MINC | DMA_SxCR_DIR_0`), directly streaming 16-bit words to `SPI3->DR`.
-- **Interrupt Elimination**: Instead of servicing $88,200$ CPU interrupts per second, the CPU only services **Half-Transfer (`HTIF5`)** and **Transfer-Complete (`TCIF5`)** interrupts ($86\text{ interrupts/sec}$). The ISR executes in $< 1\text{ }\mu\text{s}$ by performing a block `memcpy` from pre-staged memory.
+- **Interrupt Elimination**: Instead of servicing 88,200 CPU interrupts per second, the CPU only services **Half-Transfer (`HTIF5`)** and **Transfer-Complete (`TCIF5`)** interrupts (86 interrupts/sec). The ISR executes in < 1 µs by performing a block `memcpy` from pre-staged memory.
 
 ### 4.4 4-Bit High-Speed SDIO & Helix MP3 Engine
-- **SDIO Overrun Prevention**: The STM32F407 lacks hardware flow control on the SDIO bus. By configuring DMA2 Stream 3/6 with `STM32_DMA_FIFO_FULL` and setting `clk-div = <10>` ($4\text{ MHz}$ transfer clock) with a 4-byte aligned 2048 B bounce buffer (`s_read_bounce`), multi-sector FIFO overruns (`-FR_DISK_ERR`) are entirely eliminated.
+- **SDIO Overrun Prevention**: The STM32F407 lacks hardware flow control on the SDIO bus. By configuring DMA2 Stream 3/6 with `STM32_DMA_FIFO_FULL` and setting `clk-div = <10>` (4 MHz transfer clock) with a 4-byte aligned 2048 B bounce buffer (`s_read_bounce`), multi-sector FIFO overruns (`-FR_DISK_ERR`) are entirely eliminated.
 - **Helix MP3 Decoding**: RealNetworks Helix fixed-point MP3 decoder processes MPEG-1/2 Layer III frames directly from the SD card using 32-bit integer arithmetic, providing studio-quality MP3 playback on an embedded microcontroller without an external DSP or hardware decoder chip.
 
 ---
@@ -231,20 +231,20 @@ To completely prevent audio crackling when concurrent SDIO disk transfers occur:
 ### 5.1 FSMC Bank 3 8080 Parallel LCD Acceleration
 The 1.3-inch 240×240 ST7789 display is interfaced to **Flexible Static Memory Controller Bank 3**:
 - **Memory-Mapped Addressing**:
-  - Command Register Address: `0x6803FFFE` ($\text{A18} = 0$)
-  - Data Register Address: `0x68040000` ($\text{A18} = 1$)
+  - Command Register Address: `0x6803FFFE` (A18 = 0)
+  - Data Register Address: `0x68040000` (A18 = 1)
 - **Zero Bus Latency**: By mapping display registers into internal memory space, pixel rendering executes via single-cycle assembly write instructions without GPIO bit-banging overhead.
 
 ### 5.2 Flicker-Free Differential Line Rendering
-Traditional full-screen redraws require rewriting $57,600$ 16-bit RGB565 pixels ($115.2\text{ KB}$), inducing severe visual flashing on every musical note. 
+Traditional full-screen redraws require rewriting 57,600 16-bit RGB565 pixels (115.2 KB), inducing severe visual flashing on every musical note. 
 The firmware implements differential row rendering:
 - Static UI geometry (borders, title banners, status labels) is painted once on state transitions.
-- Dynamic data (active note indicator `NOTE: X / Y`, volume bar width, elapsed sample count) is overwritten in-place using background-colored font rectangles, achieving $0\text{ ms}$ perceived flicker.
+- Dynamic data (active note indicator `NOTE: X / Y`, volume bar width, elapsed sample count) is overwritten in-place using background-colored font rectangles, achieving 0 ms perceived flicker.
 
 ### 5.3 Non-Racing Button Debouncer Architecture
 To eliminate race conditions between short clicks and long holds:
 - Button presses do **not** trigger on pin contact.
-- A hold duration timer increments while the button is asserted. If the hold duration exceeds $450\text{ ms}$, the long-hold action triggers immediately, and a `long_triggered` latch is set.
+- A hold duration timer increments while the button is asserted. If the hold duration exceeds 450 ms, the long-hold action triggers immediately, and a `long_triggered` latch is set.
 - When the pin is released, the short-click action executes **only if** `long_triggered` was never set. This mathematically prevents short clicks from misfiring when attempting to hold.
 
 ---
@@ -315,11 +315,11 @@ Project application code contains **zero high defects** and **zero medium warnin
 
 | Issue Encountered | Root Cause | Engineering Solution |
 |---|---|---|
-| **Audio Crackling / Distortion on 3.5mm Jack** | CPU interrupt starvation: 88.2 kHz I2S interrupt preempted by SDIO DMA. | Transitioned I2S3 streaming to **Hardware Circular DMA (DMA1 Stream 5)** with a background producer thread, cutting interrupt rate to $86\text{ Hz}$. |
-| **PLLI2S Jitter & Doubled Pitch** | Changing system `PLLM` to 4 doubled the input frequency to PLLI2S ($2\text{ MHz}$), causing VCO overclocking ($542\text{ MHz}$). | Restored `PLLI2SN = 271` at $1\text{ MHz}$ input clock, recalibrating the timebase to exact $44.108\text{ kHz}$. |
-| **SDIO FIFO Overrun (`got -1`)** | Multi-sector 16 KB reads on STM32F4 SDIO without hardware flow control overran the internal RX FIFO. | Configured DMA2 Stream 3/6 with `FIFO_FULL`, throttled clock to $4\text{ MHz}$ (`clk-div = 10`), and used a 4-byte aligned $2048\text{ B}$ bounce buffer. |
-| **MPU Stacking Fault on SD Operations** | FatFs directory parsing exceeded default $1024\text{ B}$ button thread stack. | Quadrupled thread stack sizes in `include/threads.h` to **$4096\text{ B}$**. |
-| **LCD Screen Refresh Flicker** | Full-screen clearing ($115.2\text{ KB}$ per note) flashed the screen on every beat. | Implemented **flicker-free differential rendering**, updating only dynamic rows in-place. |
+| **Audio Crackling / Distortion on 3.5mm Jack** | CPU interrupt starvation: 88.2 kHz I2S interrupt preempted by SDIO DMA. | Transitioned I2S3 streaming to **Hardware Circular DMA (DMA1 Stream 5)** with a background producer thread, cutting interrupt rate to 86 Hz. |
+| **PLLI2S Jitter & Doubled Pitch** | Changing system `PLLM` to 4 doubled the input frequency to PLLI2S (2 MHz), causing VCO overclocking (542 MHz). | Restored `PLLI2SN = 271` at 1 MHz input clock, recalibrating the timebase to exact 44.108 kHz. |
+| **SDIO FIFO Overrun (`got -1`)** | Multi-sector 16 KB reads on STM32F4 SDIO without hardware flow control overran the internal RX FIFO. | Configured DMA2 Stream 3/6 with `FIFO_FULL`, throttled clock to 4 MHz (`clk-div = 10`), and used a 4-byte aligned 2048 B bounce buffer. |
+| **MPU Stacking Fault on SD Operations** | FatFs directory parsing exceeded default 1024 B button thread stack. | Quadrupled thread stack sizes in `include/threads.h` to **4096 B**. |
+| **LCD Screen Refresh Flicker** | Full-screen clearing (115.2 KB per note) flashed the screen on every beat. | Implemented **flicker-free differential rendering**, updating only dynamic rows in-place. |
 | **Button Long-Press Race Condition** | Short clicks fired immediately on contact, altering track index before hold duration elapsed. | Developed a **two-phase release-versus-threshold state machine**, triggering short clicks only on pin release when unlatched. |
 
 ---

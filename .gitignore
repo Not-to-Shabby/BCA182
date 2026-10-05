@@ -26,3 +26,9 @@ tmp/
 Thumbs.db
 desktop.ini
 
+# Audio binaries
+*.wav
+*.mp3
+*.WAV
+*.MP3
+

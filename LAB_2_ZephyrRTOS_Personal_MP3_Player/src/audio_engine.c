@@ -153,7 +153,7 @@ static void hw_set_tone(float note_period_ms, uint8_t volume_percent)
      * At volume_percent -> duty = (ARR * volume_percent) / 200.
      */
     uint32_t pulse = ((period_us - 1) * (uint32_t)volume_percent) / 200U;
-    if (pulse == 0 && volume_percent > 0) {
+    if (pulse == 0) {
         pulse = 1;
     }
     TIM3->CCR3 = pulse;

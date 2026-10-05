@@ -216,10 +216,10 @@ static void render_note_row(uint16_t current_note, uint16_t total_notes, player_
 {
     char buf[32];
     if (state == PLAYER_STATE_PLAYING) {
-        snprintf(buf, sizeof(buf), "NOTE: %-3u / %-3u     ", current_note + 1, total_notes);
+        snprintf(buf, sizeof(buf), "NOTE: %-3u / %-3u     ", (unsigned int)(current_note + 1), (unsigned int)total_notes);
         lcd_show_string(14, 90, buf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
     } else if (state == PLAYER_STATE_PAUSED) {
-        snprintf(buf, sizeof(buf), "PAUSED AT NOTE %-3u ", current_note + 1);
+        snprintf(buf, sizeof(buf), "PAUSED AT NOTE %-3u ", (unsigned int)(current_note + 1));
         lcd_show_string(14, 90, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
     } else {
         lcd_show_string(14, 90, "PRESS PA0 TO PLAY   ", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
@@ -304,7 +304,7 @@ static void render_full_screen(player_state_t state, uint8_t cur_song_idx, uint8
 
     /* Track Number and Title */
     uint8_t total_tracks = TOTAL_PLAYABLE_SONGS + sd_card_get_track_count();
-    snprintf(buf, sizeof(buf), "Track #%u of %u", cur_song_idx + 1, total_tracks);
+    snprintf(buf, sizeof(buf), "Track #%u of %u", (unsigned int)(cur_song_idx + 1), (unsigned int)total_tracks);
     lcd_show_string(14, 44, buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 
     if (cur_song_idx < TOTAL_PLAYABLE_SONGS) {

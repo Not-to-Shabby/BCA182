@@ -46,6 +46,7 @@ static struct {
     char upcoming_line[KARAOKE_MAX_LINE_CHARS + 1];
     char previous_line[KARAOKE_MAX_LINE_CHARS + 1];
     bool has_lyrics_started;
+    bool line_ended;
 
     struct k_mutex lock;
 } s_midi;
@@ -144,44 +145,12 @@ void midi_karaoke_init(const midi_synth_callbacks_t *synth_cb)
     memset(s_midi.upcoming_line, 0, sizeof(s_midi.upcoming_line));
     memset(s_midi.previous_line, 0, sizeof(s_midi.previous_line));
     s_midi.has_lyrics_started = false;
+    s_midi.line_ended = false;
 
     k_timer_init(&s_midi_timer, midi_timer_handler, NULL);
 
     k_mutex_unlock(&s_midi.lock);
     printk("[MIDI] Sequencer initialized.\n");
-}
-
-static void push_lyric_event(const char *text, bool is_newline)
-{
-    if (s_midi.lyric_count >= KARAOKE_LYRIC_QUEUE_SIZE) {
-        /* Drop oldest if full */
-        s_midi.lyric_head = (s_midi.lyric_head + 1) % KARAOKE_LYRIC_QUEUE_SIZE;
-        s_midi.lyric_count--;
-    }
-
-    karaoke_lyric_msg_t *msg = &s_midi.lyric_queue[s_midi.lyric_tail];
-    snprintf(msg->text, sizeof(msg->text), "%s", text);
-    msg->is_newline = is_newline;
-    msg->song_time_ms = s_midi.elapsed_ms;
-
-    s_midi.lyric_tail = (s_midi.lyric_tail + 1) % KARAOKE_LYRIC_QUEUE_SIZE;
-    s_midi.lyric_count++;
-
-    if (is_newline) {
-        /* Rotate lyric lines */
-        snprintf(s_midi.previous_line, sizeof(s_midi.previous_line), "%s", s_midi.current_line);
-        snprintf(s_midi.current_line, sizeof(s_midi.current_line), "%s", s_midi.upcoming_line);
-        memset(s_midi.upcoming_line, 0, sizeof(s_midi.upcoming_line));
-    } else {
-        if (text[0] != '\0') {
-            s_midi.has_lyrics_started = true;
-        }
-        /* Append syllable to current line if space permits */
-        size_t cur_len = strlen(s_midi.current_line);
-        if (cur_len + strlen(text) < sizeof(s_midi.current_line)) {
-            strncat(s_midi.current_line, text, sizeof(s_midi.current_line) - cur_len - 1);
-        }
-    }
 }
 
 #define MAX_KARAOKE_LINES 256
@@ -199,6 +168,60 @@ static lyric_line_entry_t s_lyric_lines[MAX_KARAOKE_LINES];
 
 static uint16_t s_total_lyric_lines = 0;
 static uint16_t s_active_line_idx = 0;
+
+static void push_lyric_event(const char *text, bool is_newline)
+{
+    if (s_midi.lyric_count >= KARAOKE_LYRIC_QUEUE_SIZE) {
+        /* Drop oldest if full */
+        s_midi.lyric_head = (s_midi.lyric_head + 1) % KARAOKE_LYRIC_QUEUE_SIZE;
+        s_midi.lyric_count--;
+    }
+
+    const char *safe_text = (text != NULL) ? text : "";
+
+    karaoke_lyric_msg_t *msg = &s_midi.lyric_queue[s_midi.lyric_tail];
+    snprintf(msg->text, sizeof(msg->text), "%s", safe_text);
+    msg->is_newline = is_newline;
+    msg->song_time_ms = s_midi.elapsed_ms;
+
+    s_midi.lyric_tail = (s_midi.lyric_tail + 1) % KARAOKE_LYRIC_QUEUE_SIZE;
+    s_midi.lyric_count++;
+
+    if (is_newline) {
+        if (safe_text[0] != '\0') {
+            size_t cur_len = strlen(s_midi.current_line);
+            if (cur_len + strlen(safe_text) < sizeof(s_midi.current_line)) {
+                strncat(s_midi.current_line, safe_text, sizeof(s_midi.current_line) - cur_len - 1);
+            }
+        }
+        s_midi.line_ended = true;
+    } else {
+        if (safe_text[0] == '\0') {
+            return;
+        }
+
+        s_midi.has_lyrics_started = true;
+
+        if (s_midi.line_ended) {
+            /* Start of a new line: rotate the completed line to previous_line */
+            if (s_midi.current_line[0] != '\0') {
+                snprintf(s_midi.previous_line, sizeof(s_midi.previous_line), "%s", s_midi.current_line);
+            }
+            s_midi.current_line[0] = '\0';
+            s_midi.line_ended = false;
+
+            if (s_active_line_idx + 1 < s_total_lyric_lines) {
+                s_active_line_idx++;
+            }
+        }
+
+        /* Append syllable word-by-word to current active line */
+        size_t cur_len = strlen(s_midi.current_line);
+        if (cur_len + strlen(safe_text) < sizeof(s_midi.current_line)) {
+            strncat(s_midi.current_line, safe_text, sizeof(s_midi.current_line) - cur_len - 1);
+        }
+    }
+}
 
 static void pre_parse_karaoke_lyrics(void)
 {
@@ -383,6 +406,7 @@ bool midi_karaoke_load_memory(const uint8_t *data, uint32_t length)
     memset(s_midi.upcoming_line, 0, sizeof(s_midi.upcoming_line));
     memset(s_midi.previous_line, 0, sizeof(s_midi.previous_line));
     s_midi.has_lyrics_started = false;
+    s_midi.line_ended = false;
 
     pre_parse_karaoke_lyrics();
 
@@ -626,43 +650,35 @@ void midi_karaoke_get_status(midi_player_status_t *out_status)
         out_status->bpm = 120;
     }
 
-    if (s_total_lyric_lines == 0) {
+    if (s_total_lyric_lines == 0 && !s_midi.has_lyrics_started) {
         snprintf(out_status->current_lyric_line, sizeof(out_status->current_lyric_line), "  [Instrumental Track]  ");
         out_status->upcoming_lyric_line[0] = '\0';
         out_status->previous_lyric_line[0] = '\0';
         out_status->has_lyrics_started = false;
-    } else {
-        /* Advance active line index based on current playback tick */
-        while (s_active_line_idx + 1 < s_total_lyric_lines &&
-               s_midi.current_tick >= s_lyric_lines[s_active_line_idx + 1].start_tick) {
-            s_active_line_idx++;
-        }
-
-        if (s_midi.current_tick < s_lyric_lines[0].start_tick) {
-            /* Intro state: before first line starts */
-            snprintf(out_status->current_lyric_line, sizeof(out_status->current_lyric_line), "  [Music / Intro]  ");
+    } else if (!s_midi.has_lyrics_started) {
+        /* Intro state: before first line starts */
+        snprintf(out_status->current_lyric_line, sizeof(out_status->current_lyric_line), "  [Music / Intro]  ");
+        if (s_total_lyric_lines > 0) {
             snprintf(out_status->upcoming_lyric_line, sizeof(out_status->upcoming_lyric_line), "%s", s_lyric_lines[0].text);
-            out_status->previous_lyric_line[0] = '\0';
-            out_status->has_lyrics_started = false;
         } else {
-            /* Active singing line */
-            snprintf(out_status->current_lyric_line, sizeof(out_status->current_lyric_line), "%s", s_lyric_lines[s_active_line_idx].text);
-
-            /* Upcoming line */
-            if (s_active_line_idx + 1 < s_total_lyric_lines) {
-                snprintf(out_status->upcoming_lyric_line, sizeof(out_status->upcoming_lyric_line), "%s", s_lyric_lines[s_active_line_idx + 1].text);
-            } else {
-                snprintf(out_status->upcoming_lyric_line, sizeof(out_status->upcoming_lyric_line), "  [Outro / End]  ");
-            }
-
-            /* Previous line */
-            if (s_active_line_idx > 0) {
-                snprintf(out_status->previous_lyric_line, sizeof(out_status->previous_lyric_line), "%s", s_lyric_lines[s_active_line_idx - 1].text);
-            } else {
-                snprintf(out_status->previous_lyric_line, sizeof(out_status->previous_lyric_line), "  [Music / Intro]  ");
-            }
-            out_status->has_lyrics_started = true;
+            out_status->upcoming_lyric_line[0] = '\0';
         }
+        out_status->previous_lyric_line[0] = '\0';
+        out_status->has_lyrics_started = false;
+    } else {
+        /* Word-by-word active singing line: grows syllable-by-syllable in real time! */
+        snprintf(out_status->current_lyric_line, sizeof(out_status->current_lyric_line), "%s", s_midi.current_line);
+
+        /* Upcoming line from pre-parsed index */
+        if (s_active_line_idx + 1 < s_total_lyric_lines) {
+            snprintf(out_status->upcoming_lyric_line, sizeof(out_status->upcoming_lyric_line), "%s", s_lyric_lines[s_active_line_idx + 1].text);
+        } else {
+            snprintf(out_status->upcoming_lyric_line, sizeof(out_status->upcoming_lyric_line), "  [Outro / End]  ");
+        }
+
+        /* Previous completed line */
+        snprintf(out_status->previous_lyric_line, sizeof(out_status->previous_lyric_line), "%s", s_midi.previous_line);
+        out_status->has_lyrics_started = true;
     }
 
     k_mutex_unlock(&s_midi.lock);

@@ -311,7 +311,7 @@ void test_drum_hits_are_noisy_and_tones_are_not(void)
     TEST_ASSERT_TRUE(hat > organ * 3.0);
 }
 
-void test_thirty_voices_never_clip_or_crash(void)
+void test_polyphony_never_clips_or_crashes(void)
 {
     for (int i = 0; i < 60; i++) {
         play((uint8_t)(i % 8), (uint8_t)(i * 2), (uint8_t)(36 + i), 127);
@@ -327,7 +327,7 @@ void test_thirty_voices_never_clip_or_crash(void)
     TEST_ASSERT_TRUE(peak > 3000);
     TEST_ASSERT_TRUE(peak <= 32767);
     TEST_ASSERT_TRUE(yamaha_fm_get_active_voice_count() <= FM_MAX_VOICES);
-    TEST_ASSERT_TRUE(yamaha_fm_get_steal_count() >= 30);
+    TEST_ASSERT_TRUE(yamaha_fm_get_steal_count() >= 20);
 }
 
 void test_stealing_prefers_dying_notes_over_held_ones(void)
@@ -459,7 +459,7 @@ int main(void)
     RUN_TEST(test_kick_is_a_short_low_thump_that_ends_by_itself);
     RUN_TEST(test_closed_hat_cuts_off_an_open_hat);
     RUN_TEST(test_drum_hits_are_noisy_and_tones_are_not);
-    RUN_TEST(test_thirty_voices_never_clip_or_crash);
+    RUN_TEST(test_polyphony_never_clips_or_crashes);
     RUN_TEST(test_stealing_prefers_dying_notes_over_held_ones);
     RUN_TEST(test_all_notes_off_goes_silent_and_frees_the_voices);
     RUN_TEST(test_controller_reset_clears_pedal_expression_and_bend);

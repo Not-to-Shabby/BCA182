@@ -461,7 +461,7 @@ int main(void)
 {
     printk("\n==================================================\n");
     printk("  BCA182: RT-Spark MIDI Karaoke Player Starting   \n");
-    printk("  Yamaha FM Synth (30 Voices) + ST7789 IPS LCD    \n");
+    printk("  Yamaha FM Synth (40 Voices) + ST7789 IPS LCD    \n");
     printk("==================================================\n");
 
     k_mutex_init(&s_app.lock);

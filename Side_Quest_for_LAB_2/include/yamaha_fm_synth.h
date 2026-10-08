@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define FM_MAX_VOICES       30
+#define FM_MAX_VOICES       40
 #define FM_MIDI_CHANNELS    16
 #define FM_DRUM_CHANNEL     9  /* 0-indexed Channel 10 */
 

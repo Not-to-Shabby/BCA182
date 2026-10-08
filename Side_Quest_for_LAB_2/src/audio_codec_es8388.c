@@ -314,6 +314,8 @@ static void i2s3_hw_init(void)
 /* -------------------------------------------------------------------------- */
 /* DMA1 Stream 5 & Audio Producer Thread                                      */
 /* -------------------------------------------------------------------------- */
+static K_SEM_DEFINE(s_audio_dma_sem, 2, 2);
+
 static void dma1_stream5_isr(const void *arg)
 {
     ARG_UNUSED(arg);
@@ -324,6 +326,7 @@ static void dma1_stream5_isr(const void *arg)
         if (s_stage_ready[0]) {
             memcpy(&s_audio_dma[0], s_stage[0], sizeof(s_stage[0]));
             s_stage_ready[0] = 0;
+            k_sem_give(&s_audio_dma_sem);
         } else {
             s_diag.dma_misses++;
         }
@@ -333,6 +336,7 @@ static void dma1_stream5_isr(const void *arg)
         if (s_stage_ready[1]) {
             memcpy(&s_audio_dma[AUDIO_HALF_WORDS], s_stage[1], sizeof(s_stage[1]));
             s_stage_ready[1] = 0;
+            k_sem_give(&s_audio_dma_sem);
         } else {
             s_diag.dma_misses++;
         }
@@ -395,7 +399,11 @@ static void audio_producer_thread(void *a, void *b, void *c)
 
             s_stage_ready[half] = 1;
         }
-        k_msleep(1);
+
+        /* If both staging halves are ready, sleep on DMA interrupt semaphore */
+        if (s_stage_ready[0] && s_stage_ready[1]) {
+            k_sem_take(&s_audio_dma_sem, K_FOREVER);
+        }
     }
 }
 

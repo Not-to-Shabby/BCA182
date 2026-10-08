@@ -20,8 +20,8 @@ extern "C" {
 
 #define AUDIO_SAMPLE_RATE       44100
 #define AUDIO_CHANNELS          2
-#define AUDIO_DMA_WORDS         512
-#define AUDIO_HALF_WORDS        (AUDIO_DMA_WORDS / 2) /* 256 words = 128 stereo samples */
+#define AUDIO_DMA_WORDS         1024
+#define AUDIO_HALF_WORDS        (AUDIO_DMA_WORDS / 2) /* 512 words = 256 stereo samples (5.8 ms buffer) */
 
 /**
  * @brief PCM stream callback signature.

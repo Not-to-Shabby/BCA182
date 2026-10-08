@@ -842,38 +842,55 @@ static void render_fm_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain, 
     int32_t gr1 = (int32_t)(amp * c->pan_r);
     if (gl1 > GAIN_ONE) gl1 = GAIN_ONE;
     if (gr1 > GAIN_ONE) gr1 = GAIN_ONE;
-    int32_t dgl = (gl1 - v->gl) / (int32_t)len;
-    int32_t dgr = (gr1 - v->gr) / (int32_t)len;
-    int32_t gl = v->gl, gr = v->gr;
+    int32_t gl = gl1 >> GAIN_Q;
+    int32_t gr = gr1 >> GAIN_Q;
     uint32_t pc = v->pc, pm = v->pm;
     int32_t y = v->fb_prev;
     uint32_t fbu = v->fb_u;
 
     if (v->additive) {
         int32_t mix = (int32_t)(v->idx * 32767.0f);
-        for (size_t i = 0; i < len; i++) {
-            int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
-            y = m;
-            pm += inc_m;
-            int32_t cs = s_sine[pc >> SINE_SHIFT] + ((m * mix) >> 15);
-            pc += inc_c;
-            gl += dgl;
-            gr += dgr;
-            s_acc_l[off + i] += (cs * (gl >> GAIN_Q)) >> 15;
-            s_acc_r[off + i] += (cs * (gr >> GAIN_Q)) >> 15;
+        if (fbu == 0) {
+            for (size_t i = 0; i < len; i++) {
+                int32_t m = s_sine[pm >> SINE_SHIFT];
+                pm += inc_m;
+                int32_t cs = s_sine[pc >> SINE_SHIFT] + ((m * mix) >> 15);
+                pc += inc_c;
+                s_acc_l[off + i] += (cs * gl) >> 15;
+                s_acc_r[off + i] += (cs * gr) >> 15;
+            }
+        } else {
+            for (size_t i = 0; i < len; i++) {
+                int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+                y = m;
+                pm += inc_m;
+                int32_t cs = s_sine[pc >> SINE_SHIFT] + ((m * mix) >> 15);
+                pc += inc_c;
+                s_acc_l[off + i] += (cs * gl) >> 15;
+                s_acc_r[off + i] += (cs * gr) >> 15;
+            }
         }
     } else {
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
-        for (size_t i = 0; i < len; i++) {
-            int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
-            y = m;
-            pm += inc_m;
-            int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
-            pc += inc_c;
-            gl += dgl;
-            gr += dgr;
-            s_acc_l[off + i] += (cs * (gl >> GAIN_Q)) >> 15;
-            s_acc_r[off + i] += (cs * (gr >> GAIN_Q)) >> 15;
+        if (fbu == 0) {
+            for (size_t i = 0; i < len; i++) {
+                int32_t m = s_sine[pm >> SINE_SHIFT];
+                pm += inc_m;
+                int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
+                pc += inc_c;
+                s_acc_l[off + i] += (cs * gl) >> 15;
+                s_acc_r[off + i] += (cs * gr) >> 15;
+            }
+        } else {
+            for (size_t i = 0; i < len; i++) {
+                int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+                y = m;
+                pm += inc_m;
+                int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
+                pc += inc_c;
+                s_acc_l[off + i] += (cs * gl) >> 15;
+                s_acc_r[off + i] += (cs * gr) >> 15;
+            }
         }
     }
 

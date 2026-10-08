@@ -393,3 +393,68 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
+
+void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum)
+{
+    if (s_view_mode != UI_VIEW_SETTINGS) return;
+
+    if (k_mutex_lock(&s_ui_lcd_mutex, K_MSEC(50)) != 0) {
+        return;
+    }
+
+    /* 1. Header */
+    lcd_fill_rect(0, 0, 239, 24, LCD_COLOR_NAVY);
+    lcd_show_string(32, 4, "=== AUDIO SETTINGS ===", LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+
+    /* 2. Instructions (y: 28 to 56) */
+    lcd_fill_rect(0, 26, 239, 60, LCD_COLOR_BLACK);
+    lcd_show_string(14, 28, "UP/DOWN: Select Option", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+    lcd_show_string(14, 44, "LEFT/RIGHT: Adjust Level", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+
+    /* 3. Three Setting Rows (y: 66 to 175) */
+    static const char *labels[] = {
+        "Master Volume",
+        "Instrument Vol",
+        "Drums / Rhythm"
+    };
+    uint8_t vals[] = { vol, inst, drum };
+    static const uint8_t maxs[] = { 100, 200, 200 };
+
+    uint16_t y = 66;
+    for (uint8_t i = 0; i < 3; i++) {
+        bool sel = (i == cursor);
+        uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
+        uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
+
+        lcd_fill_rect(8, y, 231, y + 34, bg);
+        lcd_draw_rect(8, y, 231, y + 34, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%s: %u%%", labels[i], vals[i]);
+        lcd_show_string(14, y + 4, buf, fg, bg);
+
+        /* Gauge bar: width up to 180 pixels */
+        uint16_t gw = (uint16_t)(((uint32_t)vals[i] * 180U) / maxs[i]);
+        if (gw > 180) gw = 180;
+        lcd_draw_rect(14, y + 22, 196, y + 28, LCD_COLOR_BLACK);
+        if (gw > 0) {
+            lcd_fill_rect(15, y + 23, 15 + gw, y + 27, sel ? LCD_COLOR_GREEN : LCD_COLOR_CYAN);
+        }
+        if (gw < 180) {
+            lcd_fill_rect(15 + gw + 1, y + 23, 195, y + 27, LCD_COLOR_BLACK);
+        }
+
+        y += 38;
+    }
+
+    /* 4. NV-RAM / Persistence Status Box (y: 182 to 200) */
+    lcd_fill_rect(8, 182, 231, 200, LCD_COLOR_BLACK);
+    lcd_show_string(14, 184, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+
+    /* 5. Footer (y: 204 to 239) */
+    lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 208, "OK / AUX: Save & Return", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 224, "Survives Reset & Shutdown", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+
+    k_mutex_unlock(&s_ui_lcd_mutex);
+}

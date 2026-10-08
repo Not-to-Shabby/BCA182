@@ -470,10 +470,13 @@ void audio_set_volume(uint8_t volume_percent)
     if (volume_percent > 100) volume_percent = 100;
     s_current_volume = volume_percent;
 
-    /* Map 0-100% to ES8388 analog headphone amplifier (0x00 is +3dB, 0x33 is -50dB) */
-    uint8_t att = (uint8_t)(((100U - (uint32_t)volume_percent) * 0x33U) / 100U);
-    es8388_reg_write(0x2E, att);
-    es8388_reg_write(0x2F, att);
+    /* ES8388 analog headphone volume (LOUT1VOL/ROUT1VOL):
+     * Higher register value = LOUDER output!
+     * 0 = -30 dB (quietest), 33 (0x21) = +3.0 dB (maximum boost).
+     */
+    uint8_t gain = (uint8_t)(((uint32_t)volume_percent * 33U) / 100U);
+    es8388_reg_write(0x2E, gain);
+    es8388_reg_write(0x2F, gain);
 }
 
 uint8_t audio_get_volume(void)

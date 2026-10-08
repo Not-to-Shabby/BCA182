@@ -79,6 +79,26 @@ void yamaha_fm_control_change(uint8_t channel, uint8_t control, uint8_t value);
 void yamaha_fm_pitch_bend(uint8_t channel, uint16_t bend);
 
 /**
+ * @brief Set instrument / synth master gain in percent (50% to 200%, default 100%).
+ */
+void yamaha_fm_set_instrument_gain(uint8_t percent);
+
+/**
+ * @brief Get instrument / synth master gain in percent.
+ */
+uint8_t yamaha_fm_get_instrument_gain(void);
+
+/**
+ * @brief Set drum / rhythm gain in percent (50% to 200%, default 100%).
+ */
+void yamaha_fm_set_drum_gain(uint8_t percent);
+
+/**
+ * @brief Get drum / rhythm gain in percent.
+ */
+uint8_t yamaha_fm_get_drum_gain(void);
+
+/**
  * @brief Silence all notes immediately.
  */
 void yamaha_fm_all_notes_off(void);

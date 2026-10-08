@@ -20,7 +20,8 @@ extern "C" {
 typedef enum {
     UI_VIEW_BROWSER = 0,
     UI_VIEW_PLAYING,
-    UI_VIEW_NUMBER_SELECT
+    UI_VIEW_NUMBER_SELECT,
+    UI_VIEW_SETTINGS
 } ui_view_mode_t;
 
 typedef struct {
@@ -88,6 +89,16 @@ void karaoke_ui_render_browser(const song_entry_t *songs, uint8_t count,
 void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
                                      const char *preview_title, const char *preview_artist,
                                      bool found);
+
+/**
+ * @brief Render the audio settings mixer screen.
+ *
+ * @param cursor Active selected row: 0=Master Vol, 1=Instrument Gain, 2=Drums Gain.
+ * @param vol Current master volume (0-100%).
+ * @param inst Current instrument gain (20-200%).
+ * @param drum Current drum gain (20-200%).
+ */
+void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum);
 
 #ifdef __cplusplus
 }

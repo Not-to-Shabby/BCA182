@@ -20,6 +20,7 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
   - **Player Mode:** Real-time synchronized lyrics and VU meter playback.
   - **Browser Mode:** Paged song selection menu with instantaneous O(1) seeking directly from `SD:/songs.idx`.
   - **Number Select Mode (Direct Song Code Entry):** Press BOTH UP + DOWN simultaneously to enter 5-digit song code entry. Use LEFT/RIGHT to move digits, UP/DOWN to scroll 0-9, and HOLD UP/DOWN or click OK to play.
+  - **Audio Settings Mixer Mode:** Click AUX (`PA1`) to open the settings view. Adjust Master Volume (0-100%), Instrument / Melody Volume (20-200%), and Drum / Rhythm Volume (20-200%) using UP/DOWN to select and LEFT/RIGHT to adjust. Values auto-save and survive both reset (via STM32 RTC Backup domain) and shutdown (via `SD:/karaoke.cfg`).
   - **ROM Fallback:** Operates standalone with built-in embedded tracks (Bryan Adams, John Lennon, Itchyworms - Beer) even when no MicroSD card is inserted.
 - **PC Searchable Songbook:** Generated `songbook.txt` (7.7 MB) formatted for quick searching in Windows Notepad (`Ctrl + F`). Contains both Numerical and Alphabetical directories.
 
@@ -80,7 +81,8 @@ pio test -e native
 - `test_song_scan` compiles `src/song_scan.c` and checks file-name filtering, parsing and the path list.
 - `test_catalog` compiles the real `src/karaoke_catalog.c` against a folder on the PC that stands in for the SD card (stand-ins in `test/test_catalog/`). It covers a valid, missing, corrupt, truncated and empty `songs.idx`, scanning, an unmounted or empty card, and the built-in songs.
 - `test_synth` renders the real `src/yamaha_fm_synth.c` and measures pitch accuracy, decay, brightness, velocity, release, sustain pedal, pitch bend, drums, voice stealing and all 128 programs.
-- Result: **72/72 tests passing**.
+- `test_settings` validates non-volatile RTC backup register bit packing/unpacking, SD configuration file parsing, parameter boundary clamping, and non-inverted analog gain mapping.
+- Result: **76/76 tests passing**.
 
 ### Static Code Analysis
 ```bash

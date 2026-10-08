@@ -32,6 +32,37 @@
 #ifndef SYNTH_DRUM_Q8
 #define SYNTH_DRUM_Q8       166             /* drum level against the melodic voices, in 1/256 steps */
 #endif
+
+static volatile uint16_t s_synth_master_q8 = SYNTH_MASTER_Q8;
+static volatile uint16_t s_synth_drum_q8   = SYNTH_DRUM_Q8;
+static volatile uint8_t s_instrument_percent = 100;
+static volatile uint8_t s_drum_percent = 100;
+
+void yamaha_fm_set_instrument_gain(uint8_t percent)
+{
+    if (percent < 20) percent = 20;
+    if (percent > 200) percent = 200;
+    s_instrument_percent = percent;
+    s_synth_master_q8 = (uint16_t)(((uint32_t)percent * 256U) / 100U);
+}
+
+uint8_t yamaha_fm_get_instrument_gain(void)
+{
+    return s_instrument_percent;
+}
+
+void yamaha_fm_set_drum_gain(uint8_t percent)
+{
+    if (percent < 20) percent = 20;
+    if (percent > 200) percent = 200;
+    s_drum_percent = percent;
+    s_synth_drum_q8 = (uint16_t)(((uint32_t)percent * 166U) / 100U);
+}
+
+uint8_t yamaha_fm_get_drum_gain(void)
+{
+    return s_drum_percent;
+}
 #define GAIN_Q              8               /* extra fractional bits in the per-sample gain ramp */
 #define GAIN_ONE            (32767 << GAIN_Q)
 #define SILENCE             0.0015f         /* about -56 dB */
@@ -868,8 +899,8 @@ static void render_drum_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain
         return;
     }
 
-    int32_t tq = (int32_t)(ta * ch_gain * (float)(32767 * SYNTH_DRUM_Q8 / 256));
-    int32_t nq = (int32_t)(na * ch_gain * (float)(32767 * SYNTH_DRUM_Q8 / 256));
+    int32_t tq = (int32_t)(ta * ch_gain * (float)(32767 * s_synth_drum_q8 / 256));
+    int32_t nq = (int32_t)(na * ch_gain * (float)(32767 * s_synth_drum_q8 / 256));
     int32_t pl = (int32_t)(c->pan_l * 32767.0f);
     int32_t pr = (int32_t)(c->pan_r * 32767.0f);
     uint32_t inc = float_to_phase(v->tone_f * 4294967296.0f / s_sample_rate);
@@ -984,8 +1015,8 @@ static void render_block(int16_t *out, size_t frames)
         s_channels[ch].gain_prev = ch_target[ch];
     }
     for (size_t i = 0; i < frames; i++) {
-        out[i * 2U] = soft_limit((s_acc_l[i] * SYNTH_MASTER_Q8) >> 8);
-        out[i * 2U + 1U] = soft_limit((s_acc_r[i] * SYNTH_MASTER_Q8) >> 8);
+        out[i * 2U] = soft_limit((s_acc_l[i] * s_synth_master_q8) >> 8);
+        out[i * 2U + 1U] = soft_limit((s_acc_r[i] * s_synth_master_q8) >> 8);
     }
 }
 

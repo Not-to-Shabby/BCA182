@@ -12,6 +12,7 @@
 #include "midi_karaoke_parser.h"
 #include "karaoke_ui.h"
 #include "karaoke_catalog.h"
+#include "karaoke_settings.h"
 #include "sd_card_reader.h"
 
 #include <zephyr/kernel.h>
@@ -30,6 +31,9 @@ static struct {
     /* Number Select Mode State (5-digit input) */
     uint8_t num_digits[5];
     uint8_t num_cursor;
+
+    /* Settings View State */
+    uint8_t settings_cursor;
 
     struct k_mutex lock;
 } s_app;
@@ -141,9 +145,13 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
         uint8_t num_digits[5];
         memcpy(num_digits, s_app.num_digits, 5);
         uint8_t num_cursor = s_app.num_cursor;
+        uint8_t set_cursor = s_app.settings_cursor;
         k_mutex_unlock(&s_app.lock);
 
-        if (mode == UI_VIEW_NUMBER_SELECT) {
+        if (mode == UI_VIEW_SETTINGS) {
+            const karaoke_settings_t *cfg = karaoke_settings_get();
+            karaoke_ui_render_settings(set_cursor, cfg->master_volume, cfg->instrument_gain, cfg->drum_gain);
+        } else if (mode == UI_VIEW_NUMBER_SELECT) {
             uint32_t search_code = digits_to_code(num_digits);
             uint32_t match_idx = 0;
             bool found = karaoke_catalog_find_by_code(search_code, &match_idx);
@@ -241,10 +249,14 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
         if (aux && !last_aux) {
             k_mutex_lock(&s_app.lock, K_FOREVER);
             if (s_app.ui_mode == UI_VIEW_NUMBER_SELECT) {
-                /* Exit Number Select back to Player */
                 s_app.ui_mode = UI_VIEW_PLAYING;
                 karaoke_ui_set_view(UI_VIEW_PLAYING);
             } else if (s_app.ui_mode == UI_VIEW_PLAYING) {
+                s_app.ui_mode = UI_VIEW_SETTINGS;
+                s_app.settings_cursor = 0;
+                karaoke_ui_set_view(UI_VIEW_SETTINGS);
+            } else if (s_app.ui_mode == UI_VIEW_SETTINGS) {
+                karaoke_settings_save();
                 s_app.ui_mode = UI_VIEW_BROWSER;
                 karaoke_ui_set_view(UI_VIEW_BROWSER);
             } else {
@@ -297,6 +309,45 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         printk("[Nav] Song Code #%u not found in catalog!\n", (unsigned)target_code);
                     }
                 }
+            } else if (mode == UI_VIEW_SETTINGS) {
+                /* Audio Settings Mixer View */
+                const karaoke_settings_t *cfg = karaoke_settings_get();
+                uint8_t cur_vol  = cfg->master_volume;
+                uint8_t cur_inst = cfg->instrument_gain;
+                uint8_t cur_drum = cfg->drum_gain;
+
+                if (up && !last_up) {
+                    s_app.settings_cursor = (s_app.settings_cursor + 2) % 3;
+                }
+                if (dn && !last_dn) {
+                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 3;
+                }
+
+                if (lt && !last_lt) {
+                    if (s_app.settings_cursor == 0) {
+                        karaoke_settings_set_volume(cur_vol >= 5 ? cur_vol - 5 : 0);
+                    } else if (s_app.settings_cursor == 1) {
+                        karaoke_settings_set_instrument_gain(cur_inst >= 25 ? cur_inst - 5 : 20);
+                    } else if (s_app.settings_cursor == 2) {
+                        karaoke_settings_set_drum_gain(cur_drum >= 25 ? cur_drum - 5 : 20);
+                    }
+                }
+
+                if (rt && !last_rt) {
+                    if (s_app.settings_cursor == 0) {
+                        karaoke_settings_set_volume(cur_vol <= 95 ? cur_vol + 5 : 100);
+                    } else if (s_app.settings_cursor == 1) {
+                        karaoke_settings_set_instrument_gain(cur_inst <= 195 ? cur_inst + 5 : 200);
+                    } else if (s_app.settings_cursor == 2) {
+                        karaoke_settings_set_drum_gain(cur_drum <= 195 ? cur_drum + 5 : 200);
+                    }
+                }
+
+                if (press && !last_press) {
+                    karaoke_settings_save();
+                    s_app.ui_mode = UI_VIEW_PLAYING;
+                    karaoke_ui_set_view(UI_VIEW_PLAYING);
+                }
             } else if (mode == UI_VIEW_BROWSER) {
                 /* Browser Mode */
                 uint32_t total = karaoke_catalog_get_total_songs();
@@ -329,14 +380,16 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 }
             } else {
                 /* Player Mode (UI_VIEW_PLAYING) */
-                /* Volume: LEFT / RIGHT */
+                const karaoke_settings_t *cfg = karaoke_settings_get();
+
+                /* Volume: LEFT (-5%) / RIGHT (+5%) */
                 if (lt && !last_lt) {
-                    uint8_t v = audio_get_volume();
-                    if (v >= 5) audio_set_volume(v - 5);
+                    uint8_t v = cfg->master_volume;
+                    karaoke_settings_set_volume(v >= 5 ? v - 5 : 0);
                 }
                 if (rt && !last_rt) {
-                    uint8_t v = audio_get_volume();
-                    if (v <= 95) audio_set_volume(v + 5);
+                    uint8_t v = cfg->master_volume;
+                    karaoke_settings_set_volume(v <= 95 ? v + 5 : 100);
                 }
 
                 /* Next / Prev Song: UP / DOWN */
@@ -417,7 +470,10 @@ int main(void)
     sd_card_reader_init();
     karaoke_catalog_init();
 
-    /* 5. Start playing first song immediately (KARAOKE_BOOT_SONG selects another for bench builds) */
+    /* 5. Initialize Persistent Audio Settings (survives reset & shutdown) */
+    karaoke_settings_init();
+
+    /* 6. Start playing first song immediately (KARAOKE_BOOT_SONG selects another for bench builds) */
     k_msleep(100);
     play_song(KARAOKE_BOOT_SONG);
     s_app.current_song_index = KARAOKE_BOOT_SONG;

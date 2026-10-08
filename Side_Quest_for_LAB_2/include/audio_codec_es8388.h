@@ -46,6 +46,9 @@ typedef struct {
     uint32_t dma_misses;
     int16_t peak_left;
     int16_t peak_right;
+    uint32_t render_cycles_last;    /* CPU cycles the PCM callback took for one block, interrupts included */
+    uint32_t render_cycles_max;
+    uint32_t render_cycles_avg;     /* running average */
 } audio_diagnostics_t;
 
 /**

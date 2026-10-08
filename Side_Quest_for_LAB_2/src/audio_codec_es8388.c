@@ -355,7 +355,12 @@ static void audio_producer_thread(void *a, void *b, void *c)
 
             int16_t *buf = s_stage[half];
             if (s_pcm_callback) {
+                uint32_t started = DWT->CYCCNT;
                 s_pcm_callback(buf, AUDIO_HALF_WORDS);
+                uint32_t spent = DWT->CYCCNT - started;
+                s_diag.render_cycles_last = spent;
+                if (spent > s_diag.render_cycles_max) s_diag.render_cycles_max = spent;
+                s_diag.render_cycles_avg = (s_diag.render_cycles_avg * 15U + spent) / 16U;
             } else {
                 memset(buf, 0, AUDIO_HALF_WORDS * sizeof(int16_t));
             }
@@ -436,6 +441,11 @@ static void dac1_pa4_init(void)
 
 void audio_hardware_init(void)
 {
+    /* Free-running cycle counter, used to time the PCM callback. */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
     printk("[Audio] Initializing STM32 12-Bit Analog DAC on PA4...\n");
     dac1_pa4_init();
 

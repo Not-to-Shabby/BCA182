@@ -22,6 +22,7 @@ static uint32_t s_song_id;
 /* Differential rendering trackers to eliminate flicker */
 static char s_last_cur_lyric[KARAOKE_MAX_LINE_CHARS + 1] = "";
 static char s_last_prev_lyric[KARAOKE_MAX_LINE_CHARS + 1] = "";
+static char s_last_up_lyric[KARAOKE_MAX_LINE_CHARS + 1] = "";
 static uint32_t s_last_sec = 0xFFFFFFFFU;
 static uint8_t s_last_vol = 0xFFU;
 static uint8_t s_last_voices = 0xFFU;
@@ -89,6 +90,7 @@ static void render_static_player_frame(void)
     s_last_vu_r = -1;
     memset(s_last_cur_lyric, 0, sizeof(s_last_cur_lyric));
     memset(s_last_prev_lyric, 0, sizeof(s_last_prev_lyric));
+    memset(s_last_up_lyric, 0, sizeof(s_last_up_lyric));
 }
 
 void karaoke_ui_set_view(ui_view_mode_t mode)
@@ -96,6 +98,9 @@ void karaoke_ui_set_view(ui_view_mode_t mode)
     k_mutex_lock(&s_ui_lcd_mutex, K_FOREVER);
     s_view_mode = mode;
     lcd_clear(LCD_COLOR_BLACK);
+    memset(s_last_cur_lyric, 0, sizeof(s_last_cur_lyric));
+    memset(s_last_prev_lyric, 0, sizeof(s_last_prev_lyric));
+    memset(s_last_up_lyric, 0, sizeof(s_last_up_lyric));
     s_frame_initialized = false;
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
@@ -114,6 +119,9 @@ void karaoke_ui_set_current_song(const song_entry_t *song)
         memset(&s_current_song, 0, sizeof(s_current_song));
     }
     s_song_id++;
+    memset(s_last_cur_lyric, 0, sizeof(s_last_cur_lyric));
+    memset(s_last_prev_lyric, 0, sizeof(s_last_prev_lyric));
+    memset(s_last_up_lyric, 0, sizeof(s_last_up_lyric));
     s_frame_initialized = false;
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
@@ -165,32 +173,37 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
         lcd_draw_line(0, 69, 239, 69, LCD_COLOR_DARKGREY);
     }
 
-    /* 3. Synchronized Lyrics: Differential update */
+    /* 3. Synchronized Lyrics: Three-line scrolling display */
     if (strcmp(s_last_prev_lyric, status->previous_lyric_line) != 0) {
         snprintf(s_last_prev_lyric, sizeof(s_last_prev_lyric), "%s", status->previous_lyric_line);
         char padded[30];
         pad_string(padded, status->previous_lyric_line, 28);
-        lcd_show_string(8, 76, padded, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+        lcd_show_string(8, 74, padded, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
     }
 
     if (strcmp(s_last_cur_lyric, status->current_lyric_line) != 0) {
         snprintf(s_last_cur_lyric, sizeof(s_last_cur_lyric), "%s", status->current_lyric_line);
 
         /* Highlight box for current active lyric line */
-        lcd_fill_rect(4, 98, 235, 122, LCD_COLOR_DARKCYAN);
-        lcd_draw_rect(4, 98, 235, 122, LCD_COLOR_YELLOW);
+        lcd_fill_rect(4, 96, 235, 120, LCD_COLOR_DARKCYAN);
+        lcd_draw_rect(4, 96, 235, 120, LCD_COLOR_YELLOW);
 
         char padded[30];
-        const char *display_text = "";
-        if (status->current_lyric_line[0] != '\0') {
-            display_text = status->current_lyric_line;
-        } else if (!status->has_lyrics_started) {
-            display_text = "  [Music / Intro]  ";
+        pad_string(padded, status->current_lyric_line, 26);
+        lcd_show_string(10, 100, padded, LCD_COLOR_WHITE, LCD_COLOR_DARKCYAN);
+    }
+
+    if (strcmp(s_last_up_lyric, status->upcoming_lyric_line) != 0) {
+        snprintf(s_last_up_lyric, sizeof(s_last_up_lyric), "%s", status->upcoming_lyric_line);
+        char padded[30];
+        char line_formatted[48];
+        if (status->upcoming_lyric_line[0] != '\0' && status->upcoming_lyric_line[0] != ' ') {
+            snprintf(line_formatted, sizeof(line_formatted), ">> %s", status->upcoming_lyric_line);
         } else {
-            display_text = "       ...        ";
+            snprintf(line_formatted, sizeof(line_formatted), "%s", status->upcoming_lyric_line);
         }
-        pad_string(padded, display_text, 26);
-        lcd_show_string(10, 102, padded, LCD_COLOR_WHITE, LCD_COLOR_DARKCYAN);
+        pad_string(padded, line_formatted, 28);
+        lcd_show_string(8, 126, padded, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
     }
 
     /* 4. Playback Time & Progress Bar: Update once per second */

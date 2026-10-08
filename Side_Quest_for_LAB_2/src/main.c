@@ -97,7 +97,9 @@ static void play_song(uint32_t index)
         return;
     }
 
-    yamaha_fm_all_notes_off();
+    /* Stop the sequencer first so no event arrives while the channels are reset. */
+    midi_karaoke_stop();
+    yamaha_fm_synth_reset();
     midi_karaoke_load_memory(midi_data, midi_len);
     karaoke_ui_set_current_song(&s);
     midi_karaoke_play();
@@ -415,9 +417,10 @@ int main(void)
     sd_card_reader_init();
     karaoke_catalog_init();
 
-    /* 5. Start playing first song immediately */
+    /* 5. Start playing first song immediately (KARAOKE_BOOT_SONG selects another for bench builds) */
     k_msleep(100);
-    play_song(0);
+    play_song(KARAOKE_BOOT_SONG);
+    s_app.current_song_index = KARAOKE_BOOT_SONG;
 
     /* 6. Spawn Application Background Threads */
     printk("[System] Starting UI and Button threads...\n");

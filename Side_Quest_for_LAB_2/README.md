@@ -6,7 +6,7 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
 
 ## 1. Project Overview & Features
 
-- **Synthesizer Engine:** Embedded **30-Voice** 2-Operator Yamaha FM Synthesizer running at 44.1 kHz 16-bit stereo PCM with 32-bit fixed-point ADSR envelopes.
+- **Synthesizer Engine:** Embedded **30-voice** two-operator FM synthesizer at 44.1 kHz stereo. Each note has its own modulation-index envelope, so a piano starts bright and mellows as it decays. It maps all 128 General MIDI programs onto 53 patches and follows velocity, channel volume (CC7), expression (CC11), pan, sustain pedal, pitch bend with RPN range, and the mod wheel. A soft limiter replaces hard clipping. The sequencer ticks on its own thread and hands notes to the audio thread through a ring buffer. `tools/synth_bench/run.py` renders the real synth on the PC to WAV files and prints measurements.
 - **General MIDI & Rhythm Kit:** Supports standard General MIDI instrument families (Pianos, Organs, Guitars, Bass, Strings, Brass, Flutes, Synths) plus full percussive rhythm kit on MIDI Channel 10 (Bass Drum, Snare, Hi-Hats, Toms, Cymbals).
 - **Karaoke Library:** Compatible with the 47,998 song database extracted from SongHub (`D:\idx\shub_extracted`).
 - **Synchronized Lyrics:** Multi-track SMF sequencer parses Meta Event `0x05` (Lyric) and `0x01` (Text) with syllabic delta-time synchronization. `[Music / Intro]` displays only before the first sung verse, with smooth verse transitions thereafter.
@@ -79,7 +79,8 @@ pio test -e native
 - `test_song_path` compiles `src/song_path.c` itself and checks the SD path rule.
 - `test_song_scan` compiles `src/song_scan.c` and checks file-name filtering, parsing and the path list.
 - `test_catalog` compiles the real `src/karaoke_catalog.c` against a folder on the PC that stands in for the SD card (stand-ins in `test/test_catalog/`). It covers a valid, missing, corrupt, truncated and empty `songs.idx`, scanning, an unmounted or empty card, and the built-in songs.
-- Result: **46/46 tests passing**.
+- `test_synth` renders the real `src/yamaha_fm_synth.c` and measures pitch accuracy, decay, brightness, velocity, release, sustain pedal, pitch bend, drums, voice stealing and all 128 programs.
+- Result: **72/72 tests passing**.
 
 ### Static Code Analysis
 ```bash

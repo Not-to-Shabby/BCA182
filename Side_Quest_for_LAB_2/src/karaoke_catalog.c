@@ -111,12 +111,44 @@ static void close_index(void)
  * file is missing or cannot be trusted (the file is then closed). */
 static uint32_t open_index(void)
 {
-    FRESULT fr = f_open(&s_idx_file, SD_ROOT "songs.idx", FA_READ);
-    if (fr != FR_OK) {
+    static const char * const CANDIDATE_INDEX_PATHS[] = {
+        SD_ROOT "songs.idx",
+        SD_ROOT "SONGS.IDX",
+        SD_ROOT "midi/songs.idx",
+        SD_ROOT "midi/SONGS.IDX",
+        SD_ROOT "songs.idx.txt",
+        SD_ROOT "SONGS.IDX.TXT",
+        SD_ROOT "KARAOKE_SD_CARD_SHARDED/songs.idx",
+        SD_ROOT "KARAOKE_SD_CARD/songs.idx"
+    };
+
+    FRESULT fr = FR_NO_FILE;
+    const char *found_path = NULL;
+
+    for (size_t i = 0; i < sizeof(CANDIDATE_INDEX_PATHS) / sizeof(CANDIDATE_INDEX_PATHS[0]); i++) {
+        fr = f_open(&s_idx_file, CANDIDATE_INDEX_PATHS[i], FA_READ);
+        if (fr == FR_OK) {
+            found_path = CANDIDATE_INDEX_PATHS[i];
+            s_idx_open = true;
+            break;
+        }
+    }
+
+    if (!s_idx_open) {
         printk("[Catalog] No songs.idx on the card (FatFs error %d)\n", (int)fr);
+        printk("[Catalog] Files present in " SD_ROOT ":\n");
+        DIR d;
+        FILINFO fno;
+        if (f_opendir(&d, SD_ROOT) == FR_OK) {
+            while (f_readdir(&d, &fno) == FR_OK && fno.fname[0] != '\0') {
+                printk("  [%c] %s\n", (fno.fattrib & AM_DIR) ? 'D' : 'F', fno.fname);
+            }
+            f_closedir(&d);
+        }
         return 0;
     }
-    s_idx_open = true;
+
+    printk("[Catalog] Opened index at: %s\n", found_path);
 
     uint8_t hdr[INDEX_HEADER_BYTES];
     UINT br = 0;

@@ -97,9 +97,24 @@ void yamaha_fm_synth_render(int16_t *buffer, size_t num_samples);
 const midi_synth_callbacks_t* yamaha_fm_get_callbacks(void);
 
 /**
- * @brief Get the count of currently active polyphonic voices (for diagnostic HUD).
+ * @brief Get the count of currently audible voices (for diagnostic HUD).
  */
 uint8_t yamaha_fm_get_active_voice_count(void);
+
+/**
+ * @brief Number of times a new note found every voice busy and took one over.
+ */
+uint32_t yamaha_fm_get_steal_count(void);
+
+/**
+ * @brief The subset of takeovers that cut off a held note or a tail louder than about -30 dB.
+ */
+uint32_t yamaha_fm_get_audible_steal_count(void);
+
+/**
+ * @brief Number of note events lost because the event ring was full.
+ */
+uint32_t yamaha_fm_get_dropped_events(void);
 
 #ifdef __cplusplus
 }

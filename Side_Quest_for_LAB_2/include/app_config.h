@@ -9,6 +9,10 @@
 #ifndef APP_CONFIG_H_
 #define APP_CONFIG_H_
 
+#ifndef KARAOKE_BOOT_SONG
+#define KARAOKE_BOOT_SONG           0
+#endif
+
 #define APP_NAME                    "RT-Spark Karaoke Player"
 #define APP_VERSION                 "1.0.0"
 

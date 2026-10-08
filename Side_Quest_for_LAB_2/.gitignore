@@ -1,6 +1,7 @@
 .pio/
 .vscode/
 sd_mock_tmp/
+synth_out/
 __pycache__/
 *.pyc
 *.o

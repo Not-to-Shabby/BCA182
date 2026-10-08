@@ -72,10 +72,6 @@ static void init_board_peripherals(void)
     /* 4. USER Button on PA0 (Active HIGH, Pull-down) */
     GPIOA->MODER &= ~(3U << 0);
     GPIOA->PUPDR = (GPIOA->PUPDR & ~(3U << 0)) | (2U << 0);
-
-    /* 5. AUX Button on PA1 (Active LOW, Pull-up) */
-    GPIOA->MODER &= ~(3U << 2);
-    GPIOA->PUPDR = (GPIOA->PUPDR & ~(3U << 2)) | (1U << 2);
 }
 
 static void update_status_led(bool is_playing)
@@ -210,11 +206,12 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
     static bool last_lt = false;
     static bool last_rt = false;
     static bool last_press = false;
-    static bool last_aux = false;
 
     static uint32_t up_hold_ticks = 0;
     static uint32_t dn_hold_ticks = 0;
     static uint32_t both_ud_hold_ticks = 0;
+    static uint32_t both_lr_hold_ticks = 0;
+    static uint32_t press_hold_ticks = 0;
 
     while (1) {
         bool up = ((GPIOC->IDR & (1U << 5)) == 0);
@@ -222,9 +219,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
         bool lt = ((GPIOC->IDR & (1U << 0)) == 0);
         bool rt = ((GPIOC->IDR & (1U << 4)) == 0);
         bool press = ((GPIOA->IDR & (1U << 0)) != 0);
-        bool aux = ((GPIOA->IDR & (1U << 1)) == 0);
 
-        /* 1. Simultaneous UP + DOWN Detection (Hold or Press both to enter NUMBER SELECT) */
+        /* 1. Simultaneous UP + DOWN Detection -> Enter NUMBER SELECT Mode */
         if (up && dn) {
             both_ud_hold_ticks++;
             if (both_ud_hold_ticks == 10) { /* ~200 ms debounce */
@@ -245,29 +241,84 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
             both_ud_hold_ticks = 0;
         }
 
-        /* 2. AUX Button: Toggle / Cancel */
-        if (aux && !last_aux) {
-            k_mutex_lock(&s_app.lock, K_FOREVER);
-            if (s_app.ui_mode == UI_VIEW_NUMBER_SELECT) {
-                s_app.ui_mode = UI_VIEW_PLAYING;
-                karaoke_ui_set_view(UI_VIEW_PLAYING);
-            } else if (s_app.ui_mode == UI_VIEW_PLAYING) {
-                s_app.ui_mode = UI_VIEW_SETTINGS;
-                s_app.settings_cursor = 0;
-                karaoke_ui_set_view(UI_VIEW_SETTINGS);
-            } else if (s_app.ui_mode == UI_VIEW_SETTINGS) {
-                karaoke_settings_save();
-                s_app.ui_mode = UI_VIEW_BROWSER;
-                karaoke_ui_set_view(UI_VIEW_BROWSER);
-            } else {
-                s_app.ui_mode = UI_VIEW_PLAYING;
-                karaoke_ui_set_view(UI_VIEW_PLAYING);
+        /* 2. Simultaneous LEFT + RIGHT Detection -> Enter AUDIO SETTINGS Mixer */
+        if (lt && rt) {
+            both_lr_hold_ticks++;
+            if (both_lr_hold_ticks == 10) { /* ~200 ms debounce */
+                k_mutex_lock(&s_app.lock, K_FOREVER);
+                if (s_app.ui_mode != UI_VIEW_SETTINGS) {
+                    s_app.ui_mode = UI_VIEW_SETTINGS;
+                    s_app.settings_cursor = 0;
+                    karaoke_ui_set_view(UI_VIEW_SETTINGS);
+                    printk("[Nav] Entered AUDIO SETTINGS mode!\n");
+                }
+                k_mutex_unlock(&s_app.lock);
             }
-            k_mutex_unlock(&s_app.lock);
+        } else {
+            both_lr_hold_ticks = 0;
         }
 
-        /* Handle mode-specific actions (only if not holding both UP+DOWN) */
-        if (!(up && dn)) {
+        /* 3. CENTER / USER Button (PA0): Click = Play/Pause/Action, Long-Press = Toggle Browser / Return */
+        if (press) {
+            press_hold_ticks++;
+        } else {
+            if (last_press) {
+                if (press_hold_ticks >= 20) { /* Long press >= 400 ms */
+                    k_mutex_lock(&s_app.lock, K_FOREVER);
+                    if (s_app.ui_mode == UI_VIEW_PLAYING) {
+                        s_app.ui_mode = UI_VIEW_BROWSER;
+                        karaoke_ui_set_view(UI_VIEW_BROWSER);
+                        printk("[Nav] Opened Song Browser via Long-Press OK!\n");
+                    } else if (s_app.ui_mode == UI_VIEW_SETTINGS) {
+                        karaoke_settings_save();
+                        s_app.ui_mode = UI_VIEW_PLAYING;
+                        karaoke_ui_set_view(UI_VIEW_PLAYING);
+                    } else {
+                        s_app.ui_mode = UI_VIEW_PLAYING;
+                        karaoke_ui_set_view(UI_VIEW_PLAYING);
+                    }
+                    k_mutex_unlock(&s_app.lock);
+                } else if (press_hold_ticks > 0) { /* Short click < 400 ms */
+                    k_mutex_lock(&s_app.lock, K_FOREVER);
+                    if (s_app.ui_mode == UI_VIEW_PLAYING) {
+                        midi_player_status_t status;
+                        midi_karaoke_get_status(&status);
+                        if (status.is_playing) {
+                            midi_karaoke_pause();
+                        } else {
+                            play_song(s_app.current_song_index);
+                        }
+                    } else if (s_app.ui_mode == UI_VIEW_SETTINGS) {
+                        karaoke_settings_save();
+                        s_app.ui_mode = UI_VIEW_PLAYING;
+                        karaoke_ui_set_view(UI_VIEW_PLAYING);
+                    } else if (s_app.ui_mode == UI_VIEW_BROWSER) {
+                        uint32_t total = karaoke_catalog_get_total_songs();
+                        uint32_t sel = s_app.browser_page * 5 + s_app.browser_cursor;
+                        if (sel < total) {
+                            s_app.current_song_index = sel;
+                            s_app.ui_mode = UI_VIEW_PLAYING;
+                            karaoke_ui_set_view(UI_VIEW_PLAYING);
+                            play_song(s_app.current_song_index);
+                        }
+                    } else if (s_app.ui_mode == UI_VIEW_NUMBER_SELECT) {
+                        uint32_t target_code = digits_to_code(s_app.num_digits);
+                        uint32_t found_idx = 0;
+                        if (karaoke_catalog_find_by_code(target_code, &found_idx)) {
+                            s_app.current_song_index = found_idx;
+                            s_app.ui_mode = UI_VIEW_PLAYING;
+                            karaoke_ui_set_view(UI_VIEW_PLAYING);
+                            play_song(s_app.current_song_index);
+                        }
+                    }
+                    k_mutex_unlock(&s_app.lock);
+                }
+            }
+            press_hold_ticks = 0;
+        }
+
+        /* 4. Single-Button Directional Actions (only if not holding multi-button combos) */
+        if (!(up && dn) && !(lt && rt)) {
             k_mutex_lock(&s_app.lock, K_FOREVER);
             ui_view_mode_t mode = s_app.ui_mode;
 
@@ -292,11 +343,7 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 if (up) up_hold_ticks++; else up_hold_ticks = 0;
                 if (dn) dn_hold_ticks++; else dn_hold_ticks = 0;
 
-                bool submit_search = (press && !last_press) ||
-                                     (up_hold_ticks == 25) ||  /* ~500 ms hold */
-                                     (dn_hold_ticks == 25);
-
-                if (submit_search) {
+                if (up_hold_ticks == 25 || dn_hold_ticks == 25) { /* ~500 ms hold */
                     uint32_t target_code = digits_to_code(s_app.num_digits);
                     uint32_t found_idx = 0;
                     if (karaoke_catalog_find_by_code(target_code, &found_idx)) {
@@ -342,12 +389,6 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         karaoke_settings_set_drum_gain(cur_drum <= 195 ? cur_drum + 5 : 200);
                     }
                 }
-
-                if (press && !last_press) {
-                    karaoke_settings_save();
-                    s_app.ui_mode = UI_VIEW_PLAYING;
-                    karaoke_ui_set_view(UI_VIEW_PLAYING);
-                }
             } else if (mode == UI_VIEW_BROWSER) {
                 /* Browser Mode */
                 uint32_t total = karaoke_catalog_get_total_songs();
@@ -367,15 +408,6 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     } else if (s_app.browser_page + 1 < total_pages) {
                         s_app.browser_page++;
                         s_app.browser_cursor = 0;
-                    }
-                }
-                if (press && !last_press) {
-                    uint32_t sel = s_app.browser_page * 5 + s_app.browser_cursor;
-                    if (sel < total) {
-                        s_app.current_song_index = sel;
-                        s_app.ui_mode = UI_VIEW_PLAYING;
-                        karaoke_ui_set_view(UI_VIEW_PLAYING);
-                        play_song(s_app.current_song_index);
                     }
                 }
             } else {
@@ -406,17 +438,6 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         play_song(s_app.current_song_index);
                     }
                 }
-
-                /* Play / Pause Click: PA0 */
-                if (press && !last_press) {
-                    midi_player_status_t status;
-                    midi_karaoke_get_status(&status);
-                    if (status.is_playing) {
-                        midi_karaoke_pause();
-                    } else {
-                        play_song(s_app.current_song_index);
-                    }
-                }
             }
             k_mutex_unlock(&s_app.lock);
         }
@@ -426,7 +447,6 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
         last_lt = lt;
         last_rt = rt;
         last_press = press;
-        last_aux = aux;
 
         k_msleep(BUTTON_POLL_PERIOD_MS);
     }

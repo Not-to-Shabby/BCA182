@@ -318,7 +318,7 @@ void karaoke_ui_render_browser(const song_entry_t *songs, uint8_t count,
 
     /* Footer Navigation Guide (x1=0, y1=220, x2=239, y2=239) */
     lcd_fill_rect(0, 220, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 222, "UP/DN:Sel  OK:Play", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 222, "UP/DN:Sel OK:Play HOLD:Back", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
@@ -389,7 +389,7 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
     /* 5. Footer (y: 194 to 239) */
     lcd_fill_rect(0, 194, 239, 239, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 200, "HOLD UP/DN or OK: Play", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 218, "AUX: Cancel / Return", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 218, "HOLD OK: Cancel / Return", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
@@ -453,7 +453,7 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
 
     /* 5. Footer (y: 204 to 239) */
     lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 208, "OK / AUX: Save & Return", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 208, "OK: Save & Return to Song", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 224, "Survives Reset & Shutdown", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);

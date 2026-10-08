@@ -20,7 +20,7 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
   - **Player Mode:** Real-time synchronized lyrics and VU meter playback.
   - **Browser Mode:** Paged song selection menu with instantaneous O(1) seeking directly from `SD:/songs.idx`.
   - **Number Select Mode (Direct Song Code Entry):** Press BOTH UP + DOWN simultaneously to enter 5-digit song code entry. Use LEFT/RIGHT to move digits, UP/DOWN to scroll 0-9, and HOLD UP/DOWN or click OK to play.
-  - **Audio Settings Mixer Mode:** Click AUX (`PA1`) to open the settings view. Adjust Master Volume (0-100%), Instrument / Melody Volume (20-200%), and Drum / Rhythm Volume (20-200%) using UP/DOWN to select and LEFT/RIGHT to adjust. Values auto-save and survive both reset (via STM32 RTC Backup domain) and shutdown (via `SD:/karaoke.cfg`).
+  - **Audio Settings Mixer Mode:** Press BOTH LEFT + RIGHT simultaneously to open the settings view. Adjust Master Volume (0-100%), Instrument / Melody Volume (20-200%), and Drum / Rhythm Volume (20-200%) using UP/DOWN to select and LEFT/RIGHT to adjust. Values auto-save and survive both reset (via STM32 RTC Backup domain) and shutdown (via `SD:/karaoke.cfg`). Press OK to save and return.
   - **ROM Fallback:** Operates standalone with built-in embedded tracks (Bryan Adams, John Lennon, Itchyworms - Beer) even when no MicroSD card is inserted.
 - **PC Searchable Songbook:** Generated `songbook.txt` (7.7 MB) formatted for quick searching in Windows Notepad (`Ctrl + F`). Contains both Numerical and Alphabetical directories.
 
@@ -42,10 +42,10 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
 | | I2S3 SD (TX) | PB5 | Serial Data Out (DMA1 Stream 5) |
 | **MicroSD Card** | SDIO D0 – D3, CK, CMD | PC8, PC9, PC10, PC11, PC12, PD2 | 4-bit SDIO FATFS interface |
 | **D-Pad Controls** | UP (SW2) / DOWN (SW4) | PC5 / PC1 | Previous / Next song (Active LOW) |
-| | **BOTH UP + DOWN** | PC5 + PC1 | **Enter NUMBER SELECT Mode** (Direct Song Code Entry) |
-| | LEFT (SW3) / RIGHT (SW5)| PC0 / PC4 | Volume Down / Up (Player) or Digit Select (Num Mode) |
-| | USER / CENTER (PA0) | PA0 | Play / Pause / Select / Confirm (Active HIGH) |
-| | AUX Button (PA1) | PA1 | Toggle Browser Mode $\leftrightarrow$ Player Mode / Cancel |
+| | LEFT (SW3) / RIGHT (SW5)| PC0 / PC4 | Volume Down (-5%) / Volume Up (+5%) |
+| | USER / CENTER (PA0) | PA0 | Click: Play/Pause/OK; **Hold (>=400ms): Browse Songs** |
+| | **BOTH UP + DOWN** | PC5 + PC1 | **Enter NUMBER SELECT Mode** (Direct 5-Digit Song Entry) |
+| | **BOTH LEFT + RIGHT** | PC0 + PC4 | **Enter AUDIO SETTINGS Mixer** (Inst/Drums Volume) |
 | **Status LEDs** | Blue / Red | PF11 / PF12 | Playing (Blue) / Paused (Red) |
 
 ---

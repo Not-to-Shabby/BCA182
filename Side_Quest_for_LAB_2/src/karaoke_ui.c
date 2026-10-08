@@ -269,7 +269,7 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
     /* 6. Active Voice Polyphony HUD: Differential update */
     if (active_voices != s_last_voices) {
         s_last_voices = active_voices;
-        snprintf(line_buf, sizeof(line_buf), "Voices: %2u/40  FM:44k ", active_voices);
+        snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  FM:44k ", active_voices);
         lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
     }
 

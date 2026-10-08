@@ -313,8 +313,8 @@ void test_drum_hits_are_noisy_and_tones_are_not(void)
 
 void test_polyphony_never_clips_or_crashes(void)
 {
-    for (int i = 0; i < 60; i++) {
-        play((uint8_t)(i % 8), (uint8_t)(i * 2), (uint8_t)(36 + i), 127);
+    for (int i = 0; i < 90; i++) {
+        play((uint8_t)(i % 8), (uint8_t)(i * 2), (uint8_t)(20 + i), 127);
     }
     render_ms(1500);
     int peak = 0;

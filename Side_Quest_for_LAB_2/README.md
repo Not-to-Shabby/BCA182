@@ -6,7 +6,7 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
 
 ## 1. Project Overview & Features
 
-- **Synthesizer Engine:** Embedded **40-voice** two-operator FM synthesizer at 44.1 kHz stereo. Each note has its own modulation-index envelope, so a piano starts bright and mellows as it decays. It maps all 128 General MIDI programs onto 53 patches and follows velocity, channel volume (CC7), expression (CC11), pan, sustain pedal, pitch bend with RPN range, and the mod wheel. A soft limiter replaces hard clipping. The sequencer ticks on its own thread and hands notes to the audio thread through a ring buffer. `tools/synth_bench/run.py` renders the real synth on the PC to WAV files and prints measurements.
+- **Synthesizer Engine:** Embedded **70-voice** two-operator FM synthesizer at 44.1 kHz stereo utilizing STM32F407 Core-Coupled Memory (DTCM / CCM RAM at `0x10000000`) for zero-wait-state voice rendering. Each note has its own modulation-index envelope, so a piano starts bright and mellows as it decays. It maps all 128 General MIDI programs onto 53 patches and follows velocity, channel volume (CC7), expression (CC11), pan, sustain pedal, pitch bend with RPN range, and the mod wheel. A soft limiter replaces hard clipping. The sequencer ticks on its own thread and hands notes to the audio thread through a ring buffer. `tools/synth_bench/run.py` renders the real synth on the PC to WAV files and prints measurements.
 - **General MIDI & Rhythm Kit:** Supports standard General MIDI instrument families (Pianos, Organs, Guitars, Bass, Strings, Brass, Flutes, Synths) plus full percussive rhythm kit on MIDI Channel 10 (Bass Drum, Snare, Hi-Hats, Toms, Cymbals).
 - **Karaoke Library:** Compatible with the 47,998 song database extracted from SongHub (`D:\idx\shub_extracted`).
 - **Synchronized Lyrics:** Multi-track SMF sequencer parses Meta Event `0x05` (Lyric) and `0x01` (Text) with syllabic delta-time synchronization. `[Music / Intro]` displays only before the first sung verse, with smooth verse transitions thereafter.
@@ -15,7 +15,7 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
   - Real-time rolling lyric window (Previous line, Active singing line with yellow box, and verse transitions).
   - Dual stereo peak VU meters (Green $\rightarrow$ Yellow $\rightarrow$ Red).
   - Dynamic progress bar, elapsed time, and tempo (BPM).
-  - Active voice polyphony HUD (`Voices: X/40`).
+  - Active voice polyphony HUD (`Voices: X/70`).
 - **Operating Modes:**
   - **Player Mode:** Real-time synchronized lyrics and VU meter playback.
   - **Browser Mode:** Paged song selection menu with instantaneous O(1) seeking directly from `SD:/songs.idx`.

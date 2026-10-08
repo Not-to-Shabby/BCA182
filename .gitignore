@@ -35,3 +35,9 @@ desktop.ini
 # Large datasets
 *.csv
 
+# Python cache & test artifacts
+__pycache__/
+*.pyc
+sd_mock_tmp/
+*.7z
+

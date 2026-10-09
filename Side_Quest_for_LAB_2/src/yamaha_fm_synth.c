@@ -13,6 +13,7 @@
  */
 
 #include "yamaha_fm_synth.h"
+#include "dtcm.h"
 #include <math.h>
 #include <stdbool.h>
 #include <string.h>
@@ -172,8 +173,8 @@ typedef struct {
 
 enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_PEDAL_UP, EV_CH_OFF, EV_ALL_OFF };
 
-static int16_t s_sine[SINE_SIZE];
-static float s_note_inc[128];
+static DTCM_BSS int16_t s_sine[SINE_SIZE];
+static DTCM_BSS float s_note_inc[128];
 static float s_sample_rate = 44100.0f;
 static float s_sub_sec;
 static float s_fast_rel_k;
@@ -183,16 +184,12 @@ static uint32_t s_steals;
 static uint32_t s_steals_audible;
 static volatile uint32_t s_dropped_events;
 
-#if defined(__arm__)
-static __attribute__((section(".dtcm_bss"))) fm_voice_t s_voices[FM_MAX_VOICES];
-#else
-static fm_voice_t s_voices[FM_MAX_VOICES];
-#endif
-static midi_channel_state_t s_channels[FM_MIDI_CHANNELS];
-static int32_t s_acc_l[MAX_BLOCK_FRAMES];
-static int32_t s_acc_r[MAX_BLOCK_FRAMES];
+static DTCM_BSS fm_voice_t s_voices[FM_MAX_VOICES];
+static DTCM_BSS midi_channel_state_t s_channels[FM_MIDI_CHANNELS];
+static DTCM_BSS int32_t s_acc_l[MAX_BLOCK_FRAMES];
+static DTCM_BSS int32_t s_acc_r[MAX_BLOCK_FRAMES];
 
-static synth_event_t s_events[EVENT_RING_SIZE];
+static DTCM_BSS synth_event_t s_events[EVENT_RING_SIZE];
 static volatile uint32_t s_ev_head;
 static volatile uint32_t s_ev_tail;
 

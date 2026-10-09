@@ -8,6 +8,7 @@
  */
 
 #include "midi_karaoke_parser.h"
+#include "dtcm.h"
 #include <string.h>
 #include <stdio.h>
 #include <zephyr/kernel.h>
@@ -160,11 +161,7 @@ typedef struct {
     char text[KARAOKE_MAX_LINE_CHARS + 1];
 } lyric_line_entry_t;
 
-#if defined(__arm__)
-static __attribute__((section(".dtcm_bss"))) lyric_line_entry_t s_lyric_lines[MAX_KARAOKE_LINES];
-#else
-static lyric_line_entry_t s_lyric_lines[MAX_KARAOKE_LINES];
-#endif
+static DTCM_BSS lyric_line_entry_t s_lyric_lines[MAX_KARAOKE_LINES];
 
 static uint16_t s_total_lyric_lines = 0;
 static uint16_t s_active_line_idx = 0;
@@ -345,7 +342,7 @@ static void pre_parse_karaoke_lyrics(void)
 #define MELODY_MAX_SYLLABLES    768U
 #define MELODY_MIN_HIT_PERCENT  25U
 
-static uint32_t s_syllable_ticks[MELODY_MAX_SYLLABLES];
+static DTCM_BSS uint32_t s_syllable_ticks[MELODY_MAX_SYLLABLES];
 
 static int32_t nearest_syllable(uint32_t tick, uint32_t count)
 {
@@ -405,7 +402,7 @@ static void detect_melody_channel(void)
         return;
     }
 
-    static uint8_t reached[16][MELODY_MAX_SYLLABLES / 8U];
+    static DTCM_BSS uint8_t reached[16][MELODY_MAX_SYLLABLES / 8U];
     uint32_t hits[16] = {0}, notes[16] = {0};
     memset(reached, 0, sizeof(reached));
     for (uint16_t t = 0; t < s_midi.num_tracks; t++) {

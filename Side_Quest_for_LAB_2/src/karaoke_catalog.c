@@ -9,6 +9,7 @@
  */
 
 #include "karaoke_catalog.h"
+#include "dtcm.h"
 #include "karaoke_embedded_songs.h"
 #include "sd_card_reader.h"
 #include "song_path.h"
@@ -19,7 +20,7 @@
 #include <zephyr/sys/printk.h>
 #include <ff.h>
 
-#define SD_MIDI_BUFFER_SIZE     65536
+#define SD_MIDI_BUFFER_SIZE     81920
 #define SD_ROOT                 "SD:/"
 #define INDEX_HEADER_BYTES      16U
 #define INDEX_RECORD_BYTES      96U
@@ -37,7 +38,7 @@ static uint32_t s_total_songs = 0;
 static FIL s_idx_file;
 static bool s_idx_open = false;
 static uint8_t s_sd_midi_buf[SD_MIDI_BUFFER_SIZE];
-static song_table_t s_scan_table;
+static DTCM_BSS song_table_t s_scan_table;
 static bool s_scan_full = false;
 
 /* Built-in ROM Fallback Songs */

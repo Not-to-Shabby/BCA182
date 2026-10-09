@@ -135,6 +135,20 @@ void yamaha_fm_set_effects_level(uint8_t percent);
 uint8_t yamaha_fm_get_effects_level(void);
 
 /**
+ * @brief Third operator for piano, electric piano and the string, choir, pad and synth patches
+ *        (default on). Notes that start while many voices are sounding stay two-operator, so
+ *        the extra work never lands on the busiest moments.
+ */
+void yamaha_fm_set_third_operator(bool on);
+bool yamaha_fm_get_third_operator(void);
+
+/**
+ * @brief Notes that got a third operator, and notes that could have but started while the
+ *        player was too busy.
+ */
+void yamaha_fm_get_third_operator_stats(uint32_t *started, uint32_t *skipped_busy);
+
+/**
  * @brief The compressor in front of the limiter (default on).
  */
 void yamaha_fm_set_compressor(bool on);

@@ -646,6 +646,163 @@ void test_the_master_stage_keeps_a_full_mix_under_the_ceiling(void)
     TEST_ASSERT_TRUE(peak > 8000);
 }
 
+/* ---- third operator ---- */
+
+static double side_to_mid_db(unsigned from_ms, unsigned len_ms)
+{
+    size_t a = (size_t)from_ms * RATE / 1000U;
+    size_t n = (size_t)len_ms * RATE / 1000U;
+    double m = 0.0, d = 0.0;
+
+    for (size_t i = 0; i < n; i++) {
+        double l = g_pcm[(a + i) * 2], r = g_pcm[(a + i) * 2 + 1];
+        m += ((l + r) / 2.0) * ((l + r) / 2.0);
+        d += ((l - r) / 2.0) * ((l - r) / 2.0);
+    }
+    return 10.0 * log10((d + 1e-9) / (m + 1e-9));
+}
+
+/* High-frequency energy of the left channel in a window: the second difference rises at
+ * 12 dB per octave, so the loud fundamental of the note hardly counts and the partials do. */
+static double highs(unsigned from_ms, unsigned len_ms)
+{
+    size_t a = (size_t)from_ms * RATE / 1000U;
+    size_t n = (size_t)len_ms * RATE / 1000U;
+    double e = 0.0;
+
+    for (size_t i = 2; i < n; i++) {
+        double d = (double)g_pcm[(a + i) * 2] - 2.0 * (double)g_pcm[(a + i - 1) * 2] +
+                   (double)g_pcm[(a + i - 2) * 2];
+        e += d * d;
+    }
+    return e;
+}
+
+void test_strings_with_a_third_operator_spread_across_the_stereo_field(void)
+{
+    yamaha_fm_set_third_operator(false);
+    play(0, 48, 60, 100);
+    render_ms(1500);
+    double two_op = side_to_mid_db(600, 800);
+
+    setUp();
+    yamaha_fm_set_third_operator(true);
+    play(0, 48, 60, 100);
+    render_ms(1500);
+    double three_op = side_to_mid_db(600, 800);
+
+    TEST_ASSERT_TRUE(two_op < -20.0);
+    TEST_ASSERT_TRUE(three_op > two_op + 12.0);
+}
+
+void test_the_third_operator_keeps_the_level_of_the_two_operator_voice(void)
+{
+    static const uint8_t progs[] = {48, 40, 52, 89, 62, 42, 0};
+
+    for (unsigned k = 0; k < sizeof(progs); k++) {
+        setUp();
+        yamaha_fm_set_third_operator(false);
+        play(0, progs[k], 57, 100);
+        render_ms(1400);
+        double a = rms_window(500, 600);
+
+        setUp();
+        yamaha_fm_set_third_operator(true);
+        play(0, progs[k], 57, 100);
+        render_ms(1400);
+        double b = rms_window(500, 600);
+
+        char msg[48];
+        snprintf(msg, sizeof(msg), "program %u changes level", progs[k]);
+        TEST_ASSERT_TRUE_MESSAGE(b > a * 0.7 && b < a * 1.35, msg);
+    }
+}
+
+void test_the_piano_third_operator_adds_a_bright_attack_that_fades(void)
+{
+    yamaha_fm_set_third_operator(false);
+    play(0, 0, 60, 110);
+    render_ms(1200);
+    double plain_attack = highs(0, 40);
+    double plain_late = highs(600, 400);
+
+    setUp();
+    yamaha_fm_set_third_operator(true);
+    play(0, 0, 60, 110);
+    render_ms(1200);
+    double tine_attack = highs(0, 40);
+    double tine_late = highs(600, 400);
+
+    TEST_ASSERT_TRUE(tine_attack > plain_attack * 2.0);          /* the tine: about 2.5x in the first 40 ms */
+    TEST_ASSERT_TRUE(tine_late < plain_late * 1.05);             /* and gone by the time the note has settled */
+}
+
+void test_notes_that_start_while_busy_stay_two_operator(void)
+{
+    uint32_t started, skipped;
+
+    yamaha_fm_set_third_operator(true);
+    for (int i = 0; i < THIRD_OP_MAX_VOICES + 6; i++) {
+        play(1, 16, (uint8_t)(30 + i), 80);                  /* organ: never a third operator */
+    }
+    render_ms(40);
+    yamaha_fm_get_third_operator_stats(&started, &skipped);
+    uint32_t before_started = started;
+
+    for (int i = 0; i < 4; i++) {
+        play(0, 48, (uint8_t)(60 + i), 100);                 /* strings while the player is busy */
+    }
+    render_ms(40);
+    yamaha_fm_get_third_operator_stats(&started, &skipped);
+    TEST_ASSERT_EQUAL_UINT32(before_started, started);
+    TEST_ASSERT_TRUE(skipped >= 4U);
+}
+
+void test_the_third_operator_is_used_when_the_player_is_quiet(void)
+{
+    uint32_t started, skipped;
+
+    yamaha_fm_set_third_operator(true);
+    play(0, 48, 60, 100);
+    play(0, 48, 64, 100);
+    render_ms(40);
+    yamaha_fm_get_third_operator_stats(&started, &skipped);
+    TEST_ASSERT_EQUAL_UINT32(2, started);
+    TEST_ASSERT_EQUAL_UINT32(0, skipped);
+}
+
+void test_switching_the_third_operator_off_restores_the_two_operator_sound_exactly(void)
+{
+    yamaha_fm_set_third_operator(false);
+    play(0, 48, 60, 100);
+    render_ms(600);
+    static int16_t ref[44100 * 2];
+    memcpy(ref, g_pcm, (size_t)600 * RATE / 1000U * 4U);
+    size_t keep = (size_t)600 * RATE / 1000U;
+
+    setUp();
+    yamaha_fm_set_third_operator(false);
+    play(0, 48, 60, 100);
+    render_ms(600);
+    TEST_ASSERT_EQUAL_INT16_ARRAY(ref, g_pcm, keep * 2U);
+    yamaha_fm_set_third_operator(true);
+}
+
+void test_ensemble_voices_stay_in_tune_at_both_ends_of_the_keyboard(void)
+{
+    static const uint8_t notes[] = {24, 48, 72, 84};   /* pitch_hz reads up to about 1.4 kHz */
+
+    for (unsigned k = 0; k < sizeof(notes); k++) {
+        setUp();
+        yamaha_fm_set_third_operator(true);
+        play(0, 48, notes[k], 100);
+        render_ms(1500);
+        double hz = pitch_hz(400);
+        double want = 440.0 * pow(2.0, ((double)notes[k] - 69.0) / 12.0);
+        TEST_ASSERT_FLOAT_WITHIN((float)(want * 0.02), (float)want, (float)hz);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -688,5 +845,12 @@ int main(void)
     RUN_TEST(test_effects_level_zero_removes_the_tail);
     RUN_TEST(test_chorus_send_changes_the_sound_of_a_held_note);
     RUN_TEST(test_the_master_stage_keeps_a_full_mix_under_the_ceiling);
+    RUN_TEST(test_strings_with_a_third_operator_spread_across_the_stereo_field);
+    RUN_TEST(test_the_third_operator_keeps_the_level_of_the_two_operator_voice);
+    RUN_TEST(test_the_piano_third_operator_adds_a_bright_attack_that_fades);
+    RUN_TEST(test_notes_that_start_while_busy_stay_two_operator);
+    RUN_TEST(test_the_third_operator_is_used_when_the_player_is_quiet);
+    RUN_TEST(test_switching_the_third_operator_off_restores_the_two_operator_sound_exactly);
+    RUN_TEST(test_ensemble_voices_stay_in_tune_at_both_ends_of_the_keyboard);
     return UNITY_END();
 }

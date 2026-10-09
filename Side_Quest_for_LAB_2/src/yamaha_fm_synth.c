@@ -40,6 +40,12 @@ static volatile uint16_t s_synth_drum_q8   = SYNTH_DRUM_Q8;
 static volatile uint8_t s_instrument_percent = 100;
 static volatile uint8_t s_drum_percent = 100;
 static volatile uint8_t s_melody_percent = 100;
+#ifndef THIRD_OP_DEFAULT
+#define THIRD_OP_DEFAULT true
+#endif
+static volatile bool s_third_op = THIRD_OP_DEFAULT;
+static uint32_t s_ext_started;
+static uint32_t s_ext_skipped;
 static volatile int8_t s_melody_channel = -1;
 
 void yamaha_fm_set_instrument_gain(uint8_t percent)
@@ -94,6 +100,15 @@ void yamaha_fm_set_melody_channel(int8_t channel)
 #define EVENT_LEAD_MS       MIDI_EVENT_LEAD_MS   /* events reach the synth this long before they sound */
 #define EVENT_ROUND_FRAMES  (SUB_FRAMES / 2U)
 #define MAX_BANDWIDTH_HZ    11000.0f
+#ifndef THIRD_OP_MAX_VOICES
+#define THIRD_OP_MAX_VOICES 22          /* notes starting while more voices than this sound stay two-operator */
+#endif
+/* Each channel hears both carriers, one louder than the other, with the loud one swapped between
+ * the sides. The two weights satisfy p^2 + q^2 = 1 so that a channel keeps the average power of
+ * a plain two-operator voice; the beating between the carriers is the chorus effect, and
+ * keeping q well under p keeps its nulls from reaching silence. */
+#define ENSEMBLE_P_Q10      962         /* 0.94 */
+#define ENSEMBLE_Q_Q10      350         /* 0.34 */
 
 typedef enum {
     ST_IDLE = 0,
@@ -149,6 +164,12 @@ typedef struct {
     float atk_step, dec_k, sus, rel_k;
     float vib;
     int32_t gl, gr;                 /* per-sample gain, Q15 << GAIN_Q */
+
+    /* third operator: a second, detuned carrier (ensemble) or a fast second modulator (tine) */
+    uint8_t ext;
+    uint32_t pc2;                   /* its phase */
+    float base_x;                   /* its phase increment at pitch ratio 1 */
+    float tine_idx, tine_k;         /* tine modulation index and its per-chunk decay */
 
     /* percussion voice */
     float tone_f, tone_f1, tone_fk;
@@ -291,6 +312,27 @@ static const fm_patch_t PATCHES[P_COUNT] = {
     [P_STEELDRUM]   = {1, 2,     1.8f, 0.2f, 0.30f, 0.0f, 0.001f, 0.7f, 0.00f, 0.20f, 0.40f, 0.00f, false},
     [P_SFX]         = {1, 1.5f,  1.0f, 0.5f, 0.30f, 0.3f, 0.010f, 0.3f, 0.00f, 0.20f, 0.15f, 0.00f, false},
     [P_BAGPIPE]     = {1, 1,     2.0f, 1.8f, 0.10f, 0.9f, 0.020f, 0.1f, 1.00f, 0.06f, 0.28f, 0.00f, false},
+};
+
+enum { EXT_NONE = 0, EXT_ENSEMBLE, EXT_TINE };
+
+typedef struct {
+    uint8_t kind;
+    float a, b, c;      /* ensemble: detune in cents; tine: frequency ratio, index, decay time constant */
+} ext_patch_t;
+
+/* Which patches get a third operator. Everything else, and every patch while the player is busy,
+ * stays two-operator. */
+static const ext_patch_t EXT_PATCHES[P_COUNT] = {
+    [P_PIANO]    = {EXT_TINE, 4.01f, 1.6f, 0.030f},
+    [P_BRIGHT]   = {EXT_TINE, 4.01f, 2.0f, 0.030f},
+    [P_STRINGS]  = {EXT_ENSEMBLE, 4.0f, 0.0f, 0.0f},
+    [P_VIOLIN]   = {EXT_ENSEMBLE, 3.0f, 0.0f, 0.0f},
+    [P_CELLO]    = {EXT_ENSEMBLE, 3.0f, 0.0f, 0.0f},
+    [P_CHOIR]    = {EXT_ENSEMBLE, 4.0f, 0.0f, 0.0f},
+    [P_PAD]      = {EXT_ENSEMBLE, 5.0f, 0.0f, 0.0f},
+    [P_SYN_BRASS] = {EXT_ENSEMBLE, 4.0f, 0.0f, 0.0f},
+    [P_SAW_LEAD] = {EXT_ENSEMBLE, 5.0f, 0.0f, 0.0f},
 };
 
 /* General MIDI program number -> patch. */
@@ -475,10 +517,16 @@ static fm_voice_t *alloc_voice(void)
 
 static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
 {
-    const fm_patch_t *p = &PATCHES[PROGRAM_PATCH[prog & 127U]];
+    const uint8_t pid = PROGRAM_PATCH[prog & 127U];
+    const fm_patch_t *p = &PATCHES[pid];
+    const ext_patch_t *xp = &EXT_PATCHES[pid];
+    uint32_t busy = 0;
 
     for (int i = 0; i < FM_MAX_VOICES; i++) {
         fm_voice_t *o = &s_voices[i];
+        if (o->active) {
+            busy++;
+        }
         if (o->active && !o->is_drum && o->channel == ch && o->note == note && o->key_down) {
             o->key_down = false;
             o->pedal_held = false;
@@ -532,6 +580,36 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
     {
         float tau = (p->idx_tau > s_sub_sec) ? p->idx_tau : s_sub_sec;
         v->idx_k = expf(-s_sub_sec / tau);
+    }
+
+    if (xp->kind != EXT_NONE && !p->additive) {
+        if (!s_third_op || busy > THIRD_OP_MAX_VOICES) {
+            s_ext_skipped++;
+        } else if (xp->kind == EXT_ENSEMBLE) {
+            float d = exp2f(xp->a / 1200.0f);
+            v->ext = EXT_ENSEMBLE;
+            v->base_x = v->base_c * d;
+            v->base_c = v->base_c / d;
+            v->pc2 = v->pc;
+            s_ext_started++;
+        } else {
+            float f_t = f0 * xp->a;
+            float idx = xp->b;
+            float tscale = 1.0f;
+
+            if (f_t * (idx + 1.0f) > MAX_BANDWIDTH_HZ) {
+                float room = MAX_BANDWIDTH_HZ / f_t - 1.0f;
+                tscale = (room > 0.0f) ? room / idx : 0.0f;
+            }
+            if (f_t <= 0.45f * s_sample_rate && tscale > 0.0f) {
+                float tt = (xp->c > s_sub_sec) ? xp->c : s_sub_sec;
+                v->ext = EXT_TINE;
+                v->base_x = s_note_inc[note] * xp->a;
+                v->tine_idx = idx * tscale * (0.4f + 0.6f * ((float)vel / 127.0f));
+                v->tine_k = expf(-s_sub_sec / tt);
+                s_ext_started++;
+            }
+        }
     }
     {
         float atk = (p->attack > s_sub_sec) ? p->attack : s_sub_sec;
@@ -816,6 +894,8 @@ void yamaha_fm_synth_init(uint32_t sample_rate)
     s_anchor_valid = false;
     s_flush_seen = s_flush_request;
     s_dropped_events = 0;
+    s_ext_started = 0;
+    s_ext_skipped = 0;
     s_late_events = 0;
     s_ring_peak = 0;
     s_min_margin = INT32_MAX;
@@ -964,6 +1044,26 @@ void yamaha_fm_song_time_event(uint32_t song_us)
     s_stamp_valid = true;
 }
 
+void yamaha_fm_set_third_operator(bool on)
+{
+    s_third_op = on;
+}
+
+bool yamaha_fm_get_third_operator(void)
+{
+    return s_third_op;
+}
+
+void yamaha_fm_get_third_operator_stats(uint32_t *started, uint32_t *skipped_busy)
+{
+    if (started != NULL) {
+        *started = s_ext_started;
+    }
+    if (skipped_busy != NULL) {
+        *skipped_busy = s_ext_skipped;
+    }
+}
+
 void yamaha_fm_set_effects_level(uint8_t percent)
 {
     dsp_set_effects_level(percent);
@@ -1094,7 +1194,51 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     int32_t y = v->fb_prev;
     uint32_t fbu = v->fb_u;
 
-    if (v->additive) {
+    if (v->ext == EXT_ENSEMBLE) {
+        /* Two carriers a few cents apart share one modulator; the first leans left and the
+         * second right, so the beating spreads across the stereo field. */
+        uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
+        uint32_t inc_2 = float_to_phase(v->base_x * r);
+        uint32_t pc2 = v->pc2;
+        int32_t lg_a = (gl * ENSEMBLE_P_Q10) >> 10;
+        int32_t lg_b = (gl * ENSEMBLE_Q_Q10) >> 10;
+        int32_t rg_a = (gr * ENSEMBLE_Q_Q10) >> 10;
+        int32_t rg_b = (gr * ENSEMBLE_P_Q10) >> 10;
+
+        for (size_t i = 0; i < len; i++) {
+            int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+            y = m;
+            pm += inc_m;
+            uint32_t x = (uint32_t)m * iu;
+            int32_t c1 = s_sine[(pc + x) >> SINE_SHIFT];
+            int32_t c2 = s_sine[(pc2 + x) >> SINE_SHIFT];
+            pc += inc_c;
+            pc2 += inc_2;
+            bl[i] += (c1 * lg_a + c2 * lg_b) >> 15;
+            br[i] += (c1 * rg_a + c2 * rg_b) >> 15;
+        }
+        v->pc2 = pc2;
+    } else if (v->ext == EXT_TINE) {
+        /* A second, fast-dying modulator on the same carrier: the hammer or tine at the start. */
+        uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
+        uint32_t it = float_to_phase(v->tine_idx * MOD_IDX_UNIT);
+        uint32_t inc_t = float_to_phase(v->base_x * r);
+        uint32_t pt = v->pc2;
+
+        v->tine_idx *= v->tine_k;
+        for (size_t i = 0; i < len; i++) {
+            int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+            y = m;
+            pm += inc_m;
+            int32_t t = s_sine[pt >> SINE_SHIFT];
+            pt += inc_t;
+            int32_t cs = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
+            pc += inc_c;
+            bl[i] += (cs * gl) >> 15;
+            br[i] += (cs * gr) >> 15;
+        }
+        v->pc2 = pt;
+    } else if (v->additive) {
         int32_t mix = (int32_t)(v->idx * 32767.0f);
         if (fbu == 0) {
             for (size_t i = 0; i < len; i++) {

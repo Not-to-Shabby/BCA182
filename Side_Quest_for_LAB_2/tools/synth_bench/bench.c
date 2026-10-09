@@ -69,6 +69,7 @@ static void render_frames(int16_t *dst, size_t frames)
 
 /* ---- song mode: wrap the synth callbacks to observe what the sequencer does ---- */
 
+static int g_third = 1;
 static bool g_held[FM_MIDI_CHANNELS][128];
 static long g_steals, g_note_ons;
 
@@ -116,6 +117,7 @@ static int run_song(const char *path, double seconds, const char *out, int volum
         .song_clock = yamaha_fm_song_time_anchor, .event_time = yamaha_fm_song_time_event,
     };
     yamaha_fm_synth_init(RATE);
+    yamaha_fm_set_third_operator(g_third != 0);
     midi_karaoke_init(&cb);
     if (!midi_karaoke_load_memory(midi, (uint32_t)len)) { fprintf(stderr, "bad MIDI\n"); return 1; }
     midi_karaoke_play();
@@ -159,6 +161,7 @@ static int run_song(const char *path, double seconds, const char *out, int volum
 static int run_note(int program, int note, int vel, double seconds, const char *out, int channel)
 {
     yamaha_fm_synth_init(RATE);
+    yamaha_fm_set_third_operator(g_third != 0);
     yamaha_fm_program_change((uint8_t)channel, (uint8_t)program);
     size_t frames = (size_t)(seconds * RATE);
     int16_t *pcm = calloc(frames * 2, sizeof(int16_t));
@@ -175,6 +178,10 @@ static int run_note(int program, int note, int vel, double seconds, const char *
 
 int main(int argc, char **argv)
 {
+    /* THIRD_OP=0 in the environment renders with the two-operator voices, for A/B comparison. */
+    const char *t3 = getenv("THIRD_OP");
+    g_third = !(t3 != NULL && t3[0] == '0');
+
     if (argc >= 7 && strcmp(argv[1], "note") == 0) {
         return run_note(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atof(argv[5]), argv[6],
                         argc >= 8 ? atoi(argv[7]) : 0);

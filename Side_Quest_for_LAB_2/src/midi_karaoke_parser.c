@@ -21,6 +21,7 @@
 #define STREAM_WINDOW_BYTES 512U    /* per-track read-ahead: one SD sector */
 #define SCAN_WINDOW_BYTES   2048U   /* load-time scans walk one track at a time */
 #define EVENT_TEXT_BYTES    64U
+#define PENDING_LYRICS      32U
 
 typedef struct {
     uint8_t *win;
@@ -36,16 +37,16 @@ typedef struct {
 } track_cursor_t;
 
 typedef enum {
-    EV_END,             /* no more bytes, or the source failed */
-    EV_END_OF_TRACK,
-    EV_NOTE_OFF,
-    EV_NOTE_ON,
-    EV_CC,
-    EV_PROGRAM,
-    EV_BEND,
-    EV_TEMPO,
-    EV_TEXT,
-    EV_SKIP
+    MEV_END,             /* no more bytes, or the source failed */
+    MEV_END_OF_TRACK,
+    MEV_NOTE_OFF,
+    MEV_NOTE_ON,
+    MEV_CC,
+    MEV_PROGRAM,
+    MEV_BEND,
+    MEV_TEMPO,
+    MEV_TEXT,
+    MEV_SKIP
 } ev_kind_t;
 
 typedef struct {
@@ -65,10 +66,20 @@ static struct {
     uint32_t tempo_us;
     uint32_t current_tick;
     uint32_t elapsed_us_accum;
+    uint32_t tick_us;               /* song time at the start of current_tick, in microseconds */
     uint32_t elapsed_ms;
     uint32_t total_duration_ms;
     bool is_playing;
     bool is_paused;
+
+    /* Lyrics wait here until the notes they belong to are heard (MIDI_EVENT_LEAD_MS later) */
+    struct {
+        char text[48];
+        bool is_newline;
+        uint32_t due_us;
+    } pending[PENDING_LYRICS];
+    uint8_t pend_head;
+    uint8_t pend_count;
 
     /* Lyric buffering */
     karaoke_lyric_msg_t lyric_queue[KARAOKE_LYRIC_QUEUE_SIZE];
@@ -231,6 +242,22 @@ static uint32_t cursor_vlq(track_cursor_t *c)
     return val;
 }
 
+/* Copies @p n bytes of the track into @p dst and ends the string; false if the track runs out. */
+static bool cursor_read_text(track_cursor_t *c, char *dst, uint32_t n)
+{
+    uint8_t b = 0;
+
+    dst[0] = '\0';
+    for (uint32_t i = 0; i < n; i++) {
+        if (!cursor_next(c, &b)) {
+            return false;
+        }
+        dst[i] = (char)b;
+        dst[i + 1U] = '\0';
+    }
+    return true;
+}
+
 /* Decodes the event that follows an already-read delta time. Meta text keeps its first
  * EVENT_TEXT_BYTES - 1 bytes; everything else is skipped without being read. */
 static ev_kind_t read_event(track_cursor_t *c, midi_event_t *ev)
@@ -248,7 +275,7 @@ static ev_kind_t read_event(track_cursor_t *c, midi_event_t *ev)
     ev->text_len = 0;
     ev->text[0] = '\0';
     if (!cursor_next(c, &b)) {
-        return EV_END;
+        return MEV_END;
     }
     if ((b & 0x80U) != 0U) {
         status = b;
@@ -260,14 +287,14 @@ static ev_kind_t read_event(track_cursor_t *c, midi_event_t *ev)
         d1 = b;
         have_d1 = true;
         if (status == 0U) {
-            return EV_END;
+            return MEV_END;
         }
     }
 
     if (status == 0xFFU) {
         uint8_t mt;
         if (!cursor_next(c, &mt)) {
-            return EV_END;
+            return MEV_END;
         }
         uint32_t ml = cursor_vlq(c);
         if (ml > c->length - c->pos) {
@@ -275,61 +302,57 @@ static ev_kind_t read_event(track_cursor_t *c, midi_event_t *ev)
         }
         if (mt == 0x2FU) {
             cursor_skip(c, ml);
-            return EV_END_OF_TRACK;
+            return MEV_END_OF_TRACK;
         }
         if (mt == 0x51U && ml >= 3U) {
             uint8_t t[3];
             for (int i = 0; i < 3; i++) {
                 if (!cursor_next(c, &t[i])) {
-                    return EV_END;
+                    return MEV_END;
                 }
             }
             ev->tempo = ((uint32_t)t[0] << 16) | ((uint32_t)t[1] << 8) | (uint32_t)t[2];
             cursor_skip(c, ml - 3U);
-            return EV_TEMPO;
+            return MEV_TEMPO;
         }
         if (mt == 0x01U || mt == 0x05U) {
             uint32_t n = (ml < EVENT_TEXT_BYTES - 1U) ? ml : EVENT_TEXT_BYTES - 1U;
-            for (uint32_t i = 0; i < n; i++) {
-                if (!cursor_next(c, &b)) {
-                    return EV_END;
-                }
-                ev->text[i] = (char)b;
+            if (!cursor_read_text(c, ev->text, n)) {
+                return MEV_END;
             }
-            ev->text[n] = '\0';
             ev->text_len = (uint8_t)n;
             cursor_skip(c, ml - n);
-            return EV_TEXT;
+            return MEV_TEXT;
         }
         cursor_skip(c, ml);
-        return EV_SKIP;
+        return MEV_SKIP;
     }
     if (status == 0xF0U || status == 0xF7U) {
         cursor_skip(c, cursor_vlq(c));
-        return EV_SKIP;
+        return MEV_SKIP;
     }
     if (status >= 0xF0U) {
-        return EV_SKIP;
+        return MEV_SKIP;
     }
 
     uint8_t cmd = (uint8_t)(status & 0xF0U);
 
     if (!have_d1 && !cursor_next(c, &d1)) {
-        return EV_END;
+        return MEV_END;
     }
     if (cmd != 0xC0U && cmd != 0xD0U && !cursor_next(c, &d2)) {
-        return EV_END;
+        return MEV_END;
     }
     ev->chan = (uint8_t)(status & 0x0FU);
     ev->d1 = d1;
     ev->d2 = d2;
     switch (cmd) {
-    case 0x80U: return EV_NOTE_OFF;
-    case 0x90U: return EV_NOTE_ON;
-    case 0xB0U: return EV_CC;
-    case 0xC0U: return EV_PROGRAM;
-    case 0xE0U: return EV_BEND;
-    default:    return EV_SKIP;
+    case 0x80U: return MEV_NOTE_OFF;
+    case 0x90U: return MEV_NOTE_ON;
+    case 0xB0U: return MEV_CC;
+    case 0xC0U: return MEV_PROGRAM;
+    case 0xE0U: return MEV_BEND;
+    default:    return MEV_SKIP;
     }
 }
 
@@ -350,6 +373,9 @@ void midi_karaoke_init(const midi_synth_callbacks_t *synth_cb)
     s_midi.tempo_us = 500000; /* 120 BPM */
     s_midi.current_tick = 0;
     s_midi.elapsed_us_accum = 0;
+    s_midi.tick_us = 0;
+    s_midi.pend_head = 0;
+    s_midi.pend_count = 0;
     s_midi.elapsed_ms = 0;
     s_midi.total_duration_ms = 0;
     s_midi.is_playing = false;
@@ -383,7 +409,7 @@ static DTCM_BSS lyric_line_entry_t s_lyric_lines[MAX_KARAOKE_LINES];
 static uint16_t s_total_lyric_lines = 0;
 static uint16_t s_active_line_idx = 0;
 static int s_lyric_track = -1;
-static int8_t s_melody_channel = -1;
+static int8_t s_detected_melody = -1;
 
 static void push_lyric_event(const char *text, bool is_newline)
 {
@@ -439,6 +465,38 @@ static void push_lyric_event(const char *text, bool is_newline)
     }
 }
 
+/* Lyrics are shown when the sound of their syllable reaches the speaker, not when the
+ * sequencer reads them: the synthesizer plays notes MIDI_EVENT_LEAD_MS after they are read. */
+static void queue_lyric(const char *text, bool is_newline)
+{
+    if (s_midi.pend_count >= PENDING_LYRICS) {
+        push_lyric_event(s_midi.pending[s_midi.pend_head].text, s_midi.pending[s_midi.pend_head].is_newline);
+        s_midi.pend_head = (uint8_t)((s_midi.pend_head + 1U) % PENDING_LYRICS);
+        s_midi.pend_count--;
+    }
+    uint8_t slot = (uint8_t)((s_midi.pend_head + s_midi.pend_count) % PENDING_LYRICS);
+
+    snprintf(s_midi.pending[slot].text, sizeof(s_midi.pending[slot].text), "%s", text);
+    s_midi.pending[slot].is_newline = is_newline;
+    s_midi.pending[slot].due_us = s_midi.tick_us + (uint32_t)MIDI_EVENT_LEAD_MS * 1000U;
+    s_midi.pend_count++;
+}
+
+/* Shows every waiting lyric that is due at song time @p now_us (all of them when @p all). */
+static void release_lyrics(uint32_t now_us, bool all)
+{
+    while (s_midi.pend_count > 0U) {
+        uint8_t h = s_midi.pend_head;
+
+        if (!all && (int32_t)(now_us - s_midi.pending[h].due_us) < 0) {
+            break;
+        }
+        push_lyric_event(s_midi.pending[h].text, s_midi.pending[h].is_newline);
+        s_midi.pend_head = (uint8_t)((h + 1U) % PENDING_LYRICS);
+        s_midi.pend_count--;
+    }
+}
+
 #define MELODY_TICK_WINDOW      12U
 #define MELODY_MAX_SYLLABLES    768U
 #define MELODY_MIN_HIT_PERCENT  25U
@@ -457,7 +515,7 @@ static void scan_cursor_init(track_cursor_t *c, uint16_t t)
 
 static bool is_lyric_text(ev_kind_t k, const midi_event_t *ev)
 {
-    return k == EV_TEXT && ev->text_len > 0U && ev->text[0] != '@';
+    return k == MEV_TEXT && ev->text_len > 0U && ev->text[0] != '@';
 }
 
 /*
@@ -479,7 +537,7 @@ static void pre_parse_karaoke_lyrics(void)
         for (;;) {
             (void)cursor_vlq(&c);
             ev_kind_t k = read_event(&c, &ev);
-            if (k == EV_END || k == EV_END_OF_TRACK) {
+            if (k == MEV_END || k == MEV_END_OF_TRACK) {
                 break;
             }
             if (is_lyric_text(k, &ev)) {
@@ -505,7 +563,7 @@ static void pre_parse_karaoke_lyrics(void)
     for (;;) {
         cur_tick += cursor_vlq(&c);
         ev_kind_t k = read_event(&c, &ev);
-        if (k == EV_END || k == EV_END_OF_TRACK) {
+        if (k == MEV_END || k == MEV_END_OF_TRACK) {
             break;
         }
         if (!is_lyric_text(k, &ev)) {
@@ -602,10 +660,10 @@ static void detect_melody_channel(void)
         for (;;) {
             tick += cursor_vlq(&c);
             ev_kind_t k = read_event(&c, &ev);
-            if (k == EV_END || k == EV_END_OF_TRACK) {
+            if (k == MEV_END || k == MEV_END_OF_TRACK) {
                 break;
             }
-            if (k != EV_NOTE_ON || ev.d2 == 0U) {
+            if (k != MEV_NOTE_ON || ev.d2 == 0U) {
                 continue;
             }
             uint8_t ch = ev.chan;
@@ -626,14 +684,14 @@ static void detect_melody_channel(void)
         uint64_t score = ((uint64_t)hits[ch] * hits[ch] * 1000U) / notes[ch];
         if (score > best_score) {
             best_score = score;
-            s_melody_channel = (int8_t)ch;
+            s_detected_melody = (int8_t)ch;
         }
     }
 }
 
 int8_t midi_karaoke_get_melody_channel(void)
 {
-    return s_melody_channel;
+    return s_detected_melody;
 }
 
 void midi_karaoke_get_stream_stats(midi_stream_stats_t *out)
@@ -716,6 +774,9 @@ bool midi_karaoke_load(const midi_source_t *src)
 
     s_midi.current_tick = 0;
     s_midi.elapsed_us_accum = 0;
+    s_midi.tick_us = 0;
+    s_midi.pend_head = 0;
+    s_midi.pend_count = 0;
     s_midi.elapsed_ms = 0;
     s_midi.tempo_us = 500000; /* 120 BPM */
 
@@ -731,7 +792,7 @@ bool midi_karaoke_load(const midi_source_t *src)
     s_total_lyric_lines = 0;
     s_active_line_idx = 0;
     s_lyric_track = -1;
-    s_melody_channel = -1;
+    s_detected_melody = -1;
     s_nsyl = 0;
 
     k_mutex_unlock(&s_midi.lock);
@@ -784,6 +845,7 @@ void midi_karaoke_stop(void)
     k_mutex_lock(&s_midi.lock, K_FOREVER);
     s_midi.is_playing = false;
     s_midi.is_paused = false;
+    s_midi.pend_count = 0;
     k_timer_stop(&s_midi_timer);
     if (s_midi.synth.all_notes_off) {
         s_midi.synth.all_notes_off();
@@ -792,21 +854,28 @@ void midi_karaoke_stop(void)
 }
 
 /* Process next event on a track */
+static void announce_event_time(void)
+{
+    if (s_midi.synth.event_time) {
+        s_midi.synth.event_time(s_midi.tick_us);
+    }
+}
+
 static void process_track_event(track_cursor_t *cur)
 {
     midi_event_t ev;
 
     switch (read_event(cur, &ev)) {
-    case EV_END:
-    case EV_END_OF_TRACK:
+    case MEV_END:
+    case MEV_END_OF_TRACK:
         cur->is_finished = true;
         return;
-    case EV_TEMPO:
+    case MEV_TEMPO:
         if (ev.tempo > 0) {
             s_midi.tempo_us = ev.tempo;
         }
         break;
-    case EV_TEXT: {
+    case MEV_TEXT: {
         char buf[48];
         uint32_t n = ev.text_len < sizeof(buf) - 1U ? ev.text_len : sizeof(buf) - 1U;
         bool is_nl = false;
@@ -821,32 +890,43 @@ static void process_track_event(track_cursor_t *cur)
             }
         }
         if (buf[0] != '\0' || is_nl) {
-            push_lyric_event(buf, is_nl);
+            queue_lyric(buf, is_nl);
         }
         break;
     }
-    case EV_NOTE_OFF:
-        if (s_midi.synth.note_off) s_midi.synth.note_off(ev.chan, ev.d1, ev.d2);
+    case MEV_NOTE_OFF:
+        if (s_midi.synth.note_off) {
+            announce_event_time();
+            s_midi.synth.note_off(ev.chan, ev.d1, ev.d2);
+        }
         break;
-    case EV_NOTE_ON:
+    case MEV_NOTE_ON:
+        announce_event_time();
         if (ev.d2 == 0) {
             if (s_midi.synth.note_off) s_midi.synth.note_off(ev.chan, ev.d1, 0);
         } else if (s_midi.synth.note_on) {
             s_midi.synth.note_on(ev.chan, ev.d1, ev.d2);
         }
         break;
-    case EV_CC:
-        if (s_midi.synth.control_change) s_midi.synth.control_change(ev.chan, ev.d1, ev.d2);
+    case MEV_CC:
+        if (s_midi.synth.control_change) {
+            announce_event_time();
+            s_midi.synth.control_change(ev.chan, ev.d1, ev.d2);
+        }
         break;
-    case EV_PROGRAM:
-        if (s_midi.synth.program_change) s_midi.synth.program_change(ev.chan, ev.d1);
+    case MEV_PROGRAM:
+        if (s_midi.synth.program_change) {
+            announce_event_time();
+            s_midi.synth.program_change(ev.chan, ev.d1);
+        }
         break;
-    case EV_BEND:
+    case MEV_BEND:
         if (s_midi.synth.pitch_bend) {
+            announce_event_time();
             s_midi.synth.pitch_bend(ev.chan, (uint16_t)(((uint16_t)ev.d2 << 7) | (uint16_t)ev.d1));
         }
         break;
-    case EV_SKIP:
+    case MEV_SKIP:
     default:
         break;
     }
@@ -876,6 +956,11 @@ void midi_karaoke_tick(uint32_t elapsed_us)
     s_midi.elapsed_us_accum += elapsed_us;
     s_midi.elapsed_ms += elapsed_us / 1000;
 
+    /* Song time now: whole ticks played plus the part of the next one that has passed. */
+    if (s_midi.synth.song_clock) {
+        s_midi.synth.song_clock(s_midi.tick_us + s_midi.elapsed_us_accum);
+    }
+
     /* Microseconds per MIDI tick: us_per_tick = tempo_us / ppqn */
     uint32_t us_per_tick = s_midi.tempo_us / s_midi.ppqn;
     if (us_per_tick == 0) us_per_tick = 1;
@@ -883,6 +968,7 @@ void midi_karaoke_tick(uint32_t elapsed_us)
     while (s_midi.elapsed_us_accum >= us_per_tick) {
         s_midi.elapsed_us_accum -= us_per_tick;
         s_midi.current_tick++;
+        s_midi.tick_us += us_per_tick;
 
         /* Find all tracks that have an event due at or before current_tick */
         bool any_active = false;
@@ -899,6 +985,7 @@ void midi_karaoke_tick(uint32_t elapsed_us)
         if (!any_active) {
             /* Playback finished */
             s_midi.is_playing = false;
+            release_lyrics(0, true);
             if (s_midi.synth.all_notes_off) {
                 s_midi.synth.all_notes_off();
             }
@@ -906,6 +993,7 @@ void midi_karaoke_tick(uint32_t elapsed_us)
             break;
         }
     }
+    release_lyrics(s_midi.tick_us + s_midi.elapsed_us_accum, false);
 
     k_mutex_unlock(&s_midi.lock);
 }

@@ -116,6 +116,46 @@ uint8_t yamaha_fm_get_melody_gain(void);
 void yamaha_fm_set_melody_channel(int8_t channel);
 
 /**
+ * @brief Song clock, from the sequencer (see midi_synth_callbacks_t::song_clock).
+ */
+void yamaha_fm_song_time_anchor(uint32_t song_us);
+
+/**
+ * @brief Song time of the event the sequencer is about to deliver (see
+ *        midi_synth_callbacks_t::event_time). The next note, controller, program or bend call
+ *        is queued for the audio frame that matches this time.
+ */
+void yamaha_fm_song_time_event(uint32_t song_us);
+
+/**
+ * @brief Level of the reverb and chorus in percent (0 to 200, default 100). 0 switches both off
+ *        and saves their processing time.
+ */
+void yamaha_fm_set_effects_level(uint8_t percent);
+uint8_t yamaha_fm_get_effects_level(void);
+
+/**
+ * @brief The compressor in front of the limiter (default on).
+ */
+void yamaha_fm_set_compressor(bool on);
+bool yamaha_fm_get_compressor(void);
+
+/**
+ * @brief Timing and level counters of the event path and the master stage.
+ */
+typedef struct {
+    uint32_t late_events;           /**< events that reached the audio thread after their frame */
+    int32_t min_margin_frames;      /**< smallest lead an event had when it was queued (frames) */
+    uint32_t ring_peak;             /**< most events ever waiting at once */
+    uint32_t dropped_events;        /**< events lost because the ring was full */
+    uint32_t limiter_samples;       /**< samples for which the limiter was pulling gain down */
+    int max_reduction_db10;         /**< deepest compressor gain reduction since the last call, 0.1 dB */
+} yamaha_fm_event_stats_t;
+
+void yamaha_fm_get_event_stats(yamaha_fm_event_stats_t *out);
+void yamaha_fm_reset_event_stats(void);
+
+/**
  * @brief Silence all notes immediately.
  */
 void yamaha_fm_all_notes_off(void);

@@ -14,6 +14,7 @@
 
 #include "yamaha_fm_synth.h"
 #include "dtcm.h"
+#include "synth_dsp.h"
 #include <math.h>
 #include <stdbool.h>
 #include <string.h>
@@ -23,8 +24,8 @@
 #define SINE_BITS           10U
 #define SINE_SIZE           (1U << SINE_BITS)
 #define SINE_SHIFT          (32U - SINE_BITS)
-#define SUB_FRAMES          32U             /* envelope / pitch / gain update interval */
-#define MAX_BLOCK_FRAMES    128U
+#define SUB_FRAMES          DSP_BLOCK_FRAMES /* envelope / pitch / gain update interval, and the
+                                               * granularity at which events and effects run */
 #define PHASE_PER_RAD       683565275.6f    /* 2^32 / (2 pi) */
 #define MOD_IDX_UNIT        20860.76f       /* phase per radian per unit of a Q15 modulator */
 #ifndef SYNTH_MASTER_Q8
@@ -88,8 +89,10 @@ void yamaha_fm_set_melody_channel(int8_t channel)
 #define SILENCE             0.0015f         /* about -56 dB */
 #define VIBRATO_HZ          5.5f
 #define SEMITONE_LINEAR     0.05776f        /* 2^(1/12) - 1, small-signal pitch change per semitone */
-#define EVENT_RING_SIZE     128U
-#define LIMIT_KNEE          20000
+#define EVENT_RING_SIZE     512U            /* power of two: the counters below run freely */
+#define EVENT_RING_MASK     (EVENT_RING_SIZE - 1U)
+#define EVENT_LEAD_MS       MIDI_EVENT_LEAD_MS   /* events reach the synth this long before they sound */
+#define EVENT_ROUND_FRAMES  (SUB_FRAMES / 2U)
 #define MAX_BANDWIDTH_HZ    11000.0f
 
 typedef enum {
@@ -157,7 +160,7 @@ typedef struct {
 } fm_voice_t;
 
 typedef struct {
-    uint8_t program, volume, expression, pan, mod;
+    uint8_t program, volume, expression, pan, mod, reverb, chorus;
     uint8_t rpn_msb, rpn_lsb, bend_semis, bend_cents;
     int16_t bend;
     bool pedal;
@@ -167,11 +170,11 @@ typedef struct {
 } midi_channel_state_t;
 
 typedef struct {
-    uint8_t type_ch;                /* high nibble event type, low nibble channel */
-    uint8_t note, vel, prog;
+    uint32_t frame;                 /* audio frame at which the event takes effect */
+    uint8_t type, ch, a, b;
 } synth_event_t;
 
-enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_PEDAL_UP, EV_CH_OFF, EV_ALL_OFF };
+enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_CC, EV_PROGRAM, EV_BEND, EV_ALL_OFF };
 
 static DTCM_BSS int16_t s_sine[SINE_SIZE];
 static DTCM_BSS float s_note_inc[128];
@@ -186,12 +189,36 @@ static volatile uint32_t s_dropped_events;
 
 static DTCM_BSS fm_voice_t s_voices[FM_MAX_VOICES];
 static DTCM_BSS midi_channel_state_t s_channels[FM_MIDI_CHANNELS];
-static DTCM_BSS int32_t s_acc_l[MAX_BLOCK_FRAMES];
-static DTCM_BSS int32_t s_acc_r[MAX_BLOCK_FRAMES];
+static DTCM_BSS int32_t s_acc_l[SUB_FRAMES];
+static DTCM_BSS int32_t s_acc_r[SUB_FRAMES];
+static DTCM_BSS int32_t s_rev[SUB_FRAMES];
+static DTCM_BSS int32_t s_cho[SUB_FRAMES];
+static DTCM_BSS int32_t s_bus_l[FM_MIDI_CHANNELS][SUB_FRAMES];   /* one dry bus per MIDI channel */
+static DTCM_BSS int32_t s_bus_r[FM_MIDI_CHANNELS][SUB_FRAMES];
 
 static DTCM_BSS synth_event_t s_events[EVENT_RING_SIZE];
-static volatile uint32_t s_ev_head;
-static volatile uint32_t s_ev_tail;
+static volatile uint32_t s_ev_head;     /* next slot to write; counts events ever pushed */
+static volatile uint32_t s_ev_tail;     /* next slot to read */
+static volatile uint32_t s_flush_to;    /* ring position the last yamaha_fm_synth_reset() saw */
+static volatile uint32_t s_frame_clock;         /* frames rendered since init */
+static volatile uint32_t s_stamp;               /* frame for the next event the sequencer pushes */
+static volatile bool s_stamp_valid;
+static volatile uint32_t s_flush_request;
+static uint32_t s_flush_seen;
+static uint32_t s_rate_u = 44100U;
+static uint32_t s_lead_frames;
+static uint32_t s_late_events;
+static uint32_t s_ring_peak;
+static int32_t s_min_margin = INT32_MAX;
+
+/* Song time -> audio frame map: song time s_map_us sounds at frame s_map_frame. */
+static bool s_anchor_valid;
+static uint32_t s_map_us;
+static uint32_t s_map_frame;
+
+#define LAST_CC_SLOTS   6
+static uint8_t s_last_cc[FM_MIDI_CHANNELS][LAST_CC_SLOTS];
+static uint16_t s_last_bend[FM_MIDI_CHANNELS];
 
 /* -------------------------------------------------------------------------- */
 /* Instrument patches                                                         */
@@ -350,21 +377,39 @@ static drum_recipe_t make_recipe(uint8_t note)
 /* -------------------------------------------------------------------------- */
 /* Event ring                                                                 */
 /* -------------------------------------------------------------------------- */
-static void push_event(uint8_t type, uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
+static bool push_event(uint8_t type, uint8_t ch, uint8_t a, uint8_t b)
 {
     unsigned int key = irq_lock();
-    uint32_t next = (s_ev_head + 1U) % EVENT_RING_SIZE;
+    bool ok = ((uint32_t)(s_ev_head - s_ev_tail) < EVENT_RING_SIZE);
 
-    if (next == s_ev_tail) {
+    if (!ok) {
         s_dropped_events++;
     } else {
-        s_events[s_ev_head].type_ch = (uint8_t)((type << 4) | (ch & 0x0FU));
-        s_events[s_ev_head].note = note;
-        s_events[s_ev_head].vel = vel;
-        s_events[s_ev_head].prog = prog;
-        s_ev_head = next;
+        synth_event_t *e = &s_events[s_ev_head & EVENT_RING_MASK];
+        uint32_t frame = 0;
+
+        if (s_stamp_valid) {
+            frame = (s_stamp != 0U) ? s_stamp : 1U;
+            int32_t margin = (int32_t)(frame - s_frame_clock);
+            if (margin < s_min_margin) {
+                s_min_margin = margin;
+            }
+        }
+        s_stamp_valid = false;
+        e->frame = frame;
+        e->type = type;
+        e->ch = ch;
+        e->a = a;
+        e->b = b;
+        s_ev_head++;
+
+        uint32_t used = s_ev_head - s_ev_tail;
+        if (used > s_ring_peak) {
+            s_ring_peak = used;
+        }
     }
     irq_unlock(key);
+    return ok;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -581,6 +626,8 @@ static void reset_channels(void)
         c->bend_semis = 2;
         c->pan_cached = 255;
         c->gain_prev = -1.0f;
+        c->reverb = 40;                 /* General MIDI default send levels */
+        c->chorus = 0;
     }
 }
 
@@ -592,116 +639,17 @@ static void reset_state(void)
     s_lfo_phase = 0.0f;
 }
 
-static void apply_event(const synth_event_t *e)
+static void channel_voices_off(uint8_t ch)
 {
-    uint8_t type = (uint8_t)(e->type_ch >> 4);
-    uint8_t ch = (uint8_t)(e->type_ch & 0x0FU);
-
-    switch (type) {
-    case EV_NOTE_ON:
-        if (ch == FM_DRUM_CHANNEL) {
-            drum_note_on(e->note, e->vel);
-        } else {
-            fm_note_on(ch, e->note, e->vel, e->prog);
-        }
-        break;
-    case EV_NOTE_OFF:
-        apply_note_off(ch, e->note);
-        break;
-    case EV_PEDAL_UP:
-        apply_pedal_up(ch);
-        break;
-    case EV_CH_OFF:
-        for (int i = 0; i < FM_MAX_VOICES; i++) {
-            if (s_voices[i].channel == ch) {
-                voice_fast_release(&s_voices[i]);
-            }
-        }
-        break;
-    case EV_ALL_OFF:
-        for (int i = 0; i < FM_MAX_VOICES; i++) {
+    for (int i = 0; i < FM_MAX_VOICES; i++) {
+        if (s_voices[i].channel == ch) {
             voice_fast_release(&s_voices[i]);
         }
-        break;
-    default:
-        break;
     }
 }
 
-static void drain_events(void)
+static void apply_cc(uint8_t channel, uint8_t control, uint8_t value)
 {
-    while (s_ev_tail != s_ev_head) {
-        synth_event_t e = s_events[s_ev_tail];
-        s_ev_tail = (s_ev_tail + 1U) % EVENT_RING_SIZE;
-        apply_event(&e);
-    }
-}
-
-/* -------------------------------------------------------------------------- */
-/* Public control interface (any context)                                     */
-/* -------------------------------------------------------------------------- */
-void yamaha_fm_synth_init(uint32_t sample_rate)
-{
-    s_sample_rate = (sample_rate > 0U) ? (float)sample_rate : 44100.0f;
-    s_sub_sec = (float)SUB_FRAMES / s_sample_rate;
-    s_fast_rel_k = expf(-s_sub_sec / 0.006f);
-
-    for (unsigned i = 0; i < SINE_SIZE; i++) {
-        s_sine[i] = (int16_t)lrintf(sinf(2.0f * 3.14159265f * (float)i / (float)SINE_SIZE) * 32767.0f);
-    }
-    for (int n = 0; n < 128; n++) {
-        float freq = 440.0f * exp2f(((float)n - 69.0f) / 12.0f);
-        s_note_inc[n] = freq * 4294967296.0f / s_sample_rate;
-    }
-
-    s_ev_head = 0;
-    s_ev_tail = 0;
-    s_dropped_events = 0;
-    s_steals = 0;
-    s_steals_audible = 0;
-    reset_state();
-}
-
-void yamaha_fm_synth_reset(void)
-{
-    /* Call while the sequencer is not delivering events (between songs). */
-    reset_channels();
-    push_event(EV_ALL_OFF, 0, 0, 0, 0);
-}
-
-void yamaha_fm_note_on(uint8_t channel, uint8_t note, uint8_t velocity)
-{
-    if (channel >= FM_MIDI_CHANNELS || note >= 128U) {
-        return;
-    }
-    if (velocity == 0U) {
-        yamaha_fm_note_off(channel, note, 0);
-        return;
-    }
-    push_event(EV_NOTE_ON, channel, note, velocity, s_channels[channel].program);
-}
-
-void yamaha_fm_note_off(uint8_t channel, uint8_t note, uint8_t velocity)
-{
-    ARG_UNUSED(velocity);
-    if (channel >= FM_MIDI_CHANNELS || note >= 128U || channel == FM_DRUM_CHANNEL) {
-        return;
-    }
-    push_event(EV_NOTE_OFF, channel, note, 0, 0);
-}
-
-void yamaha_fm_program_change(uint8_t channel, uint8_t program)
-{
-    if (channel < FM_MIDI_CHANNELS) {
-        s_channels[channel].program = (uint8_t)(program & 127U);
-    }
-}
-
-void yamaha_fm_control_change(uint8_t channel, uint8_t control, uint8_t value)
-{
-    if (channel >= FM_MIDI_CHANNELS) {
-        return;
-    }
     midi_channel_state_t *c = &s_channels[channel];
 
     switch (control) {
@@ -730,11 +678,17 @@ void yamaha_fm_control_change(uint8_t channel, uint8_t control, uint8_t value)
     case 64: {
         bool down = (value >= 64U);
         if (c->pedal && !down) {
-            push_event(EV_PEDAL_UP, channel, 0, 0, 0);
+            apply_pedal_up(channel);
         }
         c->pedal = down;
         break;
     }
+    case 91:
+        c->reverb = value;
+        break;
+    case 93:
+        c->chorus = value;
+        break;
     case 98:
     case 99:
         c->rpn_msb = 127;
@@ -748,11 +702,11 @@ void yamaha_fm_control_change(uint8_t channel, uint8_t control, uint8_t value)
         break;
     case 120:
     case 123:
-        push_event(EV_CH_OFF, channel, 0, 0, 0);
+        channel_voices_off(channel);
         break;
     case 121:
         if (c->pedal) {
-            push_event(EV_PEDAL_UP, channel, 0, 0, 0);
+            apply_pedal_up(channel);
         }
         c->pedal = false;
         c->expression = 127;
@@ -766,16 +720,288 @@ void yamaha_fm_control_change(uint8_t channel, uint8_t control, uint8_t value)
     }
 }
 
-void yamaha_fm_pitch_bend(uint8_t channel, uint16_t bend)
+static void apply_event(const synth_event_t *e)
+{
+    uint8_t ch = e->ch;
+
+    switch (e->type) {
+    case EV_NOTE_ON:
+        if (ch == FM_DRUM_CHANNEL) {
+            drum_note_on(e->a, e->b);
+        } else {
+            fm_note_on(ch, e->a, e->b, s_channels[ch].program);
+        }
+        break;
+    case EV_NOTE_OFF:
+        apply_note_off(ch, e->a);
+        break;
+    case EV_CC:
+        apply_cc(ch, e->a, e->b);
+        break;
+    case EV_PROGRAM:
+        s_channels[ch].program = (uint8_t)(e->a & 127U);
+        break;
+    case EV_BEND:
+        s_channels[ch].bend = (int16_t)((int)(e->a | (e->b << 7)) - 8192);
+        break;
+    case EV_ALL_OFF:
+        for (int i = 0; i < FM_MAX_VOICES; i++) {
+            voice_fast_release(&s_voices[i]);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* Applies, in order, every queued event whose frame has come. An event without a frame (0)
+ * is due at once. The first event that is not due yet holds back all that follow it, so the
+ * order the sequencer produced is never changed, only stretched. */
+static void drain_events(uint32_t limit)
+{
+    while (s_ev_tail != s_ev_head) {
+        synth_event_t e = s_events[s_ev_tail & EVENT_RING_MASK];
+
+        if (e.frame != 0U && (int32_t)(e.frame - limit) > 0) {
+            break;
+        }
+        s_ev_tail++;
+        if (e.frame != 0U && (int32_t)(s_frame_clock - e.frame) > (int32_t)(2U * SUB_FRAMES)) {
+            s_late_events++;
+        }
+        apply_event(&e);
+    }
+}
+
+/* Frames in @p us microseconds (signed, a few hundred milliseconds at most). */
+static int32_t us_to_frames(int32_t us)
+{
+    float f = (float)us * ((float)s_rate_u * 1e-6f);
+
+    return (int32_t)(f + ((f >= 0.0f) ? 0.5f : -0.5f));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Public control interface (any context)                                     */
+/* -------------------------------------------------------------------------- */
+static void reset_send_memory(void)
+{
+    memset(s_last_cc, 0xFF, sizeof(s_last_cc));
+    for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
+        s_last_bend[ch] = 0xFFFFU;
+    }
+}
+
+void yamaha_fm_synth_init(uint32_t sample_rate)
+{
+    s_rate_u = (sample_rate > 0U) ? sample_rate : 44100U;
+    s_sample_rate = (float)s_rate_u;
+    s_sub_sec = (float)SUB_FRAMES / s_sample_rate;
+    s_fast_rel_k = expf(-s_sub_sec / 0.006f);
+    s_lead_frames = s_rate_u * EVENT_LEAD_MS / 1000U;
+
+    for (unsigned i = 0; i < SINE_SIZE; i++) {
+        s_sine[i] = (int16_t)lrintf(sinf(2.0f * 3.14159265f * (float)i / (float)SINE_SIZE) * 32767.0f);
+    }
+    for (int n = 0; n < 128; n++) {
+        float freq = 440.0f * exp2f(((float)n - 69.0f) / 12.0f);
+        s_note_inc[n] = freq * 4294967296.0f / s_sample_rate;
+    }
+
+    s_ev_head = 0;
+    s_ev_tail = 0;
+    s_flush_to = 0;
+    s_frame_clock = 0;
+    s_stamp_valid = false;
+    s_anchor_valid = false;
+    s_flush_seen = s_flush_request;
+    s_dropped_events = 0;
+    s_late_events = 0;
+    s_ring_peak = 0;
+    s_min_margin = INT32_MAX;
+    s_steals = 0;
+    s_steals_audible = 0;
+    reset_send_memory();
+    dsp_init(s_sample_rate);
+    reset_state();
+}
+
+void yamaha_fm_synth_reset(void)
+{
+    /* Call while the sequencer is not delivering events (between songs). The audio thread drops
+     * whatever is still queued and lets the voices die away. */
+    unsigned int key = irq_lock();
+
+    reset_channels();
+    reset_send_memory();
+    s_anchor_valid = false;
+    s_stamp_valid = false;
+    s_flush_to = s_ev_head;
+    s_flush_request++;
+    irq_unlock(key);
+}
+
+void yamaha_fm_note_on(uint8_t channel, uint8_t note, uint8_t velocity)
+{
+    if (channel >= FM_MIDI_CHANNELS || note >= 128U) {
+        s_stamp_valid = false;
+        return;
+    }
+    if (velocity == 0U) {
+        yamaha_fm_note_off(channel, note, 0);
+        return;
+    }
+    push_event(EV_NOTE_ON, channel, note, velocity);
+}
+
+void yamaha_fm_note_off(uint8_t channel, uint8_t note, uint8_t velocity)
+{
+    ARG_UNUSED(velocity);
+    if (channel >= FM_MIDI_CHANNELS || note >= 128U || channel == FM_DRUM_CHANNEL) {
+        s_stamp_valid = false;
+        return;
+    }
+    push_event(EV_NOTE_OFF, channel, note, 0);
+}
+
+void yamaha_fm_program_change(uint8_t channel, uint8_t program)
 {
     if (channel < FM_MIDI_CHANNELS) {
-        s_channels[channel].bend = (int16_t)((int)(bend & 0x3FFFU) - 8192);
+        push_event(EV_PROGRAM, channel, (uint8_t)(program & 127U), 0);
+    } else {
+        s_stamp_valid = false;
+    }
+}
+
+/* Slot in s_last_cc for the continuous controllers that songs repeat by the thousand. */
+static int cc_slot(uint8_t control)
+{
+    switch (control) {
+    case 1:  return 0;
+    case 7:  return 1;
+    case 10: return 2;
+    case 11: return 3;
+    case 91: return 4;
+    case 93: return 5;
+    default: return -1;
+    }
+}
+
+void yamaha_fm_control_change(uint8_t channel, uint8_t control, uint8_t value)
+{
+    if (channel >= FM_MIDI_CHANNELS) {
+        s_stamp_valid = false;
+        return;
+    }
+    value &= 127U;
+
+    if (control == 121U) {
+        memset(s_last_cc[channel], 0xFF, sizeof(s_last_cc[channel]));
+    }
+    int slot = cc_slot(control);
+    if (slot >= 0 && s_last_cc[channel][slot] == value) {
+        s_stamp_valid = false;      /* same value again: nothing to do, keep the ring free */
+        return;
+    }
+    if (push_event(EV_CC, channel, control, value) && slot >= 0) {
+        s_last_cc[channel][slot] = value;
+    }
+}
+
+void yamaha_fm_pitch_bend(uint8_t channel, uint16_t bend)
+{
+    if (channel >= FM_MIDI_CHANNELS) {
+        s_stamp_valid = false;
+        return;
+    }
+    bend &= 0x3FFFU;
+    if (s_last_bend[channel] == bend) {
+        s_stamp_valid = false;
+        return;
+    }
+    if (push_event(EV_BEND, channel, (uint8_t)(bend & 0x7FU), (uint8_t)(bend >> 7))) {
+        s_last_bend[channel] = bend;
     }
 }
 
 void yamaha_fm_all_notes_off(void)
 {
-    push_event(EV_ALL_OFF, 0, 0, 0, 0);
+    push_event(EV_ALL_OFF, 0, 0, 0);
+}
+
+/* The sequencer reports where the song clock stands each time it wakes. The map from song time
+ * to audio frame is nudged toward "now plus the lead" a sixty-fourth of the error at a time, so
+ * a late or early wake-up of the sequencer thread barely moves it, while the difference between
+ * the song clock and the audio clock (the I2S rate is not exactly 44100) is followed. */
+void yamaha_fm_song_time_anchor(uint32_t song_us)
+{
+    uint32_t target = s_frame_clock + s_lead_frames;
+
+    if (!s_anchor_valid) {
+        s_map_us = song_us;
+        s_map_frame = target;
+        s_anchor_valid = true;
+        return;
+    }
+    uint32_t predicted = s_map_frame + (uint32_t)us_to_frames((int32_t)(song_us - s_map_us));
+    int32_t err = (int32_t)(target - predicted);
+
+    if (err > (int32_t)(s_rate_u / 50U) || err < -(int32_t)(s_rate_u / 50U)) {
+        s_map_frame = target;           /* resumed after a pause, or far off: start over */
+    } else {
+        s_map_frame = predicted + (uint32_t)(err / 64);
+    }
+    s_map_us = song_us;
+}
+
+void yamaha_fm_song_time_event(uint32_t song_us)
+{
+    if (!s_anchor_valid) {
+        s_stamp_valid = false;
+        return;
+    }
+    s_stamp = s_map_frame + (uint32_t)us_to_frames((int32_t)(song_us - s_map_us));
+    s_stamp_valid = true;
+}
+
+void yamaha_fm_set_effects_level(uint8_t percent)
+{
+    dsp_set_effects_level(percent);
+}
+
+uint8_t yamaha_fm_get_effects_level(void)
+{
+    return dsp_get_effects_level();
+}
+
+void yamaha_fm_set_compressor(bool on)
+{
+    dsp_set_compressor(on);
+}
+
+bool yamaha_fm_get_compressor(void)
+{
+    return dsp_get_compressor();
+}
+
+void yamaha_fm_get_event_stats(yamaha_fm_event_stats_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    out->late_events = s_late_events;
+    out->min_margin_frames = s_min_margin;
+    out->ring_peak = s_ring_peak;
+    out->dropped_events = s_dropped_events;
+    out->limiter_samples = dsp_get_limiter_samples();
+    out->max_reduction_db10 = dsp_take_reduction_db10();
+}
+
+void yamaha_fm_reset_event_stats(void)
+{
+    s_late_events = 0;
+    s_ring_peak = 0;
+    s_min_margin = INT32_MAX;
 }
 
 uint8_t yamaha_fm_get_active_voice_count(void)
@@ -840,8 +1066,8 @@ static void env_step(fm_voice_t *v)
     }
 }
 
-static void render_fm_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain, float ratio,
-                          float lfo, const midi_channel_state_t *c)
+static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
+                          float lfo, const midi_channel_state_t *c, int32_t *bl, int32_t *br)
 {
     env_step(v);
     if (!v->active) {
@@ -876,8 +1102,8 @@ static void render_fm_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain, 
                 pm += inc_m;
                 int32_t cs = s_sine[pc >> SINE_SHIFT] + ((m * mix) >> 15);
                 pc += inc_c;
-                s_acc_l[off + i] += (cs * gl) >> 15;
-                s_acc_r[off + i] += (cs * gr) >> 15;
+                bl[i] += (cs * gl) >> 15;
+                br[i] += (cs * gr) >> 15;
             }
         } else {
             for (size_t i = 0; i < len; i++) {
@@ -886,8 +1112,8 @@ static void render_fm_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain, 
                 pm += inc_m;
                 int32_t cs = s_sine[pc >> SINE_SHIFT] + ((m * mix) >> 15);
                 pc += inc_c;
-                s_acc_l[off + i] += (cs * gl) >> 15;
-                s_acc_r[off + i] += (cs * gr) >> 15;
+                bl[i] += (cs * gl) >> 15;
+                br[i] += (cs * gr) >> 15;
             }
         }
     } else {
@@ -898,8 +1124,8 @@ static void render_fm_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain, 
                 pm += inc_m;
                 int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
                 pc += inc_c;
-                s_acc_l[off + i] += (cs * gl) >> 15;
-                s_acc_r[off + i] += (cs * gr) >> 15;
+                bl[i] += (cs * gl) >> 15;
+                br[i] += (cs * gr) >> 15;
             }
         } else {
             for (size_t i = 0; i < len; i++) {
@@ -908,8 +1134,8 @@ static void render_fm_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain, 
                 pm += inc_m;
                 int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
                 pc += inc_c;
-                s_acc_l[off + i] += (cs * gl) >> 15;
-                s_acc_r[off + i] += (cs * gr) >> 15;
+                bl[i] += (cs * gl) >> 15;
+                br[i] += (cs * gr) >> 15;
             }
         }
     }
@@ -921,8 +1147,8 @@ static void render_fm_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain, 
     v->gr = gr1;
 }
 
-static void render_drum_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain,
-                            const midi_channel_state_t *c)
+static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
+                            const midi_channel_state_t *c, int32_t *bl, int32_t *br)
 {
     v->tone_f = v->tone_f1 + (v->tone_f - v->tone_f1) * v->tone_fk;
     float ta = v->tone_amp * v->tone_lvl * v->vel_gain;
@@ -959,8 +1185,8 @@ static void render_drum_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain
         int32_t tone = s_sine[pc >> SINE_SHIFT];
         pc += inc;
         int32_t o = ((tone * tq) >> 15) + ((nz * nq) >> 15);
-        s_acc_l[off + i] += (o * pl) >> 15;
-        s_acc_r[off + i] += (o * pr) >> 15;
+        bl[i] += (o * pl) >> 15;
+        br[i] += (o * pr) >> 15;
     }
 
     v->pc = pc;
@@ -968,96 +1194,121 @@ static void render_drum_sub(fm_voice_t *v, size_t off, size_t len, float ch_gain
     v->noise_prev = prev;
 }
 
-static inline int16_t soft_limit(int32_t x)
-{
-    const int32_t range = 32767 - LIMIT_KNEE;
-    int32_t a = (x < 0) ? -x : x;
+#define GAIN_SLEW   0.4f        /* share of the gap to a new channel gain closed per block */
 
-    if (a > LIMIT_KNEE) {
-        int32_t d = a - LIMIT_KNEE;
-        if (d > 131072) {
-            d = 131072;
-        }
-        a = LIMIT_KNEE + (range * d) / (d + range);
-    }
-    return (int16_t)((x < 0) ? -a : a);
-}
-
-static void render_block(int16_t *out, size_t frames)
+static void render_chunk(int16_t *out, size_t frames)
 {
-    float ch_target[FM_MIDI_CHANNELS];
+    float ch_gain[FM_MIDI_CHANNELS];
     float ch_ratio[FM_MIDI_CHANNELS];
-    unsigned subs = (unsigned)((frames + SUB_FRAMES - 1U) / SUB_FRAMES);
+    uint32_t dirty = 0;
 
-    memset(s_acc_l, 0, frames * sizeof(int32_t));
-    memset(s_acc_r, 0, frames * sizeof(int32_t));
+    if (s_flush_request != s_flush_seen) {
+        /* A song change: drop what the old song left in the ring, but not events the new
+         * song may already have pushed behind the reset. */
+        s_flush_seen = s_flush_request;
+        if ((int32_t)(s_flush_to - s_ev_tail) > 0) {
+            s_ev_tail = s_flush_to;
+        }
+        for (int i = 0; i < FM_MAX_VOICES; i++) {
+            voice_fast_release(&s_voices[i]);
+        }
+    }
+    drain_events(s_frame_clock + EVENT_ROUND_FRAMES);
 
     for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
         midi_channel_state_t *c = &s_channels[ch];
         float v = (float)c->volume / 127.0f;
         float e = (float)c->expression / 127.0f;
-        ch_target[ch] = v * v * e * e;
+        float target = v * v * e * e;
+
         if (ch == s_melody_channel) {
-            ch_target[ch] *= (float)s_melody_percent * 0.01f;
+            target *= (float)s_melody_percent * 0.01f;
         }
         if (c->gain_prev < 0.0f) {
-            c->gain_prev = ch_target[ch];
+            c->gain_prev = target;
+        } else {
+            c->gain_prev += (target - c->gain_prev) * GAIN_SLEW;
         }
+        ch_gain[ch] = c->gain_prev;
+
         if (c->pan != c->pan_cached) {
             float angle = ((float)c->pan / 127.0f) * 1.5707963f;
             c->pan_l = cosf(angle);
             c->pan_r = sinf(angle);
             c->pan_cached = c->pan;
         }
+        if (c->bend != 0) {
+            float range = (float)c->bend_semis + (float)c->bend_cents * 0.01f;
+            ch_ratio[ch] = exp2f(((float)c->bend / 8192.0f) * range / 12.0f);
+        } else {
+            ch_ratio[ch] = 1.0f;
+        }
     }
 
-    for (unsigned s = 0; s < subs; s++) {
-        size_t off = (size_t)s * SUB_FRAMES;
-        size_t len = frames - off;
-        float frac = (float)(s + 1U) / (float)subs;
+    s_lfo_phase += VIBRATO_HZ * s_sub_sec;
+    if (s_lfo_phase >= 1.0f) {
+        s_lfo_phase -= 1.0f;
+    }
+    float lfo = (float)s_sine[(uint32_t)(s_lfo_phase * 4294967296.0f) >> SINE_SHIFT] / 32767.0f;
 
-        if (len > SUB_FRAMES) {
-            len = SUB_FRAMES;
+    memset(s_acc_l, 0, frames * sizeof(int32_t));
+    memset(s_acc_r, 0, frames * sizeof(int32_t));
+    bool fx_on = dsp_effects_active();
+    if (fx_on) {
+        memset(s_rev, 0, frames * sizeof(int32_t));
+        memset(s_cho, 0, frames * sizeof(int32_t));
+    }
+
+    for (int i = 0; i < FM_MAX_VOICES; i++) {
+        fm_voice_t *v = &s_voices[i];
+        if (!v->active) {
+            continue;
         }
-        s_lfo_phase += VIBRATO_HZ * s_sub_sec;
-        if (s_lfo_phase >= 1.0f) {
-            s_lfo_phase -= 1.0f;
+        uint8_t ch = v->channel;
+        const midi_channel_state_t *c = &s_channels[ch];
+
+        if ((dirty & (1U << ch)) == 0U) {
+            memset(s_bus_l[ch], 0, frames * sizeof(int32_t));
+            memset(s_bus_r[ch], 0, frames * sizeof(int32_t));
+            dirty |= 1U << ch;
         }
-        float lfo = (float)s_sine[(uint32_t)(s_lfo_phase * 4294967296.0f) >> SINE_SHIFT] / 32767.0f;
-
-        for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
-            const midi_channel_state_t *c = &s_channels[ch];
-            if (c->bend != 0) {
-                float range = (float)c->bend_semis + (float)c->bend_cents * 0.01f;
-                ch_ratio[ch] = exp2f(((float)c->bend / 8192.0f) * range / 12.0f);
-            } else {
-                ch_ratio[ch] = 1.0f;
-            }
-        }
-
-        for (int i = 0; i < FM_MAX_VOICES; i++) {
-            fm_voice_t *v = &s_voices[i];
-            if (!v->active) {
-                continue;
-            }
-            const midi_channel_state_t *c = &s_channels[v->channel];
-            float g = c->gain_prev + (ch_target[v->channel] - c->gain_prev) * frac;
-
-            if (v->is_drum) {
-                render_drum_sub(v, off, len, g, c);
-            } else {
-                render_fm_sub(v, off, len, g, ch_ratio[v->channel], lfo, c);
-            }
+        if (v->is_drum) {
+            render_drum_sub(v, frames, ch_gain[ch], c, s_bus_l[ch], s_bus_r[ch]);
+        } else {
+            render_fm_sub(v, frames, ch_gain[ch], ch_ratio[ch], lfo, c, s_bus_l[ch], s_bus_r[ch]);
         }
     }
 
     for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
-        s_channels[ch].gain_prev = ch_target[ch];
+        if ((dirty & (1U << ch)) == 0U) {
+            continue;
+        }
+        const int32_t *bl = s_bus_l[ch];
+        const int32_t *br = s_bus_r[ch];
+        int32_t rs = fx_on ? ((int32_t)s_channels[ch].reverb * 2048) / 127 : 0;
+        int32_t cs = fx_on ? ((int32_t)s_channels[ch].chorus * 2048) / 127 : 0;
+
+        for (size_t i = 0; i < frames; i++) {
+            s_acc_l[i] += bl[i];
+            s_acc_r[i] += br[i];
+        }
+        if (rs > 0) {
+            for (size_t i = 0; i < frames; i++) {
+                s_rev[i] += (int32_t)(((int64_t)(bl[i] + br[i]) * rs) >> 12);
+            }
+        }
+        if (cs > 0) {
+            for (size_t i = 0; i < frames; i++) {
+                s_cho[i] += (int32_t)(((int64_t)(bl[i] + br[i]) * cs) >> 12);
+            }
+        }
     }
-    for (size_t i = 0; i < frames; i++) {
-        out[i * 2U] = soft_limit((s_acc_l[i] * s_synth_master_q8) >> 8);
-        out[i * 2U + 1U] = soft_limit((s_acc_r[i] * s_synth_master_q8) >> 8);
+
+    if (fx_on) {
+        dsp_effects_process(s_rev, s_cho, s_acc_l, s_acc_r, frames);
     }
+    dsp_master_process(s_acc_l, s_acc_r, out, frames, s_synth_master_q8);
+    s_frame_clock += (uint32_t)frames;
 }
 
 void yamaha_fm_synth_render(int16_t *buffer, size_t num_samples)
@@ -1065,17 +1316,16 @@ void yamaha_fm_synth_render(int16_t *buffer, size_t num_samples)
     if (!buffer || num_samples == 0) {
         return;
     }
-    drain_events();
 
     size_t frames = num_samples / 2U;
     size_t done = 0;
 
     while (done < frames) {
         size_t n = frames - done;
-        if (n > MAX_BLOCK_FRAMES) {
-            n = MAX_BLOCK_FRAMES;
+        if (n > SUB_FRAMES) {
+            n = SUB_FRAMES;
         }
-        render_block(buffer + done * 2U, n);
+        render_chunk(buffer + done * 2U, n);
         done += n;
     }
 }
@@ -1086,7 +1336,9 @@ static const midi_synth_callbacks_t s_synth_callbacks = {
     .program_change = yamaha_fm_program_change,
     .control_change = yamaha_fm_control_change,
     .pitch_bend = yamaha_fm_pitch_bend,
-    .all_notes_off = yamaha_fm_all_notes_off
+    .all_notes_off = yamaha_fm_all_notes_off,
+    .song_clock = yamaha_fm_song_time_anchor,
+    .event_time = yamaha_fm_song_time_event
 };
 
 const midi_synth_callbacks_t *yamaha_fm_get_callbacks(void)

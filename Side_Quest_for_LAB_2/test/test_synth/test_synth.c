@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../src/synth_dsp.c"
 #include "../../src/yamaha_fm_synth.c"
 
 #define RATE        44100
@@ -24,6 +25,7 @@ static size_t g_frames;
 void setUp(void)
 {
     yamaha_fm_synth_init(RATE);
+    yamaha_fm_set_effects_level(0);     /* these tests measure the dry voices; effects have their own */
     g_frames = 0;
     memset(g_pcm, 0, sizeof(g_pcm));
 }
@@ -393,7 +395,7 @@ void test_channel_notes_off_only_touches_that_channel(void)
 
 void test_overflowing_the_event_ring_drops_events_without_harm(void)
 {
-    for (int i = 0; i < 400; i++) {
+    for (int i = 0; i < 1200; i++) {
         yamaha_fm_note_on(0, (uint8_t)(40 + (i % 40)), 100);
     }
     TEST_ASSERT_TRUE(yamaha_fm_get_dropped_events() > 0);
@@ -491,6 +493,159 @@ void test_melody_gain_is_clamped_and_drum_channel_is_refused(void)
     TEST_ASSERT_EQUAL_INT8(3, s_melody_channel);
 }
 
+/* ---- timestamped events, sends, flush ---- */
+
+void test_a_stamped_event_sounds_at_its_frame(void)
+{
+    /* The anchor maps song time 0 to "now + lead"; an event at song time 100 ms must then start
+     * 100 ms after that, to within one render chunk. */
+    yamaha_fm_song_time_anchor(0);
+    yamaha_fm_song_time_event(100000);
+    yamaha_fm_note_on(9, 37, 110);
+    render_ms(400);
+
+    size_t first = 0;
+    for (size_t i = 0; i < g_frames; i++) {
+        if (abs(g_pcm[i * 2]) > 300) {
+            first = i;
+            break;
+        }
+    }
+    size_t want = (size_t)RATE * MIDI_EVENT_LEAD_MS / 1000U + (size_t)RATE / 10U;
+    TEST_ASSERT_TRUE(first + 3U * SUB_FRAMES >= want);
+    TEST_ASSERT_TRUE(first <= want + 3U * SUB_FRAMES);
+}
+
+void test_events_keep_their_order_when_stamps_differ(void)
+{
+    yamaha_fm_program_change(0, 16);                     /* organ: sounds until released */
+    yamaha_fm_song_time_anchor(0);
+    yamaha_fm_song_time_event(50000);
+    yamaha_fm_note_on(0, 60, 100);
+    yamaha_fm_song_time_event(250000);
+    yamaha_fm_note_off(0, 60, 0);
+    render_ms(150);
+    TEST_ASSERT_TRUE(rms_window(110, 30) > 300.0);       /* sounding between the two stamps */
+    render_ms(500);
+    TEST_ASSERT_TRUE(rms_window(600, 40) < 30.0);        /* released after the second one */
+}
+
+void test_a_song_change_drops_events_still_waiting_in_the_ring(void)
+{
+    yamaha_fm_song_time_anchor(0);
+    yamaha_fm_song_time_event(500000);
+    yamaha_fm_note_on(0, 60, 100);
+    yamaha_fm_synth_reset();
+    render_ms(900);
+    TEST_ASSERT_TRUE(rms_window(600, 100) < 5.0);
+}
+
+void test_events_pushed_after_a_reset_survive_it(void)
+{
+    yamaha_fm_synth_reset();
+    play(0, 16, 60, 100);
+    render_ms(200);
+    TEST_ASSERT_TRUE(rms_window(100, 50) > 300.0);
+}
+
+void test_an_unstamped_event_is_applied_at_once(void)
+{
+    play(0, 16, 60, 100);
+    render_ms(100);
+    TEST_ASSERT_TRUE(rms_window(20, 40) > 300.0);
+}
+
+void test_repeating_the_same_controller_value_does_not_fill_the_ring(void)
+{
+    yamaha_fm_control_change(0, 11, 100);
+    yamaha_fm_control_change(0, 7, 90);
+    yamaha_fm_pitch_bend(0, 8192);
+    render_ms(30);
+    yamaha_fm_reset_event_stats();
+    for (int i = 0; i < 1000; i++) {
+        yamaha_fm_control_change(0, 11, 100);
+        yamaha_fm_control_change(0, 7, 90);
+        yamaha_fm_pitch_bend(0, 8192);
+    }
+    yamaha_fm_event_stats_t st;
+    yamaha_fm_get_event_stats(&st);
+    TEST_ASSERT_TRUE(st.ring_peak <= 3U);
+    TEST_ASSERT_EQUAL_UINT32(0, st.dropped_events);
+}
+
+void test_a_controller_reset_lets_the_same_value_through_again(void)
+{
+    yamaha_fm_control_change(0, 11, 20);
+    yamaha_fm_control_change(0, 121, 0);
+    yamaha_fm_control_change(0, 11, 20);
+    render_ms(30);
+    TEST_ASSERT_EQUAL_UINT8(20, s_channels[0].expression);
+}
+
+void test_reverb_send_leaves_a_tail_and_no_send_leaves_none(void)
+{
+    yamaha_fm_set_effects_level(100);
+    yamaha_fm_control_change(0, 91, 127);
+    play(0, 16, 60, 100);
+    render_ms(300);
+    yamaha_fm_note_off(0, 60, 0);
+    render_ms(900);
+    double wet = rms_window(700, 100);
+
+    setUp();
+    yamaha_fm_set_effects_level(100);
+    yamaha_fm_control_change(0, 91, 0);
+    play(0, 16, 60, 100);
+    render_ms(300);
+    yamaha_fm_note_off(0, 60, 0);
+    render_ms(900);
+    double dry = rms_window(700, 100);
+
+    TEST_ASSERT_TRUE(wet > 40.0);
+    TEST_ASSERT_TRUE(dry < 3.0);
+}
+
+void test_effects_level_zero_removes_the_tail(void)
+{
+    yamaha_fm_set_effects_level(0);
+    yamaha_fm_control_change(0, 91, 127);
+    play(0, 16, 60, 100);
+    render_ms(300);
+    yamaha_fm_note_off(0, 60, 0);
+    render_ms(900);
+    TEST_ASSERT_TRUE(rms_window(700, 100) < 3.0);
+}
+
+void test_chorus_send_changes_the_sound_of_a_held_note(void)
+{
+    yamaha_fm_set_effects_level(100);
+    yamaha_fm_control_change(0, 93, 127);
+    play(0, 48, 60, 100);
+    render_ms(1500);
+    double sum = 0.0;
+    size_t a = RATE;
+    for (size_t i = 0; i < 20000; i++) {
+        double d = (double)g_pcm[(a + i) * 2] - (double)g_pcm[(a + i) * 2 + 1];
+        sum += d * d;
+    }
+    TEST_ASSERT_TRUE(sqrt(sum / 20000.0) > 30.0);     /* the sides differ; a centered dry note gives 0 */
+}
+
+void test_the_master_stage_keeps_a_full_mix_under_the_ceiling(void)
+{
+    for (int i = 0; i < 70; i++) {
+        play((uint8_t)(i % 8), (uint8_t)(i * 2), (uint8_t)(30 + i), 127);
+    }
+    render_ms(2500);
+    int peak = 0;
+    for (size_t i = 0; i < g_frames * 2; i++) {
+        int a = abs(g_pcm[i]);
+        peak = a > peak ? a : peak;
+    }
+    TEST_ASSERT_TRUE(peak <= (int)(DSP_CEILING * 32767.0f) + 1);
+    TEST_ASSERT_TRUE(peak > 8000);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -522,5 +677,16 @@ int main(void)
     RUN_TEST(test_melody_gain_scales_only_the_chosen_channel);
     RUN_TEST(test_melody_gain_does_nothing_without_a_melody_channel);
     RUN_TEST(test_melody_gain_is_clamped_and_drum_channel_is_refused);
+    RUN_TEST(test_a_stamped_event_sounds_at_its_frame);
+    RUN_TEST(test_events_keep_their_order_when_stamps_differ);
+    RUN_TEST(test_a_song_change_drops_events_still_waiting_in_the_ring);
+    RUN_TEST(test_events_pushed_after_a_reset_survive_it);
+    RUN_TEST(test_an_unstamped_event_is_applied_at_once);
+    RUN_TEST(test_repeating_the_same_controller_value_does_not_fill_the_ring);
+    RUN_TEST(test_a_controller_reset_lets_the_same_value_through_again);
+    RUN_TEST(test_reverb_send_leaves_a_tail_and_no_send_leaves_none);
+    RUN_TEST(test_effects_level_zero_removes_the_tail);
+    RUN_TEST(test_chorus_send_changes_the_sound_of_a_held_note);
+    RUN_TEST(test_the_master_stage_keeps_a_full_mix_under_the_ceiling);
     return UNITY_END();
 }

@@ -16,6 +16,7 @@
 #include <string.h>
 #include "zephyr/kernel.h"
 #include "zephyr/sys/printk.h"
+#include "../../src/synth_dsp.c"
 #include "../../src/yamaha_fm_synth.c"
 #include "../../src/midi_karaoke_parser.c"
 
@@ -112,6 +113,7 @@ static int run_song(const char *path, double seconds, const char *out, int volum
         .note_on = w_note_on, .note_off = w_note_off,
         .program_change = yamaha_fm_program_change, .control_change = yamaha_fm_control_change,
         .pitch_bend = yamaha_fm_pitch_bend, .all_notes_off = yamaha_fm_all_notes_off,
+        .song_clock = yamaha_fm_song_time_anchor, .event_time = yamaha_fm_song_time_event,
     };
     yamaha_fm_synth_init(RATE);
     midi_karaoke_init(&cb);

@@ -23,6 +23,11 @@ extern "C" {
 #define KARAOKE_MAX_LINE_CHARS      40
 #define KARAOKE_LYRIC_QUEUE_SIZE    16
 
+/** The sequencer hands notes to the synthesizer this long before they must sound, and holds
+ *  lyrics back by the same time, so that timing no longer depends on when the sequencer
+ *  thread happened to run. */
+#define MIDI_EVENT_LEAD_MS          40
+
 /**
  * @brief Synchronized karaoke lyric event for display rendering.
  */
@@ -42,6 +47,12 @@ typedef struct {
     void (*control_change)(uint8_t channel, uint8_t control, uint8_t value);
     void (*pitch_bend)(uint8_t channel, uint16_t bend);
     void (*all_notes_off)(void);
+    /** Optional. Called once each time the sequencer wakes, with the song clock in
+     *  microseconds, so the receiver can map song time to its own clock. */
+    void (*song_clock)(uint32_t song_us);
+    /** Optional. Called just before the callback of an event with the song time of that
+     *  event, so that the receiver can schedule it exactly. */
+    void (*event_time)(uint32_t song_us);
 } midi_synth_callbacks_t;
 
 /**

@@ -322,6 +322,105 @@ void test_lyrics_and_melody_detection_work_when_streamed(void)
     TEST_ASSERT_NOT_NULL(strstr(st.upcoming_lyric_line, "la"));
 }
 
+void test_a_lyric_is_shown_when_its_sound_is_heard_not_when_it_is_read(void)
+{
+    begin_file(1);
+    uint32_t t0 = begin_track();
+    put_vlq(PPQN);                               /* half a second at 120 BPM */
+    put(0xFF); put(0x05); put(3); put('a'); put('b'); put(' ');
+    put_vlq(PPQN * 4U);
+    put(0xFF); put(0x05); put(2); put('c'); put('d');
+    end_track(t0);
+
+    midi_karaoke_init(&CB);
+    TEST_ASSERT_TRUE(midi_karaoke_load_memory(g_smf, g_len));
+    midi_karaoke_play();
+
+    karaoke_lyric_msg_t msg;
+    bool seen = false;
+    uint32_t shown_ms = 0;
+    for (int i = 0; i < 100 && !seen; i++) {
+        midi_karaoke_tick(10000);
+        if (midi_karaoke_pop_lyric(&msg)) {
+            seen = true;
+            shown_ms = msg.song_time_ms;
+        }
+    }
+    TEST_ASSERT_TRUE(seen);
+    TEST_ASSERT_TRUE(shown_ms >= 500U + MIDI_EVENT_LEAD_MS);
+    TEST_ASSERT_TRUE(shown_ms <= 500U + MIDI_EVENT_LEAD_MS + 20U);
+}
+
+void test_lyrics_still_waiting_when_the_song_ends_are_not_lost(void)
+{
+    begin_file(1);
+    uint32_t t0 = begin_track();
+    put_vlq(PPQN);
+    put(0xFF); put(0x05); put(2); put('e'); put('n');
+    end_track(t0);
+
+    midi_karaoke_init(&CB);
+    TEST_ASSERT_TRUE(midi_karaoke_load_memory(g_smf, g_len));
+    run_to_end();
+
+    karaoke_lyric_msg_t msg;
+    TEST_ASSERT_TRUE(midi_karaoke_pop_lyric(&msg));
+    TEST_ASSERT_EQUAL_STRING("en", msg.text);
+}
+
+void test_stopping_discards_lyrics_that_were_not_shown_yet(void)
+{
+    begin_file(1);
+    uint32_t t0 = begin_track();
+    put_vlq(0);
+    put(0xFF); put(0x05); put(2); put('x'); put('y');
+    put_vlq(PPQN * 8U);
+    put(0xFF); put(0x05); put(2); put('z'); put('w');
+    end_track(t0);
+
+    midi_karaoke_init(&CB);
+    TEST_ASSERT_TRUE(midi_karaoke_load_memory(g_smf, g_len));
+    midi_karaoke_play();
+    midi_karaoke_tick(10000);
+    midi_karaoke_stop();
+
+    karaoke_lyric_msg_t msg;
+    TEST_ASSERT_FALSE(midi_karaoke_pop_lyric(&msg));
+}
+
+static uint32_t g_clock_calls;
+static uint32_t g_time_calls;
+static uint32_t g_last_event_us;
+static void on_clock(uint32_t us) { (void)us; g_clock_calls++; }
+static void on_event_time(uint32_t us) { g_time_calls++; g_last_event_us = us; }
+
+void test_the_sequencer_reports_song_time_for_the_clock_and_each_event(void)
+{
+    begin_file(1);
+    uint32_t t0 = begin_track();
+    put_vlq(PPQN);
+    put(0x90); put(60); put(90);
+    put_vlq(PPQN);
+    put(0x80); put(60); put(0);
+    end_track(t0);
+
+    midi_synth_callbacks_t cb = CB;
+    cb.song_clock = on_clock;
+    cb.event_time = on_event_time;
+    g_clock_calls = 0;
+    g_time_calls = 0;
+    midi_karaoke_init(&cb);
+    TEST_ASSERT_TRUE(midi_karaoke_load_memory(g_smf, g_len));
+    midi_karaoke_play();
+    for (int i = 0; i < 150; i++) {
+        midi_karaoke_tick(10000);
+    }
+
+    TEST_ASSERT_TRUE(g_clock_calls >= 100U && g_clock_calls <= 102U);   /* one per tick while the song plays */
+    TEST_ASSERT_EQUAL_UINT32(2, g_time_calls);
+    TEST_ASSERT_TRUE(g_last_event_us >= 990000U && g_last_event_us <= 1010000U);   /* the note off, at 1 s */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -333,5 +432,9 @@ int main(void)
     RUN_TEST(test_a_source_that_fails_at_once_is_refused_cleanly);
     RUN_TEST(test_truncated_file_plays_what_is_there);
     RUN_TEST(test_lyrics_and_melody_detection_work_when_streamed);
+    RUN_TEST(test_a_lyric_is_shown_when_its_sound_is_heard_not_when_it_is_read);
+    RUN_TEST(test_lyrics_still_waiting_when_the_song_ends_are_not_lost);
+    RUN_TEST(test_stopping_discards_lyrics_that_were_not_shown_yet);
+    RUN_TEST(test_the_sequencer_reports_song_time_for_the_clock_and_each_event);
     return UNITY_END();
 }

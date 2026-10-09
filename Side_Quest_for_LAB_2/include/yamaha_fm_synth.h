@@ -99,6 +99,23 @@ void yamaha_fm_set_drum_gain(uint8_t percent);
 uint8_t yamaha_fm_get_drum_gain(void);
 
 /**
+ * @brief Set the level of the lead melody channel in percent (20% to 250%, default 100%).
+ *        It scales only the channel chosen with yamaha_fm_set_melody_channel().
+ */
+void yamaha_fm_set_melody_gain(uint8_t percent);
+
+/**
+ * @brief Get the lead melody level in percent.
+ */
+uint8_t yamaha_fm_get_melody_gain(void);
+
+/**
+ * @brief Choose which MIDI channel carries the sung melody, or -1 for none.
+ *        Out-of-range values and the drum channel are treated as none.
+ */
+void yamaha_fm_set_melody_channel(int8_t channel);
+
+/**
  * @brief Silence all notes immediately.
  */
 void yamaha_fm_all_notes_off(void);

@@ -313,7 +313,7 @@ void karaoke_ui_render_browser(const song_entry_t *songs, uint8_t count,
         }
 
         lcd_draw_line(0, y + 36, 239, y + 36, LCD_COLOR_DARKGREY);
-        y += 38;
+        y += 36;
     }
 
     /* Footer Navigation Guide (x1=0, y1=220, x2=239, y2=239) */
@@ -394,7 +394,7 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
 
-void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum)
+void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody)
 {
     if (s_view_mode != UI_VIEW_SETTINGS) return;
 
@@ -407,27 +407,27 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
     lcd_show_string(32, 4, "=== AUDIO SETTINGS ===", LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
 
     /* 2. Instructions (y: 28 to 56) */
-    lcd_fill_rect(0, 26, 239, 60, LCD_COLOR_BLACK);
-    lcd_show_string(14, 28, "UP/DOWN: Select Option", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
-    lcd_show_string(14, 44, "LEFT/RIGHT: Adjust Level", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+    lcd_fill_rect(0, 26, 239, 42, LCD_COLOR_BLACK);
+    lcd_show_string(14, 28, "UP/DN: Select  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
 
     /* 3. Three Setting Rows (y: 66 to 175) */
     static const char *labels[] = {
         "Master Volume",
         "Instrument Vol",
-        "Drums / Rhythm"
+        "Drums / Rhythm",
+        "Melody / Lead"
     };
-    uint8_t vals[] = { vol, inst, drum };
-    static const uint8_t maxs[] = { 100, 200, 200 };
+    uint8_t vals[] = { vol, inst, drum, melody };
+    static const uint8_t maxs[] = { 100, 200, 200, 250 };
 
-    uint16_t y = 66;
-    for (uint8_t i = 0; i < 3; i++) {
+    uint16_t y = 46;
+    for (uint8_t i = 0; i < 4; i++) {
         bool sel = (i == cursor);
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
 
-        lcd_fill_rect(8, y, 231, y + 34, bg);
-        lcd_draw_rect(8, y, 231, y + 34, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+        lcd_fill_rect(8, y, 231, y + 32, bg);
+        lcd_draw_rect(8, y, 231, y + 32, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
 
         char buf[32];
         snprintf(buf, sizeof(buf), "%s: %u%%", labels[i], vals[i]);
@@ -447,9 +447,9 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
         y += 38;
     }
 
-    /* 4. NV-RAM / Persistence Status Box (y: 182 to 200) */
-    lcd_fill_rect(8, 182, 231, 200, LCD_COLOR_BLACK);
-    lcd_show_string(14, 184, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+    /* 4. Status line */
+    lcd_fill_rect(8, 188, 231, 202, LCD_COLOR_BLACK);
+    lcd_show_string(14, 188, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
 
     /* 5. Footer (y: 204 to 239) */
     lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);

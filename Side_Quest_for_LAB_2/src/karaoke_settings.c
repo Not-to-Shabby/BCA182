@@ -30,7 +30,8 @@
 static karaoke_settings_t s_settings = {
     .master_volume = 80,
     .instrument_gain = 100,
-    .drum_gain = 100
+    .drum_gain = 100,
+    .melody_gain = 100
 };
 
 static void apply_hardware_settings(void)
@@ -38,6 +39,7 @@ static void apply_hardware_settings(void)
     audio_set_volume(s_settings.master_volume);
     yamaha_fm_set_instrument_gain(s_settings.instrument_gain);
     yamaha_fm_set_drum_gain(s_settings.drum_gain);
+    yamaha_fm_set_melody_gain(s_settings.melody_gain);
 }
 
 static void rtc_save_backup(void)
@@ -48,7 +50,8 @@ static void rtc_save_backup(void)
 
     uint32_t packed = (uint32_t)s_settings.master_volume |
                       ((uint32_t)s_settings.instrument_gain << 8) |
-                      ((uint32_t)s_settings.drum_gain << 16);
+                      ((uint32_t)s_settings.drum_gain << 16) |
+                      ((uint32_t)s_settings.melody_gain << 24);
 
     RTC->BKP0R = SETTINGS_MAGIC;
     RTC->BKP1R = packed;
@@ -66,13 +69,17 @@ static bool rtc_load_backup(void)
         uint8_t vol  = (uint8_t)(packed & 0xFFU);
         uint8_t inst = (uint8_t)((packed >> 8) & 0xFFU);
         uint8_t drum = (uint8_t)((packed >> 16) & 0xFFU);
+        uint8_t mel  = (uint8_t)((packed >> 24) & 0xFFU);
 
         if (vol <= 100 && inst >= 20 && inst <= 200 && drum >= 20 && drum <= 200) {
             s_settings.master_volume = vol;
             s_settings.instrument_gain = inst;
             s_settings.drum_gain = drum;
-            printk("[Settings] Restored from RTC Backup: Vol=%u%% Inst=%u%% Drum=%u%%\n",
-                   vol, inst, drum);
+            if (mel >= 20) {
+                s_settings.melody_gain = mel;
+            }
+            printk("[Settings] Restored from RTC Backup: Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%%\n",
+                   vol, inst, drum, s_settings.melody_gain);
             return true;
         }
     }
@@ -101,7 +108,7 @@ static bool sd_load_cfg(void)
     }
     buf[br] = '\0';
 
-    int vol = -1, inst = -1, drum = -1;
+    int vol = -1, inst = -1, drum = -1, mel = -1;
     char *line = strtok(buf, "\r\n");
     while (line != NULL) {
         if (strncmp(line, "VOL=", 4) == 0) {
@@ -110,6 +117,8 @@ static bool sd_load_cfg(void)
             inst = atoi(line + 5);
         } else if (strncmp(line, "DRUM=", 5) == 0) {
             drum = atoi(line + 5);
+        } else if (strncmp(line, "MELODY=", 7) == 0) {
+            mel = atoi(line + 7);
         }
         line = strtok(NULL, "\r\n");
     }
@@ -127,10 +136,15 @@ static bool sd_load_cfg(void)
         s_settings.drum_gain = (uint8_t)drum;
         updated = true;
     }
+    if (mel >= 20 && mel <= 250) {
+        s_settings.melody_gain = (uint8_t)mel;
+        updated = true;
+    }
 
     if (updated) {
-        printk("[Settings] Restored from " SETTINGS_CFG_PATH ": Vol=%u%% Inst=%u%% Drum=%u%%\n",
-               s_settings.master_volume, s_settings.instrument_gain, s_settings.drum_gain);
+        printk("[Settings] Restored from " SETTINGS_CFG_PATH ": Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%%\n",
+               s_settings.master_volume, s_settings.instrument_gain, s_settings.drum_gain,
+               s_settings.melody_gain);
     }
     return updated;
 }
@@ -146,15 +160,17 @@ static void sd_save_cfg(void)
         return;
     }
 
-    char buf[96];
+    char buf[112];
     int len = snprintf(buf, sizeof(buf),
                        "# RT-Spark Karaoke Audio Settings\n"
                        "VOL=%u\n"
                        "INST=%u\n"
-                       "DRUM=%u\n",
+                       "DRUM=%u\n"
+                       "MELODY=%u\n",
                        s_settings.master_volume,
                        s_settings.instrument_gain,
-                       s_settings.drum_gain);
+                       s_settings.drum_gain,
+                       s_settings.melody_gain);
 
     if (len > 0) {
         UINT bw = 0;
@@ -173,8 +189,9 @@ void karaoke_settings_init(void)
     bool from_sd = sd_load_cfg();
 
     if (!from_rtc && !from_sd) {
-        printk("[Settings] Using defaults: Vol=%u%% Inst=%u%% Drum=%u%%\n",
-               s_settings.master_volume, s_settings.instrument_gain, s_settings.drum_gain);
+        printk("[Settings] Using defaults: Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%%\n",
+               s_settings.master_volume, s_settings.instrument_gain, s_settings.drum_gain,
+               s_settings.melody_gain);
     }
 
     apply_hardware_settings();
@@ -208,6 +225,15 @@ void karaoke_settings_set_drum_gain(uint8_t gain)
     if (gain > 200) gain = 200;
     s_settings.drum_gain = gain;
     yamaha_fm_set_drum_gain(gain);
+    rtc_save_backup();
+}
+
+void karaoke_settings_set_melody_gain(uint8_t gain)
+{
+    if (gain < 20) gain = 20;
+    if (gain > 250) gain = 250;
+    s_settings.melody_gain = gain;
+    yamaha_fm_set_melody_gain(gain);
     rtc_save_backup();
 }
 

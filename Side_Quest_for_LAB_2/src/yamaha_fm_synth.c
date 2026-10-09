@@ -37,6 +37,8 @@ static volatile uint16_t s_synth_master_q8 = SYNTH_MASTER_Q8;
 static volatile uint16_t s_synth_drum_q8   = SYNTH_DRUM_Q8;
 static volatile uint8_t s_instrument_percent = 100;
 static volatile uint8_t s_drum_percent = 100;
+static volatile uint8_t s_melody_percent = 100;
+static volatile int8_t s_melody_channel = -1;
 
 void yamaha_fm_set_instrument_gain(uint8_t percent)
 {
@@ -62,6 +64,23 @@ void yamaha_fm_set_drum_gain(uint8_t percent)
 uint8_t yamaha_fm_get_drum_gain(void)
 {
     return s_drum_percent;
+}
+
+void yamaha_fm_set_melody_gain(uint8_t percent)
+{
+    if (percent < 20) percent = 20;
+    if (percent > 250) percent = 250;
+    s_melody_percent = percent;
+}
+
+uint8_t yamaha_fm_get_melody_gain(void)
+{
+    return s_melody_percent;
+}
+
+void yamaha_fm_set_melody_channel(int8_t channel)
+{
+    s_melody_channel = (channel >= 0 && channel < FM_MIDI_CHANNELS && channel != FM_DRUM_CHANNEL) ? channel : -1;
 }
 #define GAIN_Q              8               /* extra fractional bits in the per-sample gain ramp */
 #define GAIN_ONE            (32767 << GAIN_Q)
@@ -981,6 +1000,9 @@ static void render_block(int16_t *out, size_t frames)
         float v = (float)c->volume / 127.0f;
         float e = (float)c->expression / 127.0f;
         ch_target[ch] = v * v * e * e;
+        if (ch == s_melody_channel) {
+            ch_target[ch] *= (float)s_melody_percent * 0.01f;
+        }
         if (c->gain_prev < 0.0f) {
             c->gain_prev = ch_target[ch];
         }

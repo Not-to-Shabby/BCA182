@@ -104,6 +104,12 @@ void midi_karaoke_stop(void);
 void midi_karaoke_tick(uint32_t elapsed_us);
 
 /**
+ * @brief MIDI channel (0-15) whose notes follow the lyric syllables in the loaded song,
+ *        or -1 when the song has no lyrics or no channel matches.
+ */
+int8_t midi_karaoke_get_melody_channel(void);
+
+/**
  * @brief Retrieve current playback status and lyrics.
  */
 void midi_karaoke_get_status(midi_player_status_t *out_status);

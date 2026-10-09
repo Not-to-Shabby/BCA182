@@ -101,6 +101,7 @@ static void play_song(uint32_t index)
     midi_karaoke_stop();
     yamaha_fm_synth_reset();
     midi_karaoke_load_memory(midi_data, midi_len);
+    yamaha_fm_set_melody_channel(midi_karaoke_get_melody_channel());
     karaoke_ui_set_current_song(&s);
     midi_karaoke_play();
     printk("[App] Started playing: #%u - %s (%s)\n", (unsigned)s.song_code, s.title, s.singer);
@@ -146,7 +147,7 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
 
         if (mode == UI_VIEW_SETTINGS) {
             const karaoke_settings_t *cfg = karaoke_settings_get();
-            karaoke_ui_render_settings(set_cursor, cfg->master_volume, cfg->instrument_gain, cfg->drum_gain);
+            karaoke_ui_render_settings(set_cursor, cfg->master_volume, cfg->instrument_gain, cfg->drum_gain, cfg->melody_gain);
         } else if (mode == UI_VIEW_NUMBER_SELECT) {
             uint32_t search_code = digits_to_code(num_digits);
             uint32_t match_idx = 0;
@@ -362,12 +363,13 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 uint8_t cur_vol  = cfg->master_volume;
                 uint8_t cur_inst = cfg->instrument_gain;
                 uint8_t cur_drum = cfg->drum_gain;
+                uint8_t cur_mel  = cfg->melody_gain;
 
                 if (up && !last_up) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 2) % 3;
+                    s_app.settings_cursor = (s_app.settings_cursor + 3) % 4;
                 }
                 if (dn && !last_dn) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 3;
+                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 4;
                 }
 
                 if (lt && !last_lt) {
@@ -377,6 +379,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         karaoke_settings_set_instrument_gain(cur_inst >= 25 ? cur_inst - 5 : 20);
                     } else if (s_app.settings_cursor == 2) {
                         karaoke_settings_set_drum_gain(cur_drum >= 25 ? cur_drum - 5 : 20);
+                    } else if (s_app.settings_cursor == 3) {
+                        karaoke_settings_set_melody_gain(cur_mel >= 25 ? cur_mel - 5 : 20);
                     }
                 }
 
@@ -387,6 +391,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         karaoke_settings_set_instrument_gain(cur_inst <= 195 ? cur_inst + 5 : 200);
                     } else if (s_app.settings_cursor == 2) {
                         karaoke_settings_set_drum_gain(cur_drum <= 195 ? cur_drum + 5 : 200);
+                    } else if (s_app.settings_cursor == 3) {
+                        karaoke_settings_set_melody_gain(cur_mel <= 245 ? cur_mel + 5 : 250);
                     }
                 }
             } else if (mode == UI_VIEW_BROWSER) {

@@ -98,7 +98,7 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
  * @param inst Current instrument gain (20-200%).
  * @param drum Current drum gain (20-200%).
  */
-void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum);
+void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody);
 
 #ifdef __cplusplus
 }

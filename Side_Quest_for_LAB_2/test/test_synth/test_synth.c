@@ -439,6 +439,58 @@ void test_extreme_notes_do_not_blow_up(void)
     }
 }
 
+void test_melody_gain_scales_only_the_chosen_channel(void)
+{
+    play(0, 73, 72, 100);
+    play(1, 73, 72, 100);
+    yamaha_fm_set_melody_channel(0);
+    yamaha_fm_set_melody_gain(200);
+    render_ms(400);
+    double lead = rms_window(250, 100);
+
+    yamaha_fm_synth_init(RATE);
+    g_frames = 0;
+    play(0, 73, 72, 100);
+    yamaha_fm_set_melody_channel(0);
+    yamaha_fm_set_melody_gain(100);
+    render_ms(400);
+    double plain = rms_window(250, 100);
+
+    TEST_ASSERT_TRUE(lead > plain * 1.5);
+}
+
+void test_melody_gain_does_nothing_without_a_melody_channel(void)
+{
+    play(0, 73, 72, 100);
+    yamaha_fm_set_melody_channel(-1);
+    yamaha_fm_set_melody_gain(250);
+    render_ms(400);
+    double boosted = rms_window(250, 100);
+
+    yamaha_fm_synth_init(RATE);
+    g_frames = 0;
+    play(0, 73, 72, 100);
+    yamaha_fm_set_melody_gain(100);
+    render_ms(400);
+    double plain = rms_window(250, 100);
+
+    TEST_ASSERT_FLOAT_WITHIN((float)plain * 0.02f, (float)plain, (float)boosted);
+}
+
+void test_melody_gain_is_clamped_and_drum_channel_is_refused(void)
+{
+    yamaha_fm_set_melody_gain(1);
+    TEST_ASSERT_EQUAL_UINT8(20, yamaha_fm_get_melody_gain());
+    yamaha_fm_set_melody_gain(255);
+    TEST_ASSERT_EQUAL_UINT8(250, yamaha_fm_get_melody_gain());
+    yamaha_fm_set_melody_channel(FM_DRUM_CHANNEL);
+    TEST_ASSERT_EQUAL_INT8(-1, s_melody_channel);
+    yamaha_fm_set_melody_channel(16);
+    TEST_ASSERT_EQUAL_INT8(-1, s_melody_channel);
+    yamaha_fm_set_melody_channel(3);
+    TEST_ASSERT_EQUAL_INT8(3, s_melody_channel);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -467,5 +519,8 @@ int main(void)
     RUN_TEST(test_overflowing_the_event_ring_drops_events_without_harm);
     RUN_TEST(test_every_general_midi_program_makes_a_clean_sound);
     RUN_TEST(test_extreme_notes_do_not_blow_up);
+    RUN_TEST(test_melody_gain_scales_only_the_chosen_channel);
+    RUN_TEST(test_melody_gain_does_nothing_without_a_melody_channel);
+    RUN_TEST(test_melody_gain_is_clamped_and_drum_channel_is_refused);
     return UNITY_END();
 }

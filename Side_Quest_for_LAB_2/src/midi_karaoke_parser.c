@@ -168,6 +168,8 @@ static lyric_line_entry_t s_lyric_lines[MAX_KARAOKE_LINES];
 
 static uint16_t s_total_lyric_lines = 0;
 static uint16_t s_active_line_idx = 0;
+static int s_lyric_track = -1;
+static int8_t s_melody_channel = -1;
 
 static void push_lyric_event(const char *text, bool is_newline)
 {
@@ -227,6 +229,8 @@ static void pre_parse_karaoke_lyrics(void)
 {
     s_total_lyric_lines = 0;
     s_active_line_idx = 0;
+    s_lyric_track = -1;
+    s_melody_channel = -1;
 
     int best_track = -1;
     uint32_t best_count = 0;
@@ -265,6 +269,7 @@ static void pre_parse_karaoke_lyrics(void)
     if (best_track < 0 || best_count < 2) {
         return;
     }
+    s_lyric_track = best_track;
 
     const uint8_t *tdata = s_midi.tracks[best_track].data;
     uint32_t tlen = s_midi.tracks[best_track].length;
@@ -334,6 +339,122 @@ static void pre_parse_karaoke_lyrics(void)
         snprintf(s_lyric_lines[s_total_lyric_lines].text, sizeof(s_lyric_lines[s_total_lyric_lines].text), "%s", line_buf);
         s_total_lyric_lines++;
     }
+}
+
+#define MELODY_TICK_WINDOW      12U
+#define MELODY_MAX_SYLLABLES    768U
+#define MELODY_MIN_HIT_PERCENT  25U
+
+static uint32_t s_syllable_ticks[MELODY_MAX_SYLLABLES];
+
+static int32_t nearest_syllable(uint32_t tick, uint32_t count)
+{
+    uint32_t lo = 0, hi = count;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) / 2U;
+        if (s_syllable_ticks[mid] + MELODY_TICK_WINDOW < tick) {
+            lo = mid + 1U;
+        } else {
+            hi = mid;
+        }
+    }
+    return (lo < count && s_syllable_ticks[lo] <= tick + MELODY_TICK_WINDOW) ? (int32_t)lo : -1;
+}
+
+/*
+ * The lead is the channel whose note onsets coincide with the lyric syllables. Each syllable
+ * counts once per channel, so chords do not inflate a pad. The score is syllables^2 / notes,
+ * so a busy accompaniment track that overlaps many syllables by chance loses to a sparse
+ * track that follows them closely.
+ */
+static void detect_melody_channel(void)
+{
+    s_melody_channel = -1;
+    if (s_lyric_track < 0) {
+        return;
+    }
+
+    uint32_t nsyl = 0;
+    const uint8_t *td = s_midi.tracks[s_lyric_track].data;
+    uint32_t tl = s_midi.tracks[s_lyric_track].length;
+    uint32_t pos = 0, tick = 0;
+    uint8_t rs = 0;
+    while (pos < tl && nsyl < MELODY_MAX_SYLLABLES) {
+        tick += read_vlq(td, tl, &pos);
+        if (pos >= tl) break;
+        uint8_t b = td[pos++];
+        if (!(b & 0x80U)) { pos--; b = rs; } else rs = b;
+        if (b == 0xFF) {
+            if (pos >= tl) break;
+            uint8_t mt = td[pos++];
+            uint32_t ml = read_vlq(td, tl, &pos);
+            if (pos + ml > tl) ml = tl - pos;
+            if ((mt == 0x05 || mt == 0x01) && ml > 0 && td[pos] != '@') {
+                if (nsyl == 0 || s_syllable_ticks[nsyl - 1U] != tick) {
+                    s_syllable_ticks[nsyl++] = tick;
+                }
+            }
+            pos += ml;
+        } else if (b == 0xF0 || b == 0xF7) {
+            pos += read_vlq(td, tl, &pos);
+        } else {
+            pos += ((b & 0xF0) == 0xC0 || (b & 0xF0) == 0xD0) ? 1 : 2;
+        }
+    }
+    if (nsyl < 2U) {
+        return;
+    }
+
+    static uint8_t reached[16][MELODY_MAX_SYLLABLES / 8U];
+    uint32_t hits[16] = {0}, notes[16] = {0};
+    memset(reached, 0, sizeof(reached));
+    for (uint16_t t = 0; t < s_midi.num_tracks; t++) {
+        td = s_midi.tracks[t].data;
+        tl = s_midi.tracks[t].length;
+        pos = 0; tick = 0; rs = 0;
+        while (pos < tl) {
+            tick += read_vlq(td, tl, &pos);
+            if (pos >= tl) break;
+            uint8_t b = td[pos++];
+            if (!(b & 0x80U)) { pos--; b = rs; } else rs = b;
+            if (b == 0xFF) {
+                if (pos >= tl) break;
+                pos++;
+                uint32_t ml = read_vlq(td, tl, &pos);
+                pos += ml;
+            } else if (b == 0xF0 || b == 0xF7) {
+                pos += read_vlq(td, tl, &pos);
+            } else {
+                if ((b & 0xF0U) == 0x90U && pos + 1U < tl && td[pos + 1U] > 0U) {
+                    uint8_t ch = b & 0x0FU;
+                    notes[ch]++;
+                    int32_t si = nearest_syllable(tick, nsyl);
+                    if (si >= 0 && !(reached[ch][si >> 3] & (1U << (si & 7)))) {
+                        reached[ch][si >> 3] |= (uint8_t)(1U << (si & 7));
+                        hits[ch]++;
+                    }
+                }
+                pos += ((b & 0xF0) == 0xC0 || (b & 0xF0) == 0xD0) ? 1 : 2;
+            }
+        }
+    }
+
+    uint64_t best_score = 0;
+    for (int ch = 0; ch < 16; ch++) {
+        if (ch == 9 || notes[ch] == 0U || hits[ch] * 100U < nsyl * MELODY_MIN_HIT_PERCENT) {
+            continue;
+        }
+        uint64_t score = ((uint64_t)hits[ch] * hits[ch] * 1000U) / notes[ch];
+        if (score > best_score) {
+            best_score = score;
+            s_melody_channel = (int8_t)ch;
+        }
+    }
+}
+
+int8_t midi_karaoke_get_melody_channel(void)
+{
+    return s_melody_channel;
 }
 
 bool midi_karaoke_load_memory(const uint8_t *data, uint32_t length)
@@ -409,6 +530,7 @@ bool midi_karaoke_load_memory(const uint8_t *data, uint32_t length)
     s_midi.line_ended = false;
 
     pre_parse_karaoke_lyrics();
+    detect_melody_channel();
 
     k_mutex_unlock(&s_midi.lock);
 

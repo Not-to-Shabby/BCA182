@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "karaoke_ui.h"
+#include "midi_source.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -75,14 +76,17 @@ bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index);
 bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song);
 
 /**
- * @brief Load MIDI data for the specified song index.
+ * @brief Open the MIDI file of the specified song for streaming.
+ *
+ * Built-in songs come back as a memory source and SD-card songs as a read callback, so file
+ * size is not limited by RAM. The file stays open until the next call or the next
+ * karaoke_catalog_init().
  *
  * @param index 0-based index.
- * @param out_data Pointer to output data pointer (ROM or allocated buffer).
- * @param out_length Pointer to output byte length.
- * @return true if data was successfully loaded.
+ * @param out_src Source to pass to midi_karaoke_load().
+ * @return true if the song could be opened.
  */
-bool karaoke_catalog_load_midi_data(uint32_t index, const uint8_t **out_data, uint32_t *out_length);
+bool karaoke_catalog_open_song(uint32_t index, midi_source_t *out_src);
 
 #ifdef __cplusplus
 }

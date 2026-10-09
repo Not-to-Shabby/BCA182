@@ -14,6 +14,26 @@
 #include "../../src/karaoke_catalog.c"
 #include "host_sd.h"
 
+
+/* Opens a song and reads its first bytes back through the streaming source, the way the
+ * sequencer does. Returns the file length, or 0 when the song cannot be opened. */
+static uint32_t open_and_peek(uint32_t index, uint8_t *head, uint32_t head_len)
+{
+    midi_source_t src;
+
+    if (!karaoke_catalog_open_song(index, &src)) {
+        return 0;
+    }
+    if (head_len > 0) {
+        if (src.mem != NULL) {
+            memcpy(head, src.mem, head_len);
+        } else if (!src.read(src.ctx, 0, head, head_len)) {
+            return 0;
+        }
+    }
+    return src.size;
+}
+
 #define IDX_HEADER 16
 #define IDX_RECORD 96
 
@@ -51,6 +71,7 @@ void setUp(void)
 
 void tearDown(void)
 {
+    close_song();
     close_index();
     host_rmtree(g_sd_root);
 }
@@ -75,9 +96,10 @@ void test_valid_index_is_used(void)
     TEST_ASSERT_EQUAL_STRING("Singer 0", s.singer);
     TEST_ASSERT_EQUAL_STRING("001007.mid", s.filename);
 
-    const uint8_t *data = NULL;
+    uint8_t data[4] = {0};
     uint32_t len = 0;
-    TEST_ASSERT_TRUE(karaoke_catalog_load_midi_data(0, &data, &len));
+    len = open_and_peek(0, data, 4);
+    TEST_ASSERT_TRUE(len > 0);
     TEST_ASSERT_EQUAL_UINT32(500, len);
     TEST_ASSERT_EQUAL_MEMORY("MThd", data, 4);
 }
@@ -90,10 +112,11 @@ void test_index_song_on_a_flat_card_still_loads(void)
 
     karaoke_catalog_init();
 
-    const uint8_t *data = NULL;
+    uint8_t data[4] = {0};
     uint32_t len = 0;
     TEST_ASSERT_EQUAL(KARAOKE_SOURCE_INDEX, karaoke_catalog_get_source());
-    TEST_ASSERT_TRUE(karaoke_catalog_load_midi_data(0, &data, &len));
+    len = open_and_peek(0, data, 4);
+    TEST_ASSERT_TRUE(len > 0);
     TEST_ASSERT_EQUAL_UINT32(321, len);
 }
 
@@ -118,9 +141,10 @@ void test_missing_index_falls_back_to_scanning(void)
             TEST_ASSERT_EQUAL_STRING("Beer", s.title);
             TEST_ASSERT_EQUAL_STRING("Itchyworms", s.singer);
             TEST_ASSERT_EQUAL_STRING("SD", s.language);
-            const uint8_t *data = NULL;
+            uint8_t data[4] = {0};
             uint32_t len = 0;
-            TEST_ASSERT_TRUE(karaoke_catalog_load_midi_data(i, &data, &len));
+            len = open_and_peek(i, data, 4);
+    TEST_ASSERT_TRUE(len > 0);
             TEST_ASSERT_EQUAL_UINT32(600, len);
             TEST_ASSERT_EQUAL_MEMORY("MThd", data, 4);
         }
@@ -144,9 +168,10 @@ void test_scan_finds_sharded_loose_and_plain_names(void)
     TEST_ASSERT_EQUAL_UINT32(4, karaoke_catalog_get_total_songs());
 
     for (uint32_t i = 0; i < 4; i++) {
-        const uint8_t *data = NULL;
+        uint8_t data[4] = {0};
         uint32_t len = 0;
-        TEST_ASSERT_TRUE_MESSAGE(karaoke_catalog_load_midi_data(i, &data, &len), "every listed song must load");
+        len = open_and_peek(i, data, 4);
+        TEST_ASSERT_TRUE_MESSAGE(len > 0, "every listed song must load");
         TEST_ASSERT_EQUAL_UINT32(100, len);
     }
 }
@@ -275,10 +300,12 @@ void test_empty_card_uses_the_built_in_songs(void)
     TEST_ASSERT_TRUE(karaoke_catalog_get_song(2, &s));
     TEST_ASSERT_EQUAL_STRING("Beer", s.title);
 
-    const uint8_t *data = NULL;
+    uint8_t data[4] = {0};
     uint32_t len = 0;
-    TEST_ASSERT_TRUE(karaoke_catalog_load_midi_data(2, &data, &len));
-    TEST_ASSERT_EQUAL_PTR(EMBEDDED_MIDI_SONG_3, data);
+    midi_source_t rom;
+    TEST_ASSERT_TRUE(karaoke_catalog_open_song(2, &rom));
+    TEST_ASSERT_EQUAL_PTR(EMBEDDED_MIDI_SONG_3, rom.mem);
+    len = rom.size;
     TEST_ASSERT_EQUAL_UINT32(EMBEDDED_MIDI_SONG_3_len, len);
 }
 
@@ -322,25 +349,49 @@ void test_scan_stops_at_the_list_limit(void)
     TEST_ASSERT_TRUE(s_scan_full);
 }
 
-void test_oversize_file_is_refused(void)
+void test_a_file_larger_than_ram_streams_from_the_card(void)
 {
     host_mkdir("midi");
-    host_write_file("midi/big.mid", SD_MIDI_BUFFER_SIZE + 1);
-    host_write_file("midi/ok.mid", SD_MIDI_BUFFER_SIZE);
+    host_write_file("midi/big.mid", 400000);
 
     karaoke_catalog_init();
 
-    TEST_ASSERT_EQUAL_UINT32(2, karaoke_catalog_get_total_songs());
-    int loaded = 0;
-    for (uint32_t i = 0; i < 2; i++) {
-        const uint8_t *data = NULL;
-        uint32_t len = 0;
-        if (karaoke_catalog_load_midi_data(i, &data, &len)) {
-            loaded++;
-            TEST_ASSERT_EQUAL_UINT32(SD_MIDI_BUFFER_SIZE, len);
-        }
+    midi_source_t src;
+    TEST_ASSERT_TRUE(karaoke_catalog_open_song(0, &src));
+    TEST_ASSERT_NULL(src.mem);
+    TEST_ASSERT_EQUAL_UINT32(400000, src.size);
+
+    uint8_t sector[512];
+    TEST_ASSERT_TRUE(src.read(src.ctx, 0, sector, sizeof(sector)));
+    TEST_ASSERT_EQUAL_MEMORY("MThd", sector, 4);
+    TEST_ASSERT_TRUE(src.read(src.ctx, 399488, sector, 512));       /* last sector, after a seek */
+    TEST_ASSERT_TRUE(src.read(src.ctx, 512, sector, sizeof(sector))); /* and back again */
+    TEST_ASSERT_FALSE(src.read(src.ctx, 399900, sector, 512));      /* runs past the end */
+}
+
+void test_a_file_too_short_to_be_midi_is_refused(void)
+{
+    host_mkdir("midi");
+    host_write_file("midi/tiny.mid", 10);
+
+    karaoke_catalog_init();
+
+    midi_source_t src;
+    TEST_ASSERT_FALSE(karaoke_catalog_open_song(0, &src));
+}
+
+void test_opening_the_next_song_closes_the_previous_file(void)
+{
+    host_mkdir("midi");
+    host_write_file("midi/a.mid", 2000);
+    host_write_file("midi/b.mid", 3000);
+
+    karaoke_catalog_init();
+
+    uint8_t head[4];
+    for (int round = 0; round < 50; round++) {
+        TEST_ASSERT_TRUE(open_and_peek((uint32_t)(round & 1), head, 4) > 0);
     }
-    TEST_ASSERT_EQUAL_INT(1, loaded);
 }
 
 void test_song_deleted_after_listing_fails_cleanly(void)
@@ -352,9 +403,9 @@ void test_song_deleted_after_listing_fails_cleanly(void)
 
     host_rmtree("sd_mock_tmp/midi");
 
-    const uint8_t *data = NULL;
+    uint8_t data[4] = {0};
     uint32_t len = 0;
-    TEST_ASSERT_FALSE(karaoke_catalog_load_midi_data(0, &data, &len));
+    TEST_ASSERT_EQUAL_UINT32(0, open_and_peek(0, data, 4));
 }
 
 void test_second_init_replaces_the_first_catalog(void)
@@ -388,10 +439,10 @@ void test_out_of_range_requests_fail(void)
     karaoke_catalog_init();
 
     song_entry_t s;
-    const uint8_t *data = NULL;
+    uint8_t data[4] = {0};
     uint32_t len = 0;
     TEST_ASSERT_FALSE(karaoke_catalog_get_song(1, &s));
-    TEST_ASSERT_FALSE(karaoke_catalog_load_midi_data(1, &data, &len));
+    TEST_ASSERT_EQUAL_UINT32(0, open_and_peek(1, data, 4));
     TEST_ASSERT_FALSE(karaoke_catalog_get_song(0, NULL));
 }
 
@@ -433,7 +484,9 @@ int main(void)
     RUN_TEST(test_card_with_only_other_files_uses_the_built_in_songs);
     RUN_TEST(test_unmounted_card_uses_the_built_in_songs);
     RUN_TEST(test_scan_stops_at_the_list_limit);
-    RUN_TEST(test_oversize_file_is_refused);
+    RUN_TEST(test_a_file_larger_than_ram_streams_from_the_card);
+    RUN_TEST(test_a_file_too_short_to_be_midi_is_refused);
+    RUN_TEST(test_opening_the_next_song_closes_the_previous_file);
     RUN_TEST(test_song_deleted_after_listing_fails_cleanly);
     RUN_TEST(test_second_init_replaces_the_first_catalog);
     RUN_TEST(test_out_of_range_requests_fail);

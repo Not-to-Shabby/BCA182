@@ -94,7 +94,9 @@ static bool sd_load_cfg(void)
     }
 
     FIL f;
+    sd_card_lock();
     if (f_open(&f, SETTINGS_CFG_PATH, FA_READ) != FR_OK) {
+        sd_card_unlock();
         return false;
     }
 
@@ -102,6 +104,7 @@ static bool sd_load_cfg(void)
     UINT br = 0;
     FRESULT fr = f_read(&f, buf, sizeof(buf) - 1, &br);
     f_close(&f);
+    sd_card_unlock();
 
     if (fr != FR_OK || br == 0) {
         return false;
@@ -156,7 +159,9 @@ static void sd_save_cfg(void)
     }
 
     FIL f;
+    sd_card_lock();
     if (f_open(&f, SETTINGS_CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        sd_card_unlock();
         return;
     }
 
@@ -177,6 +182,7 @@ static void sd_save_cfg(void)
         f_write(&f, buf, (UINT)len, &bw);
     }
     f_close(&f);
+    sd_card_unlock();
     printk("[Settings] Saved to " SETTINGS_CFG_PATH "\n");
 }
 

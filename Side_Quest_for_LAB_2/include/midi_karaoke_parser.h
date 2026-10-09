@@ -13,12 +13,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "midi_source.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define MIDI_MAX_TRACKS             32
+#define MIDI_MAX_TRACKS             64
 #define KARAOKE_MAX_LINE_CHARS      40
 #define KARAOKE_LYRIC_QUEUE_SIZE    16
 
@@ -72,6 +73,17 @@ typedef struct {
 void midi_karaoke_init(const midi_synth_callbacks_t *synth_cb);
 
 /**
+ * @brief Load a Standard MIDI file from a source. The sequencer keeps one sector of
+ *        read-ahead per track, so a file on the SD card is streamed while it plays and its
+ *        size is not limited by RAM. The source and whatever it reads from must stay valid
+ *        until the next load.
+ *
+ * @param src Where the file bytes come from.
+ * @return true if at least one track was found.
+ */
+bool midi_karaoke_load(const midi_source_t *src);
+
+/**
  * @brief Load a Standard MIDI file from memory (RAM or ROM array).
  *
  * @param data Pointer to MIDI file binary data.
@@ -108,6 +120,18 @@ void midi_karaoke_tick(uint32_t elapsed_us);
  *        or -1 when the song has no lyrics or no channel matches.
  */
 int8_t midi_karaoke_get_melody_channel(void);
+
+/**
+ * @brief Counters for the streaming reads of the song loaded last.
+ */
+typedef struct {
+    uint32_t reads;             /**< source reads since the load, header and scans included */
+    uint32_t bytes;             /**< bytes those reads returned */
+    uint32_t max_read_us;       /**< slowest single read */
+    uint32_t seq_stack_unused;  /**< bytes never touched on the sequencer thread's stack */
+} midi_stream_stats_t;
+
+void midi_karaoke_get_stream_stats(midi_stream_stats_t *out);
 
 /**
  * @brief Retrieve current playback status and lyrics.

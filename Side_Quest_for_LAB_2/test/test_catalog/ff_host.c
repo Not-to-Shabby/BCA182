@@ -20,6 +20,9 @@
 char g_sd_root[260] = "sd_mock_tmp";
 bool g_sd_mounted = true;
 
+void sd_card_lock(void) {}
+void sd_card_unlock(void) {}
+
 bool sd_card_is_mounted(void)
 {
     return g_sd_mounted;

@@ -90,17 +90,15 @@ static void play_song(uint32_t index)
     song_entry_t s;
     if (!karaoke_catalog_get_song(index, &s)) return;
 
-    const uint8_t *midi_data = NULL;
-    uint32_t midi_len = 0;
-    if (!karaoke_catalog_load_midi_data(index, &midi_data, &midi_len)) {
+    /* Stop the sequencer first so that it reads nothing from the file about to be closed. */
+    midi_karaoke_stop();
+    yamaha_fm_synth_reset();
+
+    midi_source_t src;
+    if (!karaoke_catalog_open_song(index, &src) || !midi_karaoke_load(&src)) {
         printk("[App] Failed to load song data for index %u\n", (unsigned)index);
         return;
     }
-
-    /* Stop the sequencer first so no event arrives while the channels are reset. */
-    midi_karaoke_stop();
-    yamaha_fm_synth_reset();
-    midi_karaoke_load_memory(midi_data, midi_len);
     yamaha_fm_set_melody_channel(midi_karaoke_get_melody_channel());
     karaoke_ui_set_current_song(&s);
     midi_karaoke_play();

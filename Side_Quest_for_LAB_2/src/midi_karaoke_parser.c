@@ -3,6 +3,9 @@
  * @brief High-efficiency multi-track Standard MIDI File (SMF Format 0 & 1)
  *        sequencer and synchronized karaoke lyrics parser.
  *
+ * The file is never held in RAM as a whole: each track reads through a one-sector window
+ * that is refilled from the source (an array, or the SD card) as playback reaches its end.
+ *
  * Course: BCA182 Embedded Systems Programming
  * Side Quest for Laboratory Activity 2: MIDI Karaoke Player
  */
@@ -14,17 +17,47 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
+#define SECTOR_BYTES        512U
+#define STREAM_WINDOW_BYTES 512U    /* per-track read-ahead: one SD sector */
+#define SCAN_WINDOW_BYTES   2048U   /* load-time scans walk one track at a time */
+#define EVENT_TEXT_BYTES    64U
+
 typedef struct {
-    const uint8_t *data;
+    uint8_t *win;
+    uint32_t win_cap;
+    uint32_t win_abs;       /* absolute file offset of win[0] */
+    uint32_t win_len;
+    uint32_t file_off;      /* absolute file offset of the track's first data byte */
     uint32_t length;
-    uint32_t pos;
+    uint32_t pos;           /* track-relative offset of the next unread byte */
     uint32_t tick;
     uint8_t running_status;
     bool is_finished;
 } track_cursor_t;
 
+typedef enum {
+    EV_END,             /* no more bytes, or the source failed */
+    EV_END_OF_TRACK,
+    EV_NOTE_OFF,
+    EV_NOTE_ON,
+    EV_CC,
+    EV_PROGRAM,
+    EV_BEND,
+    EV_TEMPO,
+    EV_TEXT,
+    EV_SKIP
+} ev_kind_t;
+
+typedef struct {
+    uint8_t chan, d1, d2;
+    uint8_t text_len;
+    uint32_t tempo;
+    char text[EVENT_TEXT_BYTES];
+} midi_event_t;
+
 static struct {
     midi_synth_callbacks_t synth;
+    midi_source_t src;
     track_cursor_t tracks[MIDI_MAX_TRACKS];
     uint16_t num_tracks;
     uint16_t format;
@@ -49,11 +82,14 @@ static struct {
     bool has_lyrics_started;
     bool line_ended;
 
+    midi_stream_stats_t stats;
+
     struct k_mutex lock;
 } s_midi;
 
 #define SEQ_PERIOD_MS       10
 #define SEQ_MAX_CATCHUP_US  100000U
+#define SEQ_STACK_BYTES     2048
 
 static struct k_timer s_midi_timer;
 static int64_t s_last_tick_ticks;
@@ -90,21 +126,11 @@ static void sequencer_thread(void *p1, void *p2, void *p3)
         midi_karaoke_tick((uint32_t)us);
     }
 }
-K_THREAD_DEFINE(midi_seq_task, 1536, sequencer_thread, NULL, NULL, NULL, 2, 0, 0);
+K_THREAD_DEFINE(midi_seq_task, SEQ_STACK_BYTES, sequencer_thread, NULL, NULL, NULL, 2, 0, 0);
 
-/* Helper: Read Variable Length Quantity (VLQ) */
-static uint32_t read_vlq(const uint8_t *data, uint32_t len, uint32_t *pos)
-{
-    uint32_t val = 0;
-    while (*pos < len) {
-        uint8_t b = data[(*pos)++];
-        val = (val << 7) | (b & 0x7FU);
-        if (!(b & 0x80U)) {
-            break;
-        }
-    }
-    return val;
-}
+/* Windows are filled by SD DMA, so they live in ordinary SRAM, not in core-coupled RAM. */
+static uint8_t s_track_win[MIDI_MAX_TRACKS][STREAM_WINDOW_BYTES] __attribute__((aligned(4)));
+static uint8_t s_scan_win[SCAN_WINDOW_BYTES] __attribute__((aligned(4)));
 
 static uint16_t read_be16(const uint8_t *data)
 {
@@ -113,7 +139,198 @@ static uint16_t read_be16(const uint8_t *data)
 
 static uint32_t read_be32(const uint8_t *data)
 {
-    return (uint32_t)((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]);
+    return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
+           ((uint32_t)data[2] << 8) | (uint32_t)data[3];
+}
+
+static bool source_read(uint32_t off, uint8_t *dst, uint32_t len)
+{
+    if (len > s_midi.src.size || off > s_midi.src.size - len) {
+        return false;
+    }
+    if (s_midi.src.mem != NULL) {
+        memcpy(dst, s_midi.src.mem + off, len);
+        return true;
+    }
+    if (s_midi.src.read == NULL) {
+        return false;
+    }
+
+    uint32_t t0 = k_cycle_get_32();
+    bool ok = s_midi.src.read(s_midi.src.ctx, off, dst, len);
+    uint32_t us = k_cyc_to_us_floor32(k_cycle_get_32() - t0);
+
+    s_midi.stats.reads++;
+    s_midi.stats.bytes += len;
+    if (us > s_midi.stats.max_read_us) {
+        s_midi.stats.max_read_us = us;
+    }
+    return ok;
+}
+
+/* Reloads the window so that it holds absolute offset @p abs. The window starts on a sector
+ * boundary, so a refill is an aligned read. */
+static bool cursor_fill(track_cursor_t *c, uint32_t abs)
+{
+    uint32_t base = abs & ~(SECTOR_BYTES - 1U);
+    uint32_t n = c->win_cap;
+
+    if (n > s_midi.src.size - base) {
+        n = s_midi.src.size - base;
+    }
+    if (!source_read(base, c->win, n)) {
+        printk("[MIDI] Source read failed at offset %u\n", (unsigned)base);
+        return false;
+    }
+    c->win_abs = base;
+    c->win_len = n;
+    return true;
+}
+
+/* Next byte of the track. False at the end of the track, or when the source fails (the track
+ * is then ended so that playback goes on with the others). */
+static bool cursor_next(track_cursor_t *c, uint8_t *out)
+{
+    if (c->pos >= c->length) {
+        return false;
+    }
+    uint32_t abs = c->file_off + c->pos;
+
+    if (s_midi.src.mem != NULL) {
+        *out = s_midi.src.mem[abs];
+        c->pos++;
+        return true;
+    }
+    if (abs < c->win_abs || abs - c->win_abs >= c->win_len) {
+        if (!cursor_fill(c, abs)) {
+            c->pos = c->length;
+            return false;
+        }
+    }
+    *out = c->win[abs - c->win_abs];
+    c->pos++;
+    return true;
+}
+
+static void cursor_skip(track_cursor_t *c, uint32_t n)
+{
+    c->pos += (n > c->length - c->pos) ? c->length - c->pos : n;
+}
+
+static uint32_t cursor_vlq(track_cursor_t *c)
+{
+    uint32_t val = 0;
+    uint8_t b;
+
+    for (int i = 0; i < 4 && cursor_next(c, &b); i++) {
+        val = (val << 7) | (b & 0x7FU);
+        if (!(b & 0x80U)) {
+            break;
+        }
+    }
+    return val;
+}
+
+/* Decodes the event that follows an already-read delta time. Meta text keeps its first
+ * EVENT_TEXT_BYTES - 1 bytes; everything else is skipped without being read. */
+static ev_kind_t read_event(track_cursor_t *c, midi_event_t *ev)
+{
+    uint8_t b;
+    uint8_t status;
+    uint8_t d1 = 0;
+    uint8_t d2 = 0;
+    bool have_d1 = false;
+
+    ev->chan = 0;
+    ev->d1 = 0;
+    ev->d2 = 0;
+    ev->tempo = 0;
+    ev->text_len = 0;
+    ev->text[0] = '\0';
+    if (!cursor_next(c, &b)) {
+        return EV_END;
+    }
+    if ((b & 0x80U) != 0U) {
+        status = b;
+        if (status < 0xF0U) {
+            c->running_status = status;
+        }
+    } else {
+        status = c->running_status;
+        d1 = b;
+        have_d1 = true;
+        if (status == 0U) {
+            return EV_END;
+        }
+    }
+
+    if (status == 0xFFU) {
+        uint8_t mt;
+        if (!cursor_next(c, &mt)) {
+            return EV_END;
+        }
+        uint32_t ml = cursor_vlq(c);
+        if (ml > c->length - c->pos) {
+            ml = c->length - c->pos;
+        }
+        if (mt == 0x2FU) {
+            cursor_skip(c, ml);
+            return EV_END_OF_TRACK;
+        }
+        if (mt == 0x51U && ml >= 3U) {
+            uint8_t t[3];
+            for (int i = 0; i < 3; i++) {
+                if (!cursor_next(c, &t[i])) {
+                    return EV_END;
+                }
+            }
+            ev->tempo = ((uint32_t)t[0] << 16) | ((uint32_t)t[1] << 8) | (uint32_t)t[2];
+            cursor_skip(c, ml - 3U);
+            return EV_TEMPO;
+        }
+        if (mt == 0x01U || mt == 0x05U) {
+            uint32_t n = (ml < EVENT_TEXT_BYTES - 1U) ? ml : EVENT_TEXT_BYTES - 1U;
+            for (uint32_t i = 0; i < n; i++) {
+                if (!cursor_next(c, &b)) {
+                    return EV_END;
+                }
+                ev->text[i] = (char)b;
+            }
+            ev->text[n] = '\0';
+            ev->text_len = (uint8_t)n;
+            cursor_skip(c, ml - n);
+            return EV_TEXT;
+        }
+        cursor_skip(c, ml);
+        return EV_SKIP;
+    }
+    if (status == 0xF0U || status == 0xF7U) {
+        cursor_skip(c, cursor_vlq(c));
+        return EV_SKIP;
+    }
+    if (status >= 0xF0U) {
+        return EV_SKIP;
+    }
+
+    uint8_t cmd = (uint8_t)(status & 0xF0U);
+
+    if (!have_d1 && !cursor_next(c, &d1)) {
+        return EV_END;
+    }
+    if (cmd != 0xC0U && cmd != 0xD0U && !cursor_next(c, &d2)) {
+        return EV_END;
+    }
+    ev->chan = (uint8_t)(status & 0x0FU);
+    ev->d1 = d1;
+    ev->d2 = d2;
+    switch (cmd) {
+    case 0x80U: return EV_NOTE_OFF;
+    case 0x90U: return EV_NOTE_ON;
+    case 0xB0U: return EV_CC;
+    case 0xC0U: return EV_PROGRAM;
+    case 0xE0U: return EV_BEND;
+    default:    return EV_SKIP;
+    }
 }
 
 void midi_karaoke_init(const midi_synth_callbacks_t *synth_cb)
@@ -222,39 +439,51 @@ static void push_lyric_event(const char *text, bool is_newline)
     }
 }
 
+#define MELODY_TICK_WINDOW      12U
+#define MELODY_MAX_SYLLABLES    768U
+#define MELODY_MIN_HIT_PERCENT  25U
+
+static DTCM_BSS uint32_t s_syllable_ticks[MELODY_MAX_SYLLABLES];
+static uint32_t s_nsyl;
+
+static void scan_cursor_init(track_cursor_t *c, uint16_t t)
+{
+    memset(c, 0, sizeof(*c));
+    c->win = s_scan_win;
+    c->win_cap = SCAN_WINDOW_BYTES;
+    c->file_off = s_midi.tracks[t].file_off;
+    c->length = s_midi.tracks[t].length;
+}
+
+static bool is_lyric_text(ev_kind_t k, const midi_event_t *ev)
+{
+    return k == EV_TEXT && ev->text_len > 0U && ev->text[0] != '@';
+}
+
+/*
+ * Walks the file once more: the track holding the most lyric events gives the lyric lines for
+ * the display and the tick of every syllable for the melody search. Runs without the
+ * sequencer lock (the sequencer is stopped); the display only ever reads finished lines.
+ */
 static void pre_parse_karaoke_lyrics(void)
 {
-    s_total_lyric_lines = 0;
-    s_active_line_idx = 0;
-    s_lyric_track = -1;
-    s_melody_channel = -1;
-
     int best_track = -1;
     uint32_t best_count = 0;
+    midi_event_t ev;
+    track_cursor_t c;
 
     for (uint16_t t = 0; t < s_midi.num_tracks; t++) {
-        const uint8_t *tdata = s_midi.tracks[t].data;
-        uint32_t tlen = s_midi.tracks[t].length;
-        uint32_t tpos = 0;
-        uint8_t rs = 0;
         uint32_t cnt = 0;
 
-        while (tpos < tlen) {
-            read_vlq(tdata, tlen, &tpos);
-            if (tpos >= tlen) break;
-            uint8_t b = tdata[tpos++];
-            if (!(b & 0x80U)) { tpos--; b = rs; } else rs = b;
-            if (b == 0xFF) {
-                if (tpos >= tlen) break;
-                uint8_t mt = tdata[tpos++];
-                uint32_t ml = read_vlq(tdata, tlen, &tpos);
-                if (tpos + ml > tlen) ml = tlen - tpos;
-                if ((mt == 0x05 || mt == 0x01) && ml > 0 && tdata[tpos] != '@') cnt++;
-                tpos += ml;
-            } else if (b == 0xF0 || b == 0xF7) {
-                tpos += read_vlq(tdata, tlen, &tpos);
-            } else {
-                tpos += ((b & 0xF0) == 0xC0 || (b & 0xF0) == 0xD0) ? 1 : 2;
+        scan_cursor_init(&c, t);
+        for (;;) {
+            (void)cursor_vlq(&c);
+            ev_kind_t k = read_event(&c, &ev);
+            if (k == EV_END || k == EV_END_OF_TRACK) {
+                break;
+            }
+            if (is_lyric_text(k, &ev)) {
+                cnt++;
             }
         }
         if (cnt > best_count) {
@@ -268,81 +497,71 @@ static void pre_parse_karaoke_lyrics(void)
     }
     s_lyric_track = best_track;
 
-    const uint8_t *tdata = s_midi.tracks[best_track].data;
-    uint32_t tlen = s_midi.tracks[best_track].length;
-    uint32_t tpos = 0;
-    uint8_t rs = 0;
-    uint32_t cur_tick = 0;
+    scan_cursor_init(&c, (uint16_t)best_track);
     char line_buf[KARAOKE_MAX_LINE_CHARS + 1] = "";
     uint32_t line_start = 0;
+    uint32_t cur_tick = 0;
 
-    while (tpos < tlen && s_total_lyric_lines < MAX_KARAOKE_LINES) {
-        uint32_t dt = read_vlq(tdata, tlen, &tpos);
-        cur_tick += dt;
-        if (tpos >= tlen) break;
-        uint8_t b = tdata[tpos++];
-        if (!(b & 0x80U)) { tpos--; b = rs; } else rs = b;
-        if (b == 0xFF) {
-            if (tpos >= tlen) break;
-            uint8_t mt = tdata[tpos++];
-            uint32_t ml = read_vlq(tdata, tlen, &tpos);
-            if (tpos + ml > tlen) ml = tlen - tpos;
-            if (mt == 0x05 || mt == 0x01) {
-                char chunk[64];
-                uint32_t clen = ml < sizeof(chunk) - 1 ? ml : sizeof(chunk) - 1;
-                memcpy(chunk, tdata + tpos, clen);
-                chunk[clen] = '\0';
-                if (clen > 0 && chunk[0] != '@') {
-                    bool has_nl = false;
-                    for (uint32_t i = 0; i < clen; i++) {
-                        if (chunk[i] == '\n' || chunk[i] == '\r' || chunk[i] == '/') {
-                            has_nl = true;
-                            chunk[i] = '\0';
-                            break;
-                        }
-                    }
-                    if (has_nl) {
-                        if (chunk[0] != '\0') {
-                            size_t cl = strlen(line_buf);
-                            if (cl + strlen(chunk) < sizeof(line_buf)) {
-                                strncat(line_buf, chunk, sizeof(line_buf) - cl - 1);
-                            }
-                        }
-                        if (line_buf[0] != '\0') {
-                            s_lyric_lines[s_total_lyric_lines].start_tick = line_start;
-                            snprintf(s_lyric_lines[s_total_lyric_lines].text, sizeof(s_lyric_lines[s_total_lyric_lines].text), "%s", line_buf);
-                            s_total_lyric_lines++;
-                            line_buf[0] = '\0';
-                            line_start = 0;
-                        }
-                    } else {
-                        if (line_buf[0] == '\0') line_start = cur_tick;
-                        size_t cl = strlen(line_buf);
-                        if (cl + strlen(chunk) < sizeof(line_buf)) {
-                            strncat(line_buf, chunk, sizeof(line_buf) - cl - 1);
-                        }
-                    }
+    for (;;) {
+        cur_tick += cursor_vlq(&c);
+        ev_kind_t k = read_event(&c, &ev);
+        if (k == EV_END || k == EV_END_OF_TRACK) {
+            break;
+        }
+        if (!is_lyric_text(k, &ev)) {
+            continue;
+        }
+
+        if (s_nsyl < MELODY_MAX_SYLLABLES &&
+            (s_nsyl == 0U || s_syllable_ticks[s_nsyl - 1U] != cur_tick)) {
+            s_syllable_ticks[s_nsyl++] = cur_tick;
+        }
+        if (s_total_lyric_lines >= MAX_KARAOKE_LINES) {
+            if (s_nsyl >= MELODY_MAX_SYLLABLES) {
+                break;
+            }
+            continue;
+        }
+
+        char *chunk = ev.text;
+        bool has_nl = false;
+        for (uint32_t i = 0; i < ev.text_len; i++) {
+            if (chunk[i] == '\n' || chunk[i] == '\r' || chunk[i] == '/') {
+                has_nl = true;
+                chunk[i] = '\0';
+                break;
+            }
+        }
+        if (has_nl) {
+            if (chunk[0] != '\0') {
+                size_t cl = strlen(line_buf);
+                if (cl + strlen(chunk) < sizeof(line_buf)) {
+                    strncat(line_buf, chunk, sizeof(line_buf) - cl - 1);
                 }
             }
-            tpos += ml;
-        } else if (b == 0xF0 || b == 0xF7) {
-            tpos += read_vlq(tdata, tlen, &tpos);
+            if (line_buf[0] != '\0') {
+                lyric_line_entry_t *e = &s_lyric_lines[s_total_lyric_lines];
+                e->start_tick = line_start;
+                snprintf(e->text, sizeof(e->text), "%s", line_buf);
+                s_total_lyric_lines++;
+                line_buf[0] = '\0';
+                line_start = 0;
+            }
         } else {
-            tpos += ((b & 0xF0) == 0xC0 || (b & 0xF0) == 0xD0) ? 1 : 2;
+            if (line_buf[0] == '\0') line_start = cur_tick;
+            size_t cl = strlen(line_buf);
+            if (cl + strlen(chunk) < sizeof(line_buf)) {
+                strncat(line_buf, chunk, sizeof(line_buf) - cl - 1);
+            }
         }
     }
     if (line_buf[0] != '\0' && s_total_lyric_lines < MAX_KARAOKE_LINES) {
-        s_lyric_lines[s_total_lyric_lines].start_tick = line_start;
-        snprintf(s_lyric_lines[s_total_lyric_lines].text, sizeof(s_lyric_lines[s_total_lyric_lines].text), "%s", line_buf);
+        lyric_line_entry_t *e = &s_lyric_lines[s_total_lyric_lines];
+        e->start_tick = line_start;
+        snprintf(e->text, sizeof(e->text), "%s", line_buf);
         s_total_lyric_lines++;
     }
 }
-
-#define MELODY_TICK_WINDOW      12U
-#define MELODY_MAX_SYLLABLES    768U
-#define MELODY_MIN_HIT_PERCENT  25U
-
-static DTCM_BSS uint32_t s_syllable_ticks[MELODY_MAX_SYLLABLES];
 
 static int32_t nearest_syllable(uint32_t tick, uint32_t count)
 {
@@ -366,79 +585,42 @@ static int32_t nearest_syllable(uint32_t tick, uint32_t count)
  */
 static void detect_melody_channel(void)
 {
-    s_melody_channel = -1;
-    if (s_lyric_track < 0) {
-        return;
-    }
-
-    uint32_t nsyl = 0;
-    const uint8_t *td = s_midi.tracks[s_lyric_track].data;
-    uint32_t tl = s_midi.tracks[s_lyric_track].length;
-    uint32_t pos = 0, tick = 0;
-    uint8_t rs = 0;
-    while (pos < tl && nsyl < MELODY_MAX_SYLLABLES) {
-        tick += read_vlq(td, tl, &pos);
-        if (pos >= tl) break;
-        uint8_t b = td[pos++];
-        if (!(b & 0x80U)) { pos--; b = rs; } else rs = b;
-        if (b == 0xFF) {
-            if (pos >= tl) break;
-            uint8_t mt = td[pos++];
-            uint32_t ml = read_vlq(td, tl, &pos);
-            if (pos + ml > tl) ml = tl - pos;
-            if ((mt == 0x05 || mt == 0x01) && ml > 0 && td[pos] != '@') {
-                if (nsyl == 0 || s_syllable_ticks[nsyl - 1U] != tick) {
-                    s_syllable_ticks[nsyl++] = tick;
-                }
-            }
-            pos += ml;
-        } else if (b == 0xF0 || b == 0xF7) {
-            pos += read_vlq(td, tl, &pos);
-        } else {
-            pos += ((b & 0xF0) == 0xC0 || (b & 0xF0) == 0xD0) ? 1 : 2;
-        }
-    }
-    if (nsyl < 2U) {
+    if (s_lyric_track < 0 || s_nsyl < 2U) {
         return;
     }
 
     static DTCM_BSS uint8_t reached[16][MELODY_MAX_SYLLABLES / 8U];
     uint32_t hits[16] = {0}, notes[16] = {0};
+    midi_event_t ev;
+    track_cursor_t c;
+
     memset(reached, 0, sizeof(reached));
     for (uint16_t t = 0; t < s_midi.num_tracks; t++) {
-        td = s_midi.tracks[t].data;
-        tl = s_midi.tracks[t].length;
-        pos = 0; tick = 0; rs = 0;
-        while (pos < tl) {
-            tick += read_vlq(td, tl, &pos);
-            if (pos >= tl) break;
-            uint8_t b = td[pos++];
-            if (!(b & 0x80U)) { pos--; b = rs; } else rs = b;
-            if (b == 0xFF) {
-                if (pos >= tl) break;
-                pos++;
-                uint32_t ml = read_vlq(td, tl, &pos);
-                pos += ml;
-            } else if (b == 0xF0 || b == 0xF7) {
-                pos += read_vlq(td, tl, &pos);
-            } else {
-                if ((b & 0xF0U) == 0x90U && pos + 1U < tl && td[pos + 1U] > 0U) {
-                    uint8_t ch = b & 0x0FU;
-                    notes[ch]++;
-                    int32_t si = nearest_syllable(tick, nsyl);
-                    if (si >= 0 && !(reached[ch][si >> 3] & (1U << (si & 7)))) {
-                        reached[ch][si >> 3] |= (uint8_t)(1U << (si & 7));
-                        hits[ch]++;
-                    }
-                }
-                pos += ((b & 0xF0) == 0xC0 || (b & 0xF0) == 0xD0) ? 1 : 2;
+        uint32_t tick = 0;
+
+        scan_cursor_init(&c, t);
+        for (;;) {
+            tick += cursor_vlq(&c);
+            ev_kind_t k = read_event(&c, &ev);
+            if (k == EV_END || k == EV_END_OF_TRACK) {
+                break;
+            }
+            if (k != EV_NOTE_ON || ev.d2 == 0U) {
+                continue;
+            }
+            uint8_t ch = ev.chan;
+            notes[ch]++;
+            int32_t si = nearest_syllable(tick, s_nsyl);
+            if (si >= 0 && !(reached[ch][si >> 3] & (1U << (si & 7)))) {
+                reached[ch][si >> 3] |= (uint8_t)(1U << (si & 7));
+                hits[ch]++;
             }
         }
     }
 
     uint64_t best_score = 0;
     for (int ch = 0; ch < 16; ch++) {
-        if (ch == 9 || notes[ch] == 0U || hits[ch] * 100U < nsyl * MELODY_MIN_HIT_PERCENT) {
+        if (ch == 9 || notes[ch] == 0U || hits[ch] * 100U < s_nsyl * MELODY_MIN_HIT_PERCENT) {
             continue;
         }
         uint64_t score = ((uint64_t)hits[ch] * hits[ch] * 1000U) / notes[ch];
@@ -454,68 +636,88 @@ int8_t midi_karaoke_get_melody_channel(void)
     return s_melody_channel;
 }
 
-bool midi_karaoke_load_memory(const uint8_t *data, uint32_t length)
+void midi_karaoke_get_stream_stats(midi_stream_stats_t *out)
 {
-    if (!data || length < 14) {
-        return false;
+    if (out == NULL) {
+        return;
     }
+    k_mutex_lock(&s_midi.lock, K_FOREVER);
+    *out = s_midi.stats;
+    k_mutex_unlock(&s_midi.lock);
+#if defined(__arm__)
+    size_t unused = 0;
+    out->seq_stack_unused = (k_thread_stack_space_get(midi_seq_task, &unused) == 0) ? (uint32_t)unused : 0U;
+#else
+    out->seq_stack_unused = 0;
+#endif
+}
 
-    /* Check MThd header */
-    if (memcmp(data, "MThd", 4) != 0) {
-        printk("[MIDI] Invalid header magic!\n");
-        return false;
-    }
-
-    uint32_t header_len = read_be32(data + 4);
-    if (header_len < 6) {
+bool midi_karaoke_load(const midi_source_t *src)
+{
+    if (src == NULL || src->size < 14U || (src->mem == NULL && src->read == NULL)) {
         return false;
     }
 
     k_mutex_lock(&s_midi.lock, K_FOREVER);
 
-    s_midi.format = read_be16(data + 8);
-    uint16_t tracks_in_file = read_be16(data + 10);
-    s_midi.ppqn = read_be16(data + 12);
+    s_midi.src = *src;
+    s_midi.num_tracks = 0;
+    s_midi.is_playing = false;
+    s_midi.is_paused = false;
+    memset(&s_midi.stats, 0, sizeof(s_midi.stats));
+
+    uint8_t hdr[14];
+    if (!source_read(0, hdr, sizeof(hdr)) || memcmp(hdr, "MThd", 4) != 0) {
+        printk("[MIDI] Invalid header magic!\n");
+        k_mutex_unlock(&s_midi.lock);
+        return false;
+    }
+    uint32_t header_len = read_be32(hdr + 4);
+    if (header_len < 6U) {
+        k_mutex_unlock(&s_midi.lock);
+        return false;
+    }
+
+    s_midi.format = read_be16(hdr + 8);
+    uint16_t tracks_in_file = read_be16(hdr + 10);
+    s_midi.ppqn = read_be16(hdr + 12);
     if (s_midi.ppqn == 0) s_midi.ppqn = 120;
 
-    s_midi.num_tracks = 0;
-    uint32_t pos = 8 + header_len;
+    uint32_t pos = 8U + header_len;
+    uint8_t chunk[8];
 
-    while (pos + 8 <= length && s_midi.num_tracks < MIDI_MAX_TRACKS) {
-        if (memcmp(data + pos, "MTrk", 4) != 0) {
-            /* Skip unknown chunk */
-            uint32_t chunk_len = read_be32(data + pos + 4);
-            pos += 8 + chunk_len;
-            continue;
+    while (pos <= src->size - 8U && s_midi.num_tracks < MIDI_MAX_TRACKS) {
+        if (!source_read(pos, chunk, sizeof(chunk))) {
+            break;
         }
-
-        uint32_t track_len = read_be32(data + pos + 4);
-        pos += 8;
-
-        if (pos + track_len > length) {
-            track_len = length - pos;
+        uint32_t chunk_len = read_be32(chunk + 4);
+        pos += 8U;
+        if (chunk_len > src->size - pos) {
+            chunk_len = src->size - pos;
         }
+        if (memcmp(chunk, "MTrk", 4) == 0) {
+            track_cursor_t *cur = &s_midi.tracks[s_midi.num_tracks];
+            memset(cur, 0, sizeof(*cur));
+            cur->win = s_track_win[s_midi.num_tracks];
+            cur->win_cap = STREAM_WINDOW_BYTES;
+            cur->file_off = pos;
+            cur->length = chunk_len;
+            cur->tick = cursor_vlq(cur);
+            s_midi.num_tracks++;
+        }
+        pos += chunk_len;
+    }
 
-        track_cursor_t *cur = &s_midi.tracks[s_midi.num_tracks];
-        cur->data = data + pos;
-        cur->length = track_len;
-        cur->pos = 0;
-        cur->running_status = 0;
-        cur->is_finished = false;
-
-        /* Read initial delta tick */
-        cur->tick = read_vlq(cur->data, cur->length, &cur->pos);
-
-        s_midi.num_tracks++;
-        pos += track_len;
+    if (s_midi.num_tracks == 0) {
+        printk("[MIDI] No tracks found\n");
+        k_mutex_unlock(&s_midi.lock);
+        return false;
     }
 
     s_midi.current_tick = 0;
     s_midi.elapsed_us_accum = 0;
     s_midi.elapsed_ms = 0;
     s_midi.tempo_us = 500000; /* 120 BPM */
-    s_midi.is_playing = false;
-    s_midi.is_paused = false;
 
     s_midi.lyric_head = 0;
     s_midi.lyric_tail = 0;
@@ -526,14 +728,31 @@ bool midi_karaoke_load_memory(const uint8_t *data, uint32_t length)
     s_midi.has_lyrics_started = false;
     s_midi.line_ended = false;
 
-    pre_parse_karaoke_lyrics();
-    detect_melody_channel();
+    s_total_lyric_lines = 0;
+    s_active_line_idx = 0;
+    s_lyric_track = -1;
+    s_melody_channel = -1;
+    s_nsyl = 0;
 
     k_mutex_unlock(&s_midi.lock);
 
+    /* The scans read the whole file from the card; keep the display responsive meanwhile. */
+    pre_parse_karaoke_lyrics();
+    detect_melody_channel();
+
     printk("[MIDI] Loaded SMF Format %u, %u tracks (file specified %u), PPQN=%u\n",
            s_midi.format, s_midi.num_tracks, tracks_in_file, s_midi.ppqn);
+    if (tracks_in_file > s_midi.num_tracks) {
+        printk("[MIDI] Playing the first %u tracks only\n", (unsigned)s_midi.num_tracks);
+    }
     return true;
+}
+
+bool midi_karaoke_load_memory(const uint8_t *data, uint32_t length)
+{
+    midi_source_t src = { .mem = data, .size = length };
+
+    return data != NULL && midi_karaoke_load(&src);
 }
 
 void midi_karaoke_play(void)
@@ -575,128 +794,66 @@ void midi_karaoke_stop(void)
 /* Process next event on a track */
 static void process_track_event(track_cursor_t *cur)
 {
-    if (cur->pos >= cur->length) {
+    midi_event_t ev;
+
+    switch (read_event(cur, &ev)) {
+    case EV_END:
+    case EV_END_OF_TRACK:
         cur->is_finished = true;
         return;
+    case EV_TEMPO:
+        if (ev.tempo > 0) {
+            s_midi.tempo_us = ev.tempo;
+        }
+        break;
+    case EV_TEXT: {
+        char buf[48];
+        uint32_t n = ev.text_len < sizeof(buf) - 1U ? ev.text_len : sizeof(buf) - 1U;
+        bool is_nl = false;
+
+        memcpy(buf, ev.text, n);
+        buf[n] = '\0';
+        for (uint32_t i = 0; i < n; i++) {
+            if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '/') {
+                is_nl = true;
+                buf[i] = '\0';
+                break;
+            }
+        }
+        if (buf[0] != '\0' || is_nl) {
+            push_lyric_event(buf, is_nl);
+        }
+        break;
     }
-
-    uint8_t status = cur->data[cur->pos++];
-    if (!(status & 0x80U)) {
-        /* Running status: byte is actually the first data byte */
-        cur->pos--;
-        status = cur->running_status;
-    } else {
-        cur->running_status = status;
-    }
-
-    if (status == 0xFF) {
-        /* Meta Event */
-        if (cur->pos >= cur->length) { cur->is_finished = true; return; }
-        uint8_t meta_type = cur->data[cur->pos++];
-        uint32_t meta_len = read_vlq(cur->data, cur->length, &cur->pos);
-        if (cur->pos + meta_len > cur->length) {
-            meta_len = cur->length - cur->pos;
+    case EV_NOTE_OFF:
+        if (s_midi.synth.note_off) s_midi.synth.note_off(ev.chan, ev.d1, ev.d2);
+        break;
+    case EV_NOTE_ON:
+        if (ev.d2 == 0) {
+            if (s_midi.synth.note_off) s_midi.synth.note_off(ev.chan, ev.d1, 0);
+        } else if (s_midi.synth.note_on) {
+            s_midi.synth.note_on(ev.chan, ev.d1, ev.d2);
         }
-
-        const uint8_t *meta_data = cur->data + cur->pos;
-        cur->pos += meta_len;
-
-        if (meta_type == 0x2F) {
-            /* End of Track */
-            cur->is_finished = true;
-            return;
-        } else if (meta_type == 0x51 && meta_len >= 3) {
-            /* Set Tempo */
-            uint32_t tempo = ((uint32_t)meta_data[0] << 16) |
-                             ((uint32_t)meta_data[1] << 8)  |
-                             ((uint32_t)meta_data[2]);
-            if (tempo > 0) {
-                s_midi.tempo_us = tempo;
-            }
-        } else if (meta_type == 0x01 || meta_type == 0x05) {
-            /* Text or Lyric */
-            char buf[48];
-            uint32_t cpy_len = meta_len < sizeof(buf) - 1 ? meta_len : sizeof(buf) - 1;
-            memcpy(buf, meta_data, cpy_len);
-            buf[cpy_len] = '\0';
-
-            /* Check for line break markers */
-            bool is_nl = false;
-            for (uint32_t i = 0; i < cpy_len; i++) {
-                if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '/') {
-                    is_nl = true;
-                    buf[i] = '\0';
-                    break;
-                }
-            }
-
-            if (strlen(buf) > 0 || is_nl) {
-                push_lyric_event(buf, is_nl);
-            }
+        break;
+    case EV_CC:
+        if (s_midi.synth.control_change) s_midi.synth.control_change(ev.chan, ev.d1, ev.d2);
+        break;
+    case EV_PROGRAM:
+        if (s_midi.synth.program_change) s_midi.synth.program_change(ev.chan, ev.d1);
+        break;
+    case EV_BEND:
+        if (s_midi.synth.pitch_bend) {
+            s_midi.synth.pitch_bend(ev.chan, (uint16_t)(((uint16_t)ev.d2 << 7) | (uint16_t)ev.d1));
         }
-    } else if (status == 0xF0 || status == 0xF7) {
-        /* Sysex: skip */
-        uint32_t sysex_len = read_vlq(cur->data, cur->length, &cur->pos);
-        cur->pos += sysex_len;
-    } else {
-        /* MIDI Channel Voice Message */
-        uint8_t cmd  = (uint8_t)(status & 0xF0U);
-        uint8_t chan = (uint8_t)(status & 0x0FU);
-
-        if (cmd == 0x80) {
-            /* Note Off */
-            if (cur->pos + 2 <= cur->length) {
-                uint8_t note = cur->data[cur->pos++];
-                uint8_t vel  = cur->data[cur->pos++];
-                if (s_midi.synth.note_off) s_midi.synth.note_off(chan, note, vel);
-            }
-        } else if (cmd == 0x90) {
-            /* Note On */
-            if (cur->pos + 2 <= cur->length) {
-                uint8_t note = cur->data[cur->pos++];
-                uint8_t vel  = cur->data[cur->pos++];
-                if (vel == 0) {
-                    if (s_midi.synth.note_off) s_midi.synth.note_off(chan, note, 0);
-                } else {
-                    if (s_midi.synth.note_on) s_midi.synth.note_on(chan, note, vel);
-                }
-            }
-        } else if (cmd == 0xA0) {
-            /* Polyphonic Key Pressure */
-            cur->pos += 2;
-        } else if (cmd == 0xB0) {
-            /* Control Change */
-            if (cur->pos + 2 <= cur->length) {
-                uint8_t ctrl = cur->data[cur->pos++];
-                uint8_t val  = cur->data[cur->pos++];
-                if (s_midi.synth.control_change) {
-                    s_midi.synth.control_change(chan, ctrl, val);
-                }
-            }
-        } else if (cmd == 0xC0) {
-            /* Program Change */
-            if (cur->pos + 1 <= cur->length) {
-                uint8_t prog = cur->data[cur->pos++];
-                if (s_midi.synth.program_change) s_midi.synth.program_change(chan, prog);
-            }
-        } else if (cmd == 0xD0) {
-            /* Channel Pressure */
-            cur->pos += 1;
-        } else if (cmd == 0xE0) {
-            /* Pitch Bend */
-            if (cur->pos + 2 <= cur->length) {
-                uint8_t lsb = cur->data[cur->pos++];
-                uint8_t msb = cur->data[cur->pos++];
-                uint16_t bend = (uint16_t)(((uint16_t)msb << 7) | (uint16_t)lsb);
-                if (s_midi.synth.pitch_bend) s_midi.synth.pitch_bend(chan, bend);
-            }
-        }
+        break;
+    case EV_SKIP:
+    default:
+        break;
     }
 
     /* Advance to next delta tick */
-    if (!cur->is_finished && cur->pos < cur->length) {
-        uint32_t delta = read_vlq(cur->data, cur->length, &cur->pos);
-        cur->tick += delta;
+    if (cur->pos < cur->length) {
+        cur->tick += cursor_vlq(cur);
     } else {
         cur->is_finished = true;
     }
@@ -709,6 +866,12 @@ void midi_karaoke_tick(uint32_t elapsed_us)
     }
 
     k_mutex_lock(&s_midi.lock, K_FOREVER);
+
+    /* A stop or reload may have run while this tick waited for the lock. */
+    if (!s_midi.is_playing || s_midi.is_paused || s_midi.num_tracks == 0) {
+        k_mutex_unlock(&s_midi.lock);
+        return;
+    }
 
     s_midi.elapsed_us_accum += elapsed_us;
     s_midi.elapsed_ms += elapsed_us / 1000;

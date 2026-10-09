@@ -18,6 +18,10 @@ static struct fs_mount_t s_mount = {
     .mnt_point = SD_MOUNT_POINT,
 };
 static bool s_mounted;
+static K_MUTEX_DEFINE(s_fs_lock);
+
+void sd_card_lock(void) { k_mutex_lock(&s_fs_lock, K_FOREVER); }
+void sd_card_unlock(void) { k_mutex_unlock(&s_fs_lock); }
 static sd_track_t s_tracks[MAX_SD_TRACKS];
 static uint8_t s_track_count;
 

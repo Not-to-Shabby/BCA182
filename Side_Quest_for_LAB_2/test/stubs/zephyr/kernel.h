@@ -24,6 +24,9 @@ static inline void k_timer_start(struct k_timer *t, int a, int b) { (void)t; (vo
 static inline void k_timer_stop(struct k_timer *t) { (void)t; }
 static inline int k_sem_take(struct k_sem *s, int t) { (void)s; (void)t; return 0; }
 static inline void k_sem_give(struct k_sem *s) { (void)s; }
+#define K_MUTEX_DEFINE(name) static struct k_mutex name
+static inline uint32_t k_cycle_get_32(void) { return 0; }
+static inline uint32_t k_cyc_to_us_floor32(uint32_t c) { return c; }
 static inline int64_t k_uptime_ticks(void) { return 0; }
 static inline int64_t k_ticks_to_us_floor64(int64_t ticks) { return ticks * 100; }
 

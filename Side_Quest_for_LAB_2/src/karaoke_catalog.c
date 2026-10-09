@@ -20,7 +20,6 @@
 #include <zephyr/sys/printk.h>
 #include <ff.h>
 
-#define SD_MIDI_BUFFER_SIZE     81920
 #define SD_ROOT                 "SD:/"
 #define INDEX_HEADER_BYTES      16U
 #define INDEX_RECORD_BYTES      96U
@@ -37,7 +36,9 @@ static karaoke_catalog_source_t s_source = KARAOKE_SOURCE_ROM;
 static uint32_t s_total_songs = 0;
 static FIL s_idx_file;
 static bool s_idx_open = false;
-static uint8_t s_sd_midi_buf[SD_MIDI_BUFFER_SIZE];
+static FIL s_song_file;
+static bool s_song_open = false;
+static uint32_t s_song_pos = 0;
 static DTCM_BSS song_table_t s_scan_table;
 static bool s_scan_full = false;
 
@@ -103,8 +104,20 @@ static bool join_path(char *out, size_t out_size, const char *a, const char *b)
 static void close_index(void)
 {
     if (s_idx_open) {
+        sd_card_lock();
         f_close(&s_idx_file);
+        sd_card_unlock();
         s_idx_open = false;
+    }
+}
+
+static void close_song(void)
+{
+    if (s_song_open) {
+        sd_card_lock();
+        f_close(&s_song_file);
+        sd_card_unlock();
+        s_song_open = false;
     }
 }
 
@@ -188,7 +201,8 @@ static uint32_t open_index(void)
 
     if (problem != NULL) {
         printk("[Catalog] songs.idx unusable: %s\n", problem);
-        close_index();
+        f_close(&s_idx_file);
+        s_idx_open = false;
         return 0;
     }
     return usable;
@@ -249,8 +263,11 @@ void karaoke_catalog_init(void)
         return;
     }
 
+    close_song();
     printk("[Catalog] Probing SD:/songs.idx...\n");
+    sd_card_lock();
     uint32_t indexed = open_index();
+    sd_card_unlock();
     if (indexed > 0) {
         s_source = KARAOKE_SOURCE_INDEX;
         s_total_songs = indexed;
@@ -259,8 +276,10 @@ void karaoke_catalog_init(void)
     }
 
     printk("[Catalog] Scanning the SD card for MIDI files...\n");
+    sd_card_lock();
     scan_folder(SD_ROOT "midi", "midi/", 1);
     scan_folder(SD_ROOT, "", 0);
+    sd_card_unlock();
 
     if (s_scan_table.count > 0) {
         s_source = KARAOKE_SOURCE_SCAN;
@@ -322,6 +341,8 @@ bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index)
     }
 
     /* Fast Binary Search on sorted songs.idx */
+    sd_card_lock();
+    bool found = false;
     uint32_t low = 0;
     uint32_t high = s_total_songs - 1;
 
@@ -337,7 +358,8 @@ bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index)
         uint32_t mid_code = le32(rec);
         if (mid_code == target_code) {
             *out_index = mid;
-            return true;
+            found = true;
+            break;
         } else if (mid_code < target_code) {
             low = mid + 1;
         } else {
@@ -345,7 +367,8 @@ bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index)
             high = mid - 1;
         }
     }
-    return false;
+    sd_card_unlock();
+    return found;
 }
 
 bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song)
@@ -378,12 +401,15 @@ bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song)
 
     /* Read 96-byte record from songs.idx: offset = 16 + index * 96 */
     FSIZE_t offset = INDEX_HEADER_BYTES + (FSIZE_t)index * INDEX_RECORD_BYTES;
-    FRESULT fr = f_lseek(&s_idx_file, offset);
-    if (fr != FR_OK) return false;
-
     uint8_t rec[INDEX_RECORD_BYTES];
     UINT br = 0;
-    fr = f_read(&s_idx_file, rec, sizeof(rec), &br);
+
+    sd_card_lock();
+    FRESULT fr = f_lseek(&s_idx_file, offset);
+    if (fr == FR_OK) {
+        fr = f_read(&s_idx_file, rec, sizeof(rec), &br);
+    }
+    sd_card_unlock();
     if (fr != FR_OK || br != sizeof(rec)) return false;
 
     out_song->song_code = le32(rec);
@@ -403,44 +429,71 @@ bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song)
     return true;
 }
 
-static read_result_t read_midi_file(const char *path, uint32_t *out_length)
+/* Called from the sequencer thread. Playback reads sectors in a scattered order, so seek only
+ * when the file position is not already where the read starts. */
+static bool song_read(void *ctx, uint32_t offset, uint8_t *dst, uint32_t len)
 {
-    FIL mf;
-    if (f_open(&mf, path, FA_READ) != FR_OK) {
+    ARG_UNUSED(ctx);
+    UINT br = 0;
+    FRESULT fr = FR_OK;
+
+    sd_card_lock();
+    if (s_song_pos != offset) {
+        fr = f_lseek(&s_song_file, offset);
+    }
+    if (fr == FR_OK) {
+        fr = f_read(&s_song_file, dst, len, &br);
+    }
+    sd_card_unlock();
+
+    if (fr != FR_OK || br != len) {
+        s_song_pos = UINT32_MAX;
+        return false;
+    }
+    s_song_pos = offset + len;
+    return true;
+}
+
+static read_result_t open_midi_file(const char *path, midi_source_t *out)
+{
+    close_song();
+
+    sd_card_lock();
+    if (f_open(&s_song_file, path, FA_READ) != FR_OK) {
+        sd_card_unlock();
         return READ_NO_FILE;
     }
-
-    FSIZE_t fsize = f_size(&mf);
-    if (fsize > SD_MIDI_BUFFER_SIZE) {
-        printk("[Catalog] Song file %s too large (%u bytes)\n", path, (unsigned)fsize);
-        f_close(&mf);
+    FSIZE_t fsize = f_size(&s_song_file);
+    if (fsize < 14U || fsize > 0x7FFFFFFFU) {
+        f_close(&s_song_file);
+        sd_card_unlock();
+        printk("[Catalog] Song file %s has an unusable size (%u bytes)\n", path, (unsigned)fsize);
         return READ_FAILED;
     }
+    sd_card_unlock();
 
-    UINT br = 0;
-    FRESULT fr = f_read(&mf, s_sd_midi_buf, (UINT)fsize, &br);
-    f_close(&mf);
-
-    if (fr != FR_OK || br != fsize) {
-        printk("[Catalog] Read error on %s\n", path);
-        return READ_FAILED;
-    }
-
-    *out_length = br;
+    s_song_open = true;
+    s_song_pos = UINT32_MAX;
+    out->mem = NULL;
+    out->size = (uint32_t)fsize;
+    out->read = song_read;
+    out->ctx = NULL;
     return READ_OK;
 }
 
-bool karaoke_catalog_load_midi_data(uint32_t index, const uint8_t **out_data, uint32_t *out_length)
+bool karaoke_catalog_open_song(uint32_t index, midi_source_t *out_src)
 {
-    if (!out_data || !out_length || index >= s_total_songs) return false;
+    if (!out_src || index >= s_total_songs) return false;
 
     if (s_source == KARAOKE_SOURCE_ROM) {
-        *out_data = ROM_MIDI[index].data;
-        *out_length = ROM_MIDI[index].length;
+        close_song();
+        out_src->mem = ROM_MIDI[index].data;
+        out_src->size = ROM_MIDI[index].length;
+        out_src->read = NULL;
+        out_src->ctx = NULL;
         return true;
     }
 
-    uint32_t length = 0;
     read_result_t result = READ_NO_FILE;
     char path[SCAN_PATH_BYTES + 4];
 
@@ -449,7 +502,7 @@ bool karaoke_catalog_load_midi_data(uint32_t index, const uint8_t **out_data, ui
         if (rel == NULL || !join_path(path, sizeof(path), SD_ROOT, rel)) {
             return false;
         }
-        result = read_midi_file(path, &length);
+        result = open_midi_file(path, out_src);
     } else {
         song_entry_t s;
         if (!karaoke_catalog_get_song(index, &s)) return false;
@@ -460,18 +513,12 @@ bool karaoke_catalog_load_midi_data(uint32_t index, const uint8_t **out_data, ui
                 printk("[Catalog] Path too long for %s\n", s.filename);
                 return false;
             }
-            result = read_midi_file(path, &length);
+            result = open_midi_file(path, out_src);
         }
     }
 
     if (result == READ_NO_FILE) {
         printk("[Catalog] Failed to open %s\n", path);
     }
-    if (result != READ_OK) {
-        return false;
-    }
-
-    *out_data = s_sd_midi_buf;
-    *out_length = length;
-    return true;
+    return result == READ_OK;
 }

@@ -9,8 +9,9 @@
 #ifndef APP_CONFIG_H_
 #define APP_CONFIG_H_
 
+/* Catalog index to play at boot; -1 picks a random song. Bench builds override it. */
 #ifndef KARAOKE_BOOT_SONG
-#define KARAOKE_BOOT_SONG           0
+#define KARAOKE_BOOT_SONG           (-1)
 #endif
 
 #define APP_NAME                    "RT-Spark Karaoke Player"

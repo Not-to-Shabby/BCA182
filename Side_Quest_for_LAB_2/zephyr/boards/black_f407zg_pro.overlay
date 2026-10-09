@@ -50,3 +50,7 @@
 	/* F4 has no SDIO hardware flow control; 48 MHz / (10 + 2) = 4 MHz avoids RX FIFO overrun. */
 	clk-div = <10>;
 };
+
+&rng {
+	status = "okay";
+};

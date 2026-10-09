@@ -14,8 +14,10 @@
 #include "karaoke_catalog.h"
 #include "karaoke_settings.h"
 #include "sd_card_reader.h"
+#include "random_play.h"
 
 #include <zephyr/kernel.h>
+#include <zephyr/random/random.h>
 #include <zephyr/sys/printk.h>
 #include <stm32f4xx.h>
 #include <stdio.h>
@@ -35,8 +37,16 @@ static struct {
     /* Settings View State */
     uint8_t settings_cursor;
 
+    /* Random play: songs picked lately, when a button was last touched, last automatic pick */
+    random_play_t random;
+    uint32_t last_input_ms;
+    uint32_t last_auto_ms;
+
     struct k_mutex lock;
 } s_app;
+
+/* Pause between automatic picks, so a song that will not load cannot make the player spin. */
+#define AUTO_PICK_MIN_GAP_MS    1000U
 
 /* Hardware Peripheral GPIOs (D-Pad, LEDs, USART1) */
 static void init_board_peripherals(void)
@@ -85,10 +95,10 @@ static void update_status_led(bool is_playing)
     }
 }
 
-static void play_song(uint32_t index)
+static bool play_song(uint32_t index)
 {
     song_entry_t s;
-    if (!karaoke_catalog_get_song(index, &s)) return;
+    if (!karaoke_catalog_get_song(index, &s)) return false;
 
     /* Stop the sequencer first so that it reads nothing from the file about to be closed. */
     midi_karaoke_stop();
@@ -97,12 +107,37 @@ static void play_song(uint32_t index)
     midi_source_t src;
     if (!karaoke_catalog_open_song(index, &src) || !midi_karaoke_load(&src)) {
         printk("[App] Failed to load song data for index %u\n", (unsigned)index);
-        return;
+        return false;
     }
     yamaha_fm_set_melody_channel(midi_karaoke_get_melody_channel());
     karaoke_ui_set_current_song(&s);
     midi_karaoke_play();
+    random_play_note(&s_app.random, index);
     printk("[App] Started playing: #%u - %s (%s)\n", (unsigned)s.song_code, s.title, s.singer);
+    return true;
+}
+
+/* Hardware RNG through Zephyr's generator, mixed with the cycle counter so that a missing or
+ * failed RNG still gives a different start after every reset. */
+static uint32_t random_u32(void)
+{
+    return sys_rand32_get() ^ (k_cycle_get_32() * 2654435761U);
+}
+
+/* Picks a song nobody played lately and starts it. Call with s_app.lock held (or before the
+ * threads exist). */
+static bool play_random_song(void)
+{
+    uint32_t total = karaoke_catalog_get_total_songs();
+
+    if (total == 0U) {
+        return false;
+    }
+    uint32_t index = random_play_pick(&s_app.random, total, random_u32());
+
+    s_app.current_song_index = index;
+    printk("[App] Random pick: catalog index %u of %u\n", (unsigned)index, (unsigned)total);
+    return play_song(index);
 }
 
 /* Helper to convert 5 digits array to numeric song code */
@@ -218,6 +253,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
         bool lt = ((GPIOC->IDR & (1U << 0)) == 0);
         bool rt = ((GPIOC->IDR & (1U << 4)) == 0);
         bool press = ((GPIOA->IDR & (1U << 0)) != 0);
+
+        if (up || dn || lt || rt || press) {
+            s_app.last_input_ms = k_uptime_get_32();
+        }
 
         /* 1. Simultaneous UP + DOWN Detection -> Enter NUMBER SELECT Mode */
         if (up && dn) {
@@ -446,6 +485,26 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
             k_mutex_unlock(&s_app.lock);
         }
 
+        /* 5. Nobody has touched a button for a while and the song is over: play another. */
+        uint32_t now = k_uptime_get_32();
+        if (random_play_idle_due(now, s_app.last_input_ms, true) &&
+            (uint32_t)(now - s_app.last_auto_ms) >= AUTO_PICK_MIN_GAP_MS) {
+            midi_player_status_t st;
+            midi_karaoke_get_status(&st);
+            if (!st.is_playing) {
+                k_mutex_lock(&s_app.lock, K_FOREVER);
+                s_app.last_auto_ms = now;
+                if (s_app.ui_mode == UI_VIEW_SETTINGS) {
+                    karaoke_settings_save();
+                }
+                if (play_random_song() && s_app.ui_mode != UI_VIEW_PLAYING) {
+                    s_app.ui_mode = UI_VIEW_PLAYING;
+                    karaoke_ui_set_view(UI_VIEW_PLAYING);
+                }
+                k_mutex_unlock(&s_app.lock);
+            }
+        }
+
         last_up = up;
         last_dn = dn;
         last_lt = lt;
@@ -469,6 +528,7 @@ int main(void)
     printk("==================================================\n");
 
     k_mutex_init(&s_app.lock);
+    random_play_reset(&s_app.random);
     s_app.current_song_index = 0;
     s_app.ui_mode = UI_VIEW_PLAYING;
     s_app.browser_cursor = 0;
@@ -497,10 +557,15 @@ int main(void)
     /* 5. Initialize Persistent Audio Settings (survives reset & shutdown) */
     karaoke_settings_init();
 
-    /* 6. Start playing first song immediately (KARAOKE_BOOT_SONG selects another for bench builds) */
+    /* 6. Start a random song (a KARAOKE_BOOT_SONG of 0 or more picks a fixed one for bench builds) */
     k_msleep(100);
-    play_song(KARAOKE_BOOT_SONG);
-    s_app.current_song_index = KARAOKE_BOOT_SONG;
+    s_app.last_input_ms = k_uptime_get_32();
+    if (KARAOKE_BOOT_SONG >= 0) {
+        s_app.current_song_index = (uint32_t)KARAOKE_BOOT_SONG;
+        play_song(s_app.current_song_index);
+    } else {
+        play_random_song();
+    }
 
     /* 6. Spawn Application Background Threads */
     printk("[System] Starting UI and Button threads...\n");

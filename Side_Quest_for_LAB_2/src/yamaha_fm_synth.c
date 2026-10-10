@@ -1413,7 +1413,8 @@ static void env_step(fm_voice_t *v)
 }
 
 static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
-                          float lfo, const midi_channel_state_t *c, int32_t *bl, int32_t *br)
+                          float lfo, const midi_channel_state_t *c, int32_t *bl, int32_t *br,
+                          uint32_t active_poly)
 {
     env_step(v);
     if (!v->active) {
@@ -1441,8 +1442,9 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     uint32_t fbu = v->fb_u;
     const int16_t *wt = s_waves[v->wave_m];
 
-    /* Dynamic Resonant State-Variable Filter (VCF): cutoff follows voice amplitude & velocity */
-    bool vcf_active = (s_vcf_on && !v->additive && v->ext != EXT_ENSEMBLE);
+    /* Dynamic Resonant State-Variable Filter (VCF): cutoff follows voice amplitude & velocity.
+     * When polyphony exceeds 28 simultaneous voices, VCF is smoothly bypassed to ensure zero DMA misses. */
+    bool vcf_active = (s_vcf_on && !v->additive && v->ext != EXT_ENSEMBLE && active_poly <= 28U);
     int32_t svf_f = 0;
     (void)v->svf_q;
     int32_t svf_lp = v->svf_lp;
@@ -1453,7 +1455,11 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         if (svf_f > 26500) svf_f = 26500;
     }
 
-    if (v->ext == EXT_ENSEMBLE) {
+    uint8_t eff_ops = v->ops;
+    if (active_poly > 34U && eff_ops == 6) eff_ops = 4;
+    if (active_poly > 48U) eff_ops = 2;
+
+    if (v->ext == EXT_ENSEMBLE && eff_ops >= 4) {
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
         uint32_t iu2 = float_to_phase(v->idx * v->tine_idx * MOD_IDX_UNIT);
         uint32_t inc_2 = float_to_phase(v->base_x * r);
@@ -1461,7 +1467,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         uint32_t pc2 = v->pc2;
         uint32_t pm2 = v->pm2;
 
-        if (v->ops == 6) {
+        if (eff_ops == 6) {
             /* 6-Operator DX7 3-Pair Super-Ensemble: Left Pair + Right Pair + Center Anchor Pair */
             uint32_t inc_3 = float_to_phase(v->base_c3 * r);
             uint32_t inc_m3 = float_to_phase(v->base_m3 * r);
@@ -1516,7 +1522,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         }
         v->pc2 = pc2;
         v->pm2 = pm2;
-    } else if (v->ext == EXT_TINE) {
+    } else if (v->ext == EXT_TINE && eff_ops >= 4) {
         /* 6-Op / 4-Op Parallel Tine & Hammer Pairs */
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
         uint32_t it = float_to_phase(v->tine_idx * MOD_IDX_UNIT);
@@ -1527,7 +1533,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         int32_t mix_tine = (int32_t)(v->tine_idx * 16384.0f);
 
         v->tine_idx *= v->tine_k;
-        if (v->ops == 6) {
+        if (eff_ops == 6) {
             uint32_t inc_c3 = float_to_phase(v->base_c3 * r);
             uint32_t inc_m3 = float_to_phase(v->base_m3 * r);
             uint32_t pc3 = v->pc3;
@@ -1783,6 +1789,11 @@ static void render_chunk(int16_t *out, size_t frames)
         memset(s_cho, 0, frames * sizeof(int32_t));
     }
 
+    uint32_t active_poly = 0;
+    for (int i = 0; i < FM_MAX_VOICES; i++) {
+        if (s_voices[i].active) active_poly++;
+    }
+
     for (int i = 0; i < FM_MAX_VOICES; i++) {
         fm_voice_t *v = &s_voices[i];
         if (!v->active) {
@@ -1799,7 +1810,7 @@ static void render_chunk(int16_t *out, size_t frames)
         if (v->is_drum) {
             render_drum_sub(v, frames, ch_gain[ch], c, s_bus_l[ch], s_bus_r[ch]);
         } else {
-            render_fm_sub(v, frames, ch_gain[ch], ch_ratio[ch], lfo, c, s_bus_l[ch], s_bus_r[ch]);
+            render_fm_sub(v, frames, ch_gain[ch], ch_ratio[ch], lfo, c, s_bus_l[ch], s_bus_r[ch], active_poly);
         }
     }
 

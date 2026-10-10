@@ -124,20 +124,20 @@ static void lcd_hardware_init(void)
      */
     FSMC_Bank1->BTCR[4] = (1U << 12) | (1U << 14);
 
-    /* BTR3 Read Timing configuration (Mode A @ 210 MHz):
-     * - ADDSET: Address setup time = 19 HCLK
-     * - DATAST: Data setup time = 75 HCLK
+    /* BTR3 Read Timing configuration (Mode A @ 230 MHz):
+     * - ADDSET: Address setup time = 21 HCLK
+     * - DATAST: Data setup time = 82 HCLK
      * - ACCMOD: Access mode A (00b at bits 29:28)
      */
-    FSMC_Bank1->BTCR[5] = (19U << 0) | (75U << 8);
+    FSMC_Bank1->BTCR[5] = (21U << 0) | (82U << 8);
 
-    /* BWTR3 Write Timing configuration (Bank1E BWTR[4] @ 210 MHz, 4.76 ns/HCLK):
-     * - ADDSET: Address setup time = 5 HCLK (~23.8 ns)
-     * - DATAST: Data setup time = 10 HCLK (~47.6 ns)
+    /* BWTR3 Write Timing configuration (Bank1E BWTR[4] @ 230 MHz, 4.35 ns/HCLK):
+     * - ADDSET: Address setup time = 6 HCLK (~26.1 ns)
+     * - DATAST: Data setup time = 11 HCLK (~47.8 ns)
      * - ACCMOD: Access mode A (00b at bits 29:28)
-     * Total write cycle ~ 71.4 ns (within ST7789 66 ns spec)
+     * Total write cycle ~ 73.9 ns (within ST7789 66 ns spec)
      */
-    FSMC_Bank1E->BWTR[4] = (5U << 0) | (10U << 8);
+    FSMC_Bank1E->BWTR[4] = (6U << 0) | (11U << 8);
 
     /* Enable Bank 3 */
     FSMC_Bank1->BTCR[4] |= (1U << 0); /* MBKEN = 1 */

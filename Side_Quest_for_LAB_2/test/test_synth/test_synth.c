@@ -882,6 +882,54 @@ void test_opl3_waveforms_enrich_clarinet_and_oboe_harmonics(void)
     TEST_ASSERT_TRUE(oboe > clar * 1.5);
 }
 
+void test_all_eight_opl3_waveforms_generate_distinct_shapes(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(8, NUM_OPL3_WAVES);
+
+    /* 0: Standard Sine has both positive and negative peaks */
+    int min0 = 32767, max0 = -32768;
+    for (int i = 0; i < SINE_SIZE; i++) {
+        if (s_waves[WAVE_SINE][i] < min0) min0 = s_waves[WAVE_SINE][i];
+        if (s_waves[WAVE_SINE][i] > max0) max0 = s_waves[WAVE_SINE][i];
+    }
+    TEST_ASSERT_TRUE(min0 < -30000 && max0 > 30000);
+
+    /* 1: Half-Sine has no negative values */
+    for (int i = 0; i < SINE_SIZE; i++) {
+        TEST_ASSERT_TRUE(s_waves[WAVE_HALF][i] >= 0);
+    }
+
+    /* 2: Absolute-Sine has no negative values */
+    for (int i = 0; i < SINE_SIZE; i++) {
+        TEST_ASSERT_TRUE(s_waves[WAVE_ABS][i] >= 0);
+    }
+
+    /* 3: Quarter-Sine is zero in quadrants 1 and 3 */
+    TEST_ASSERT_EQUAL_INT16(0, s_waves[WAVE_QUARTER][SINE_SIZE * 3 / 8]);
+    TEST_ASSERT_EQUAL_INT16(0, s_waves[WAVE_QUARTER][SINE_SIZE * 7 / 8]);
+
+    /* 4: Alternating-Sine is zero in the second half */
+    for (int i = SINE_SIZE / 2; i < SINE_SIZE; i++) {
+        TEST_ASSERT_EQUAL_INT16(0, s_waves[WAVE_ALT][i]);
+    }
+
+    /* 5: Camel-Sine is zero in the second half and non-negative in the first */
+    for (int i = 0; i < SINE_SIZE / 2; i++) {
+        TEST_ASSERT_TRUE(s_waves[WAVE_CAMEL][i] >= 0);
+    }
+    for (int i = SINE_SIZE / 2; i < SINE_SIZE; i++) {
+        TEST_ASSERT_EQUAL_INT16(0, s_waves[WAVE_CAMEL][i]);
+    }
+
+    /* 6: Square wave has constant amplitude steps */
+    TEST_ASSERT_EQUAL_INT16(28000, s_waves[WAVE_SQUARE][100]);
+    TEST_ASSERT_EQUAL_INT16(-28000, s_waves[WAVE_SQUARE][SINE_SIZE / 2 + 100]);
+
+    /* 7: Log-Saw has positive ramp in first half and negative in second */
+    TEST_ASSERT_TRUE(s_waves[WAVE_LOG_SAW][50] > 0);
+    TEST_ASSERT_TRUE(s_waves[WAVE_LOG_SAW][SINE_SIZE / 2 + 50] < 0);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -935,5 +983,6 @@ int main(void)
     RUN_TEST(test_electronic_808_kit_has_longer_sub_bass_tail_than_standard_kick);
     RUN_TEST(test_accompaniment_ducks_when_melody_channel_is_singing);
     RUN_TEST(test_opl3_waveforms_enrich_clarinet_and_oboe_harmonics);
+    RUN_TEST(test_all_eight_opl3_waveforms_generate_distinct_shapes);
     return UNITY_END();
 }

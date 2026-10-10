@@ -198,7 +198,8 @@ typedef struct {
 
 enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_CC, EV_PROGRAM, EV_BEND, EV_ALL_OFF };
 
-static DTCM_BSS int16_t s_waves[3][SINE_SIZE];
+#define NUM_OPL3_WAVES      8U
+static int16_t s_waves[NUM_OPL3_WAVES][SINE_SIZE];
 #define s_sine s_waves[0]
 static DTCM_BSS float s_note_inc[128];
 static float s_sample_rate = 44100.0f;
@@ -364,17 +365,40 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_SAW_LEAD]    = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.1f},
 };
 
-enum { WAVE_SINE = 0, WAVE_HALF = 1, WAVE_ABS = 2 };
+enum {
+    WAVE_SINE = 0,          /* 0: Standard Sine */
+    WAVE_HALF = 1,          /* 1: Half-Sine (positive half only) */
+    WAVE_ABS = 2,           /* 2: Full-Wave / Absolute-Sine (|sin(x)|) */
+    WAVE_QUARTER = 3,       /* 3: Quarter-Sine / Pulse-Sine (quarters 1 & 3 only) */
+    WAVE_ALT = 4,           /* 4: Alternating-Sine (sin(2x) in first half, 0 in second) */
+    WAVE_CAMEL = 5,         /* 5: Camel-Sine (|sin(2x)| in first half, 0 in second) */
+    WAVE_SQUARE = 6,        /* 6: Square Wave (+1 / -1) */
+    WAVE_LOG_SAW = 7        /* 7: Logarithmic Sawtooth */
+};
 
-/* OPL3 / TX81Z alternate modulator waveforms for woodwinds, reeds, clavinet, and synth bass */
+/* OPL3 / TX81Z 8-waveform assignment across General MIDI instrument families */
 static const uint8_t PATCH_WAVE_M[P_COUNT] = {
-    [P_CLARINET]   = WAVE_HALF,
-    [P_OBOE]       = WAVE_ABS,
-    [P_REED_ORGAN] = WAVE_HALF,
-    [P_ACCORD]     = WAVE_HALF,
-    [P_CLAV]       = WAVE_ABS,
-    [P_SYN_BASS2]  = WAVE_HALF,
-    [P_BAGPIPE]    = WAVE_ABS,
+    [P_CLARINET]    = WAVE_HALF,
+    [P_REED_ORGAN]  = WAVE_HALF,
+    [P_ACCORD]      = WAVE_HALF,
+    [P_SYN_BASS1]   = WAVE_HALF,
+    [P_OBOE]        = WAVE_ABS,
+    [P_CLAV]        = WAVE_ABS,
+    [P_JAZZ_GTR]    = WAVE_ABS,
+    [P_PERC_ORGAN]  = WAVE_QUARTER,
+    [P_MUTED_GTR]   = WAVE_QUARTER,
+    [P_SLAP]        = WAVE_QUARTER,
+    [P_SAX]         = WAVE_ALT,
+    [P_BAGPIPE]     = WAVE_ALT,
+    [P_SITAR]       = WAVE_ALT,
+    [P_OD_GTR]      = WAVE_CAMEL,
+    [P_FRETLESS]    = WAVE_CAMEL,
+    [P_PLUCK]       = WAVE_CAMEL,
+    [P_SQ_LEAD]     = WAVE_SQUARE,
+    [P_CALLIOPE]    = WAVE_SQUARE,
+    [P_SAW_LEAD]    = WAVE_LOG_SAW,
+    [P_DIST_GTR]    = WAVE_LOG_SAW,
+    [P_SYN_BASS2]   = WAVE_LOG_SAW,
 };
 
 /* OPL3 waveform table pointer lookup: wt[phase >> SINE_SHIFT] has ZERO branches in inner loop */
@@ -971,10 +995,24 @@ void yamaha_fm_synth_init(uint32_t sample_rate)
     s_lead_frames = s_rate_u * EVENT_LEAD_MS / 1000U;
 
     for (unsigned i = 0; i < SINE_SIZE; i++) {
-        int16_t s = (int16_t)lrintf(sinf(2.0f * 3.14159265f * (float)i / (float)SINE_SIZE) * 32767.0f);
-        s_waves[0][i] = s;                              /* Wave 0: Full Sine */
-        s_waves[1][i] = (s > 0) ? s : 0;                /* Wave 1: Half-Sine (positive lobe) */
-        s_waves[2][i] = (s >= 0) ? s : (int16_t)(-s);   /* Wave 2: Absolute-Sine */
+        float theta = 2.0f * 3.14159265f * (float)i / (float)SINE_SIZE;
+        int16_t s = (int16_t)lrintf(sinf(theta) * 32767.0f);
+        int16_t s2 = (int16_t)lrintf(sinf(2.0f * theta) * 32767.0f);
+        uint32_t q = (i * 4U) / SINE_SIZE;              /* quadrant 0, 1, 2, 3 */
+
+        s_waves[WAVE_SINE][i]    = s;
+        s_waves[WAVE_HALF][i]    = (q < 2U) ? s : 0;
+        s_waves[WAVE_ABS][i]     = (s >= 0) ? s : (int16_t)(-s);
+        s_waves[WAVE_QUARTER][i] = (q == 0U) ? s : ((q == 2U) ? (int16_t)(-s) : 0);
+        s_waves[WAVE_ALT][i]     = (q < 2U) ? s2 : 0;
+        s_waves[WAVE_CAMEL][i]   = (q < 2U) ? ((s2 >= 0) ? s2 : (int16_t)(-s2)) : 0;
+        s_waves[WAVE_SQUARE][i]  = (q < 2U) ? 28000 : -28000;
+
+        /* Wave 7: OPL3 Logarithmic Sawtooth (shaped exponential ramp per half-period) */
+        float u = (float)(i & (SINE_SIZE / 2U - 1U)) / (float)(SINE_SIZE / 2U);
+        float exp_ramp = (1.0f - expf(-3.0f * (1.0f - u))) / (1.0f - expf(-3.0f));
+        int16_t lsaw = (int16_t)lrintf(exp_ramp * 30000.0f);
+        s_waves[WAVE_LOG_SAW][i] = (q < 2U) ? lsaw : (int16_t)(-lsaw);
     }
     for (int n = 0; n < 128; n++) {
         float freq = 440.0f * exp2f(((float)n - 69.0f) / 12.0f);

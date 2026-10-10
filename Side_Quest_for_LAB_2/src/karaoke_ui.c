@@ -97,11 +97,14 @@ void karaoke_ui_set_view(ui_view_mode_t mode)
 {
     k_mutex_lock(&s_ui_lcd_mutex, K_FOREVER);
     s_view_mode = mode;
-    lcd_clear(LCD_COLOR_BLACK);
+    if (mode == UI_VIEW_PLAYING) {
+        render_static_player_frame();
+    } else {
+        lcd_clear(LCD_COLOR_BLACK);
+    }
     memset(s_last_cur_lyric, 0, sizeof(s_last_cur_lyric));
     memset(s_last_prev_lyric, 0, sizeof(s_last_prev_lyric));
     memset(s_last_up_lyric, 0, sizeof(s_last_up_lyric));
-    s_frame_initialized = false;
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
 
@@ -122,7 +125,37 @@ void karaoke_ui_set_current_song(const song_entry_t *song)
     memset(s_last_cur_lyric, 0, sizeof(s_last_cur_lyric));
     memset(s_last_prev_lyric, 0, sizeof(s_last_prev_lyric));
     memset(s_last_up_lyric, 0, sizeof(s_last_up_lyric));
-    s_frame_initialized = false;
+
+    /* Immediately paint the player screen with song title, artist, and [Loading...] to eliminate black screen delay */
+    if (s_view_mode == UI_VIEW_PLAYING && song != NULL) {
+        render_static_player_frame();
+
+        /* Header bar */
+        char line_buf[32];
+        lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
+        snprintf(line_buf, sizeof(line_buf), "[>] #%05u %s", (unsigned)song->song_code, song->language);
+        lcd_show_string(4, 3, line_buf, LCD_COLOR_WHITE, LCD_COLOR_NAVY);
+        snprintf(line_buf, sizeof(line_buf), "V:%u%%", s_last_vol != 0xFFU ? s_last_vol : 80U);
+        lcd_show_string(185, 3, line_buf, LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+
+        /* Artist & Title */
+        char artist_buf[28];
+        pad_string(artist_buf, song->singer, 28);
+        lcd_show_string(8, 26, artist_buf, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+
+        char title_buf[28];
+        pad_string(title_buf, song->title, 28);
+        lcd_show_string(8, 46, title_buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+        lcd_draw_line(0, 69, 239, 69, LCD_COLOR_DARKGREY);
+
+        /* Loading indicator in the lyric highlight box */
+        lcd_fill_rect(4, 96, 235, 120, LCD_COLOR_DARKCYAN);
+        lcd_draw_rect(4, 96, 235, 120, LCD_COLOR_YELLOW);
+        lcd_show_string(10, 100, "    [Loading Song...]    ", LCD_COLOR_YELLOW, LCD_COLOR_DARKCYAN);
+        s_frame_initialized = true;
+    } else {
+        s_frame_initialized = false;
+    }
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
 

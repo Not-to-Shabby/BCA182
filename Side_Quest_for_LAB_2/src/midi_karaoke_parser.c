@@ -530,23 +530,33 @@ static void pre_parse_karaoke_lyrics(void)
     midi_event_t ev;
     track_cursor_t c;
 
-    for (uint16_t t = 0; t < s_midi.num_tracks; t++) {
+    /* Reverse probe: in karaoke SMF files, lyrics are grouped on the last track.
+     * Instrument tracks with no lyrics in their first 48 events are skipped immediately. */
+    for (int t = (int)s_midi.num_tracks - 1; t >= 0; t--) {
         uint32_t cnt = 0;
+        uint32_t ev_cnt = 0;
 
-        scan_cursor_init(&c, t);
+        scan_cursor_init(&c, (uint16_t)t);
         for (;;) {
             (void)cursor_vlq(&c);
             ev_kind_t k = read_event(&c, &ev);
             if (k == MEV_END || k == MEV_END_OF_TRACK) {
                 break;
             }
+            ev_cnt++;
             if (is_lyric_text(k, &ev)) {
                 cnt++;
+            }
+            if (ev_cnt >= 48U && cnt == 0U) {
+                break; /* Instrument track: skip */
             }
         }
         if (cnt > best_count) {
             best_count = cnt;
             best_track = t;
+            if (cnt >= 16U) {
+                break; /* Found primary lyric track: stop probing */
+            }
         }
     }
 
@@ -652,20 +662,35 @@ static void detect_melody_channel(void)
     midi_event_t ev;
     track_cursor_t c;
 
+    uint32_t max_tick = s_syllable_ticks[s_nsyl - 1U] + MELODY_TICK_WINDOW;
+
     memset(reached, 0, sizeof(reached));
     for (uint16_t t = 0; t < s_midi.num_tracks; t++) {
+        if (t == (uint16_t)s_lyric_track && s_midi.num_tracks > 1U) {
+            continue; /* Skip lyric track: no musical notes */
+        }
         uint32_t tick = 0;
+        uint32_t ev_cnt = 0;
+        uint32_t t_notes = 0;
 
         scan_cursor_init(&c, t);
         for (;;) {
             tick += cursor_vlq(&c);
+            if (tick > max_tick) {
+                break; /* Past the end of all lyrics in the song */
+            }
             ev_kind_t k = read_event(&c, &ev);
             if (k == MEV_END || k == MEV_END_OF_TRACK) {
                 break;
             }
+            ev_cnt++;
             if (k != MEV_NOTE_ON || ev.d2 == 0U) {
+                if (ev_cnt >= 48U && t_notes == 0U) {
+                    break; /* Conductor / tempo / metadata track: skip */
+                }
                 continue;
             }
+            t_notes++;
             uint8_t ch = ev.chan;
             notes[ch]++;
             int32_t si = nearest_syllable(tick, s_nsyl);

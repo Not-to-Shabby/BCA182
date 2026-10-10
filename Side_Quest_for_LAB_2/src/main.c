@@ -111,6 +111,9 @@ static bool play_song(uint32_t index)
     song_entry_t s;
     if (!karaoke_catalog_get_song(index, &s)) return false;
 
+    /* Immediately paint the new song title & [Loading Song...] on the LCD (zero black screen delay!) */
+    karaoke_ui_set_current_song(&s);
+
     /* Stop the sequencer first so that it reads nothing from the file about to be closed. */
     midi_karaoke_stop();
     yamaha_fm_synth_reset();
@@ -121,7 +124,6 @@ static bool play_song(uint32_t index)
         return false;
     }
     yamaha_fm_set_melody_channel(midi_karaoke_get_melody_channel());
-    karaoke_ui_set_current_song(&s);
     midi_karaoke_play();
     random_play_note(&s_app.random, index);
     printk("[App] Started playing: #%u - %s (%s)\n", (unsigned)s.song_code, s.title, s.singer);

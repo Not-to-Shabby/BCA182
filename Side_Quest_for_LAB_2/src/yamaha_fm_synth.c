@@ -101,14 +101,20 @@ void yamaha_fm_set_melody_channel(int8_t channel)
 #define EVENT_ROUND_FRAMES  (SUB_FRAMES / 2U)
 #define MAX_BANDWIDTH_HZ    11000.0f
 #ifndef THIRD_OP_MAX_VOICES
-#define THIRD_OP_MAX_VOICES 28          /* 4-op voices active up to 48 voices (enabled by 210 MHz overclock) */
+#define THIRD_OP_MAX_VOICES 28          /* 4-op voices active up to 28 voices */
+#ifndef SIX_OP_MAX_VOICES
+#define SIX_OP_MAX_VOICES   18          /* 6-op DX7 voices active up to 18 voices (@ 220 MHz) */
+#endif
 #endif
 /* Each channel hears both carriers, one louder than the other, with the loud one swapped between
  * the sides. The two weights satisfy p^2 + q^2 = 1 so that a channel keeps the average power of
  * a plain two-operator voice; the beating between the carriers is the chorus effect, and
  * keeping q well under p keeps its nulls from reaching silence. */
-#define ENSEMBLE_P_Q10      962         /* 0.94 */
-#define ENSEMBLE_Q_Q10      350         /* 0.34 */
+#define ENSEMBLE_P_Q10      962         /* 0.94 (4-op primary) */
+#define ENSEMBLE_Q_Q10      350         /* 0.34 (4-op secondary) */
+#define ENSEMBLE6_P_Q10     940         /* 0.92 (6-op left/right primary) */
+#define ENSEMBLE6_Q_Q10     340         /* 0.33 (6-op opposite bleed) */
+#define ENSEMBLE6_C_Q10     280         /* 0.27 (6-op octave harmonic pair: orthogonal, never phase-cancels) */
 
 typedef enum {
     ST_IDLE = 0,
@@ -165,12 +171,15 @@ typedef struct {
     float vib;
     int32_t gl, gr;                 /* per-sample gain, Q15 << GAIN_Q */
 
-    /* 3rd & 4th operators: dual FM pair (ensemble) or parallel hammer/tine pair */
+    /* 3rd..6th operators: 6-op DX7 3-pair or 4-op OPL3 2-pair */
     uint8_t ext;
-    uint8_t wave_m;                 /* OPL3 modulator waveform (0=Sine, 1=Half, 2=Abs) */
-    uint32_t pc2, pm2;              /* Op3 carrier & Op4 modulator phases */
-    float base_x, base_m2;          /* Op3 and Op4 phase increments */
-    float tine_idx, tine_k;         /* Op4 modulation index and its per-chunk decay */
+    uint8_t ops;                    /* 2, 4, or 6 active operators for this voice */
+    uint8_t wave_m;                 /* OPL3 modulator waveform (0..7) */
+    uint32_t pc2, pm2;              /* Pair 2: Op3 carrier & Op4 modulator phases */
+    uint32_t pc3, pm3;              /* Pair 3: Op5 carrier & Op6 modulator phases */
+    float base_x, base_m2;          /* Pair 2: Op3 and Op4 phase increments */
+    float base_c3, base_m3;         /* Pair 3: Op5 and Op6 phase increments */
+    float tine_idx, tine_k;         /* Hammer/tine modulation index and decay */
 
     /* percussion voice */
     float tone_f, tone_f1, tone_fk;
@@ -689,23 +698,29 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         v->idx_k = expf(-s_sub_sec / tau);
     }
 
+    v->ops = 2;
     if (xp->kind != EXT_NONE && !p->additive) {
         if (!s_third_op || busy > THIRD_OP_MAX_VOICES) {
             s_ext_skipped++;
         } else if (xp->kind == EXT_ENSEMBLE) {
-            /* 4-Operator Dual-Pair: Pair 1 (Op1/Op2) flat, Pair 2 (Op3/Op4) sharp in stereo */
+            /* 6-Op (3-Pair: L/R detuned + Octave harmonic shimmer pair) when <= SIX_OP_MAX_VOICES */
             float d = exp2f(xp->a / 1200.0f);
             v->ext = EXT_ENSEMBLE;
+            v->ops = (busy <= SIX_OP_MAX_VOICES) ? 6 : 4;
+            v->base_c3 = v->base_c * 2.001f;
+            v->base_m3 = v->base_m * 2.001f * xp->b;
             v->base_x = v->base_c * d;
             v->base_c = v->base_c / d;
             v->base_m2 = v->base_m * d * xp->b;
             v->base_m = v->base_m / d;
             v->pc2 = v->pc;
             v->pm2 = v->pm;
+            v->pc3 = v->pc;
+            v->pm3 = v->pm;
             v->tine_idx = xp->c;
             s_ext_started++;
         } else {
-            /* 4-Operator Tine/Hammer Pair */
+            /* 6-Op / 4-Op Tine & Hammer Pair */
             float f_t = f0 * xp->a;
             float idx = xp->b;
             float tscale = 1.0f;
@@ -717,10 +732,15 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
             if (f_t <= 0.45f * s_sample_rate && tscale > 0.0f) {
                 float tt = (xp->c > s_sub_sec) ? xp->c : s_sub_sec;
                 v->ext = EXT_TINE;
+                v->ops = (busy <= SIX_OP_MAX_VOICES) ? 6 : 4;
                 v->base_x = s_note_inc[note] * xp->a;
                 v->base_m2 = s_note_inc[note] * (p->ratio_c * 2.003f);
+                v->base_c3 = s_note_inc[note] * (p->ratio_c * 3.005f);
+                v->base_m3 = s_note_inc[note] * (xp->a * 1.498f);
                 v->pm2 = v->pc;
                 v->pc2 = v->pc;
+                v->pm3 = v->pc;
+                v->pc3 = v->pc;
                 v->tine_idx = idx * tscale * (0.4f + 0.6f * ((float)vel / 127.0f));
                 v->tine_k = expf(-s_sub_sec / tt);
                 s_ext_started++;
@@ -1329,35 +1349,70 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     const int16_t *wt = s_waves[v->wave_m];
 
     if (v->ext == EXT_ENSEMBLE) {
-        /* True 4-Operator Dual-Pair: Pair 1 (Op1/Op2) flat & Pair 2 (Op3/Op4) sharp across stereo */
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
         uint32_t iu2 = float_to_phase(v->idx * v->tine_idx * MOD_IDX_UNIT);
         uint32_t inc_2 = float_to_phase(v->base_x * r);
         uint32_t inc_m2 = float_to_phase(v->base_m2 * r);
         uint32_t pc2 = v->pc2;
         uint32_t pm2 = v->pm2;
-        int32_t lg_a = (gl * ENSEMBLE_P_Q10) >> 10;
-        int32_t lg_b = (gl * ENSEMBLE_Q_Q10) >> 10;
-        int32_t rg_a = (gr * ENSEMBLE_Q_Q10) >> 10;
-        int32_t rg_b = (gr * ENSEMBLE_P_Q10) >> 10;
 
-        for (size_t i = 0; i < len; i++) {
-            int32_t m1 = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
-            y = m1;
-            pm += inc_m;
-            int32_t m2 = wt[pm2 >> SINE_SHIFT];
-            pm2 += inc_m2;
-            int32_t c1 = s_sine[(pc + (uint32_t)m1 * iu) >> SINE_SHIFT];
-            int32_t c2 = s_sine[(pc2 + (uint32_t)m2 * iu2) >> SINE_SHIFT];
-            pc += inc_c;
-            pc2 += inc_2;
-            bl[i] += (c1 * lg_a + c2 * lg_b) >> 15;
-            br[i] += (c1 * rg_a + c2 * rg_b) >> 15;
+        if (v->ops == 6) {
+            /* 6-Operator DX7 3-Pair Super-Ensemble: Left Pair + Right Pair + Center Anchor Pair */
+            uint32_t inc_3 = float_to_phase(v->base_c3 * r);
+            uint32_t inc_m3 = float_to_phase(v->base_m3 * r);
+            uint32_t pc3 = v->pc3;
+            uint32_t pm3 = v->pm3;
+            int32_t lg_a = (gl * ENSEMBLE6_P_Q10) >> 10;
+            int32_t lg_b = (gl * ENSEMBLE6_Q_Q10) >> 10;
+            int32_t lg_c = (gl * ENSEMBLE6_C_Q10) >> 10;
+            int32_t rg_a = (gr * ENSEMBLE6_Q_Q10) >> 10;
+            int32_t rg_b = (gr * ENSEMBLE6_P_Q10) >> 10;
+            int32_t rg_c = (gr * ENSEMBLE6_C_Q10) >> 10;
+
+            for (size_t i = 0; i < len; i++) {
+                int32_t m1 = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+                y = m1;
+                pm += inc_m;
+                int32_t m2 = wt[pm2 >> SINE_SHIFT];
+                pm2 += inc_m2;
+                int32_t m3 = wt[pm3 >> SINE_SHIFT];
+                pm3 += inc_m3;
+                int32_t c1 = s_sine[(pc + (uint32_t)m1 * iu) >> SINE_SHIFT];
+                int32_t c2 = s_sine[(pc2 + (uint32_t)m2 * iu2) >> SINE_SHIFT];
+                int32_t c3 = s_sine[(pc3 + (uint32_t)m3 * iu) >> SINE_SHIFT];
+                pc += inc_c;
+                pc2 += inc_2;
+                pc3 += inc_3;
+                bl[i] += (c1 * lg_a + c2 * lg_b + c3 * lg_c) >> 15;
+                br[i] += (c1 * rg_a + c2 * rg_b + c3 * rg_c) >> 15;
+            }
+            v->pc3 = pc3;
+            v->pm3 = pm3;
+        } else {
+            /* 4-Operator Dual-Pair: Pair 1 (Op1/Op2) flat & Pair 2 (Op3/Op4) sharp across stereo */
+            int32_t lg_a = (gl * ENSEMBLE_P_Q10) >> 10;
+            int32_t lg_b = (gl * ENSEMBLE_Q_Q10) >> 10;
+            int32_t rg_a = (gr * ENSEMBLE_Q_Q10) >> 10;
+            int32_t rg_b = (gr * ENSEMBLE_P_Q10) >> 10;
+
+            for (size_t i = 0; i < len; i++) {
+                int32_t m1 = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+                y = m1;
+                pm += inc_m;
+                int32_t m2 = wt[pm2 >> SINE_SHIFT];
+                pm2 += inc_m2;
+                int32_t c1 = s_sine[(pc + (uint32_t)m1 * iu) >> SINE_SHIFT];
+                int32_t c2 = s_sine[(pc2 + (uint32_t)m2 * iu2) >> SINE_SHIFT];
+                pc += inc_c;
+                pc2 += inc_2;
+                bl[i] += (c1 * lg_a + c2 * lg_b) >> 15;
+                br[i] += (c1 * rg_a + c2 * rg_b) >> 15;
+            }
         }
         v->pc2 = pc2;
         v->pm2 = pm2;
     } else if (v->ext == EXT_TINE) {
-        /* True 4-Operator Parallel Tine/Hammer Pair */
+        /* 6-Op / 4-Op Parallel Tine & Hammer Pairs */
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
         uint32_t it = float_to_phase(v->tine_idx * MOD_IDX_UNIT);
         uint32_t inc_t = float_to_phase(v->base_x * r);
@@ -1367,19 +1422,48 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         int32_t mix_tine = (int32_t)(v->tine_idx * 16384.0f);
 
         v->tine_idx *= v->tine_k;
-        for (size_t i = 0; i < len; i++) {
-            int32_t m = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
-            y = m;
-            pm += inc_m;
-            int32_t t = s_sine[pt >> SINE_SHIFT];
-            pt += inc_t;
-            int32_t c2 = s_sine[(pc2 + (uint32_t)t * it) >> SINE_SHIFT];
-            pc2 += inc_c2;
-            int32_t c1 = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
-            pc += inc_c;
-            int32_t cs = c1 + ((c2 * mix_tine) >> 15);
-            bl[i] += (cs * gl) >> 15;
-            br[i] += (cs * gr) >> 15;
+        if (v->ops == 6) {
+            uint32_t inc_c3 = float_to_phase(v->base_c3 * r);
+            uint32_t inc_m3 = float_to_phase(v->base_m3 * r);
+            uint32_t pc3 = v->pc3;
+            uint32_t pm3 = v->pm3;
+            int32_t mix_wood = mix_tine >> 1;
+
+            for (size_t i = 0; i < len; i++) {
+                int32_t m = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+                y = m;
+                pm += inc_m;
+                int32_t t = s_sine[pt >> SINE_SHIFT];
+                pt += inc_t;
+                int32_t c2 = s_sine[(pc2 + (uint32_t)t * it) >> SINE_SHIFT];
+                pc2 += inc_c2;
+                int32_t m3 = s_sine[pm3 >> SINE_SHIFT];
+                pm3 += inc_m3;
+                int32_t c3 = s_sine[(pc3 + (uint32_t)m3 * it) >> SINE_SHIFT];
+                pc3 += inc_c3;
+                int32_t c1 = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
+                pc += inc_c;
+                int32_t cs = c1 + ((c2 * mix_tine + c3 * mix_wood) >> 15);
+                bl[i] += (cs * gl) >> 15;
+                br[i] += (cs * gr) >> 15;
+            }
+            v->pc3 = pc3;
+            v->pm3 = pm3;
+        } else {
+            for (size_t i = 0; i < len; i++) {
+                int32_t m = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+                y = m;
+                pm += inc_m;
+                int32_t t = s_sine[pt >> SINE_SHIFT];
+                pt += inc_t;
+                int32_t c2 = s_sine[(pc2 + (uint32_t)t * it) >> SINE_SHIFT];
+                pc2 += inc_c2;
+                int32_t c1 = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
+                pc += inc_c;
+                int32_t cs = c1 + ((c2 * mix_tine) >> 15);
+                bl[i] += (cs * gl) >> 15;
+                br[i] += (cs * gr) >> 15;
+            }
         }
         v->pm2 = pt;
         v->pc2 = pc2;

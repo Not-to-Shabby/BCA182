@@ -930,6 +930,23 @@ void test_all_eight_opl3_waveforms_generate_distinct_shapes(void)
     TEST_ASSERT_TRUE(s_waves[WAVE_LOG_SAW][SINE_SIZE / 2 + 50] < 0);
 }
 
+void test_six_operator_dx7_mode_engages_when_voice_count_under_eighteen(void)
+{
+    yamaha_fm_set_third_operator(true);
+    play(0, 48, 60, 100);   /* Strings in quiet playback */
+    render_ms(30);
+
+    /* Look up the voice allocated for channel 0, note 60 */
+    bool found_6op = false;
+    for (int i = 0; i < FM_MAX_VOICES; i++) {
+        if (s_voices[i].active && s_voices[i].channel == 0 && s_voices[i].note == 60) {
+            found_6op = (s_voices[i].ops == 6);
+            break;
+        }
+    }
+    TEST_ASSERT_TRUE(found_6op);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -984,5 +1001,6 @@ int main(void)
     RUN_TEST(test_accompaniment_ducks_when_melody_channel_is_singing);
     RUN_TEST(test_opl3_waveforms_enrich_clarinet_and_oboe_harmonics);
     RUN_TEST(test_all_eight_opl3_waveforms_generate_distinct_shapes);
+    RUN_TEST(test_six_operator_dx7_mode_engages_when_voice_count_under_eighteen);
     return UNITY_END();
 }

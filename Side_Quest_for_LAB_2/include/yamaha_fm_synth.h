@@ -143,6 +143,13 @@ void yamaha_fm_set_third_operator(bool on);
 bool yamaha_fm_get_third_operator(void);
 
 /**
+ * @brief Enable or disable the Yamaha OPL4 (YMF278B) 16-bit PCM WaveTable drum engine
+ *        on MIDI Channel 10 (default on).
+ */
+void yamaha_fm_set_opl4_drums(bool on);
+bool yamaha_fm_get_opl4_drums(void);
+
+/**
  * @brief Notes that got a third operator, and notes that could have but started while the
  *        player was too busy.
  */

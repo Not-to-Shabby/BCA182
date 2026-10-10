@@ -15,6 +15,7 @@
 #include "yamaha_fm_synth.h"
 #include "dtcm.h"
 #include "synth_dsp.h"
+#include "opl4_drum_samples.h"
 #include <math.h>
 #include <stdbool.h>
 #include <string.h>
@@ -44,6 +45,7 @@ static volatile uint8_t s_melody_percent = 100;
 #define THIRD_OP_DEFAULT true
 #endif
 static volatile bool s_third_op = THIRD_OP_DEFAULT;
+static volatile bool s_opl4_drums = true;
 static uint32_t s_ext_started;
 static uint32_t s_ext_skipped;
 static volatile int8_t s_melody_channel = -1;
@@ -181,7 +183,12 @@ typedef struct {
     float base_c3, base_m3;         /* Pair 3: Op5 and Op6 phase increments */
     float tine_idx, tine_k;         /* Hammer/tine modulation index and decay */
 
-    /* percussion voice */
+    /* percussion & OPL4 PCM WaveTable voice */
+    const int16_t *pcm_data;
+    uint32_t pcm_len;
+    uint32_t pcm_pos;               /* 16.16 fixed-point sample cursor */
+    uint32_t pcm_step;              /* 16.16 fixed-point pitch step */
+    float pcm_amp, pcm_k;
     float tone_f, tone_f1, tone_fk;
     float tone_amp, tone_k, tone_lvl;
     float noise_amp, noise_k, noise_lvl;
@@ -525,6 +532,72 @@ static drum_recipe_t make_recipe(uint8_t note, uint8_t kit_prog)
     return r;
 }
 
+typedef struct {
+    const int16_t *data;
+    uint32_t len;
+    float pitch;
+} opl4_drum_wave_t;
+
+static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
+{
+    opl4_drum_wave_t w = { NULL, 0, 1.0f };
+
+    switch (note) {
+    case 35: w.data = OPL4_PCM_KICK;    w.len = OPL4_PCM_KICK_LEN;    w.pitch = 0.90f; break;
+    case 36: w.data = OPL4_PCM_KICK;    w.len = OPL4_PCM_KICK_LEN;    w.pitch = 1.04f; break;
+    case 37: w.data = OPL4_PCM_STICK;   w.len = OPL4_PCM_STICK_LEN;   w.pitch = 1.00f; break;
+    case 38: w.data = OPL4_PCM_SNARE;   w.len = OPL4_PCM_SNARE_LEN;   w.pitch = 1.00f; break;
+    case 39: w.data = OPL4_PCM_CLAP;    w.len = OPL4_PCM_CLAP_LEN;    w.pitch = 1.00f; break;
+    case 40: w.data = OPL4_PCM_SNARE;   w.len = OPL4_PCM_SNARE_LEN;   w.pitch = 1.14f; break;
+    case 42: w.data = OPL4_PCM_HAT_C;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 1.00f; break;
+    case 44: w.data = OPL4_PCM_HAT_C;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 0.86f; break;
+    case 46: w.data = OPL4_PCM_HAT_O;   w.len = OPL4_PCM_HAT_O_LEN;   w.pitch = 1.00f; break;
+    case 49: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.00f; break;
+    case 57: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.15f; break;
+    case 55: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.45f; break;
+    case 52: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 0.82f; break;
+    case 51: w.data = OPL4_PCM_RIDE;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.00f; break;
+    case 59: w.data = OPL4_PCM_RIDE;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.08f; break;
+    case 53: w.data = OPL4_PCM_RIDE;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.35f; break;
+    case 54: w.data = OPL4_PCM_HAT_C;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 1.25f; break;
+    case 56: w.data = OPL4_PCM_COWBELL; w.len = OPL4_PCM_COWBELL_LEN; w.pitch = 1.00f; break;
+    case 41: case 43: case 45: case 47: case 48: case 50: {
+        static const float tom_p[] = {0.65f, 0.77f, 0.92f, 1.12f, 1.31f, 1.54f};
+        static const uint8_t tom_n[] = {41, 43, 45, 47, 48, 50};
+        w.data = OPL4_PCM_TOM;
+        w.len = OPL4_PCM_TOM_LEN;
+        for (unsigned i = 0; i < sizeof(tom_n); i++) {
+            if (tom_n[i] == note) {
+                w.pitch = tom_p[i];
+            }
+        }
+        break;
+    }
+    case 60: case 61: case 62: case 63: case 64: case 65: case 66:
+        w.data = OPL4_PCM_TOM;
+        w.len = OPL4_PCM_TOM_LEN;
+        w.pitch = 1.65f + 0.18f * (float)(note - 60);
+        break;
+    case 67: case 68:
+        w.data = OPL4_PCM_COWBELL;
+        w.len = OPL4_PCM_COWBELL_LEN;
+        w.pitch = (note == 67) ? 1.35f : 1.10f;
+        break;
+    default:
+        w.data = OPL4_PCM_HAT_C;
+        w.len = OPL4_PCM_HAT_C_LEN;
+        w.pitch = 1.15f;
+        break;
+    }
+
+    if (kit_prog >= 16 && kit_prog <= 23) {
+        w.pitch *= 0.95f; /* Power kit: deeper tuning */
+    } else if (kit_prog >= 24 && kit_prog <= 31) {
+        w.pitch *= 1.06f; /* Electronic kit: snappy attack */
+    }
+    return w;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Event ring                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -589,6 +662,7 @@ static void voice_fast_release(fm_voice_t *v)
     v->rel_k = s_fast_rel_k;
     v->tone_k = (v->tone_k < s_fast_rel_k) ? v->tone_k : s_fast_rel_k;
     v->noise_k = (v->noise_k < s_fast_rel_k) ? v->noise_k : s_fast_rel_k;
+    v->pcm_k = (v->pcm_k < s_fast_rel_k) ? v->pcm_k : s_fast_rel_k;
 }
 
 static fm_voice_t *alloc_voice(void)
@@ -797,6 +871,16 @@ static void drum_note_on(uint8_t note, uint8_t vel)
     v->hp = r.hp;
     v->rng = 0x2545F491U + (uint32_t)note * 2654435761U + v->age;
     v->amp = (r.tone_lvl > r.noise_lvl) ? r.tone_lvl : r.noise_lvl;
+
+    if (s_opl4_drums) {
+        opl4_drum_wave_t w = make_opl4_wave(note, s_channels[FM_DRUM_CHANNEL].program);
+        v->pcm_data = w.data;
+        v->pcm_len = w.len;
+        v->pcm_pos = 0;
+        v->pcm_step = (uint32_t)(((float)OPL4_PCM_SAMPLE_RATE * 65536.0f * w.pitch) / s_sample_rate);
+        v->pcm_amp = 1.0f;
+        v->pcm_k = 1.0f;
+    }
 }
 
 static void apply_note_off(uint8_t ch, uint8_t note)
@@ -1207,6 +1291,16 @@ bool yamaha_fm_get_third_operator(void)
     return s_third_op;
 }
 
+void yamaha_fm_set_opl4_drums(bool on)
+{
+    s_opl4_drums = on;
+}
+
+bool yamaha_fm_get_opl4_drums(void)
+{
+    return s_opl4_drums;
+}
+
 void yamaha_fm_get_third_operator_stats(uint32_t *started, uint32_t *skipped_busy)
 {
     if (started != NULL) {
@@ -1528,15 +1622,26 @@ static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
     float na = v->noise_amp * v->noise_lvl * v->vel_gain;
     v->tone_amp *= v->tone_k;
     v->noise_amp *= v->noise_k;
-    v->amp = (ta > na) ? ta : na;
+    v->pcm_amp *= v->pcm_k;
 
-    if (v->tone_amp * v->tone_lvl < SILENCE && v->noise_amp * v->noise_lvl < SILENCE) {
+    bool has_pcm = (v->pcm_data != NULL && (v->pcm_pos >> 16) + 1U < v->pcm_len && v->pcm_amp >= SILENCE);
+    float synth_amp = (ta > na) ? ta : na;
+    v->amp = (has_pcm && v->pcm_amp * 0.5f > synth_amp) ? (v->pcm_amp * 0.5f) : synth_amp;
+
+    if (!has_pcm && v->tone_amp * v->tone_lvl < SILENCE && v->noise_amp * v->noise_lvl < SILENCE) {
         v->active = false;
         return;
     }
 
-    int32_t tq = (int32_t)(ta * ch_gain * (float)(32767 * s_synth_drum_q8 / 256));
-    int32_t nq = (int32_t)(na * ch_gain * (float)(32767 * s_synth_drum_q8 / 256));
+    float drum_scale = ch_gain * (float)(32767 * s_synth_drum_q8 / 256);
+    int32_t tq = (int32_t)(ta * drum_scale);
+    int32_t nq = (int32_t)(na * drum_scale);
+    int32_t pq = has_pcm ? (int32_t)(v->pcm_amp * v->vel_gain * drum_scale * 0.65f) : 0;
+    if (has_pcm) {
+        tq = (tq * 3) >> 3;
+        nq = (nq * 3) >> 3;
+    }
+
     int32_t pl = (int32_t)(c->pan_l * 32767.0f);
     int32_t pr = (int32_t)(c->pan_r * 32767.0f);
     uint32_t inc = float_to_phase(v->tone_f * 4294967296.0f / s_sample_rate);
@@ -1544,6 +1649,10 @@ static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
     uint32_t rng = v->rng;
     int32_t prev = v->noise_prev;
     bool hp = v->hp;
+    const int16_t *pcm = v->pcm_data;
+    uint32_t pcm_len = v->pcm_len;
+    uint32_t pcm_pos = v->pcm_pos;
+    uint32_t pcm_step = v->pcm_step;
 
     for (size_t i = 0; i < len; i++) {
         rng ^= rng << 13;
@@ -1558,6 +1667,18 @@ static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
         int32_t tone = s_sine[pc >> SINE_SHIFT];
         pc += inc;
         int32_t o = ((tone * tq) >> 15) + ((nz * nq) >> 15);
+
+        if (pq > 0) {
+            uint32_t idx = pcm_pos >> 16;
+            if (idx + 1U < pcm_len) {
+                int32_t frac = (int32_t)((pcm_pos >> 8) & 0xFFU);
+                int32_t s0 = pcm[idx];
+                int32_t s1 = pcm[idx + 1U];
+                int32_t pval = (s0 * (256 - frac) + s1 * frac) >> 8;
+                o += (pval * pq) >> 15;
+                pcm_pos += pcm_step;
+            }
+        }
         bl[i] += (o * pl) >> 15;
         br[i] += (o * pr) >> 15;
     }
@@ -1565,6 +1686,7 @@ static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
     v->pc = pc;
     v->rng = rng;
     v->noise_prev = prev;
+    v->pcm_pos = pcm_pos;
 }
 
 #define GAIN_SLEW   0.4f        /* share of the gap to a new channel gain closed per block */

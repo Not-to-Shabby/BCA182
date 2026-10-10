@@ -947,6 +947,64 @@ void test_six_operator_dx7_mode_engages_when_voice_count_under_eighteen(void)
     TEST_ASSERT_TRUE(found_6op);
 }
 
+void test_opl4_pcm_wavetable_drums_render_kick_snare_clap_and_cymbals(void)
+{
+    TEST_ASSERT_TRUE(yamaha_fm_get_opl4_drums());
+
+    /* Test that Kick, Snare, Clap, and Crash allocate Flash PCM sample pointers */
+    static const uint8_t drum_notes[] = {36, 38, 39, 49, 51, 56};
+    for (unsigned i = 0; i < sizeof(drum_notes); i++) {
+        setUp();
+        yamaha_fm_note_on(9, drum_notes[i], 110);
+        render_ms(20);
+
+        bool has_pcm = false;
+        for (int v = 0; v < FM_MAX_VOICES; v++) {
+            if (s_voices[v].active && s_voices[v].is_drum && s_voices[v].note == drum_notes[i]) {
+                has_pcm = (s_voices[v].pcm_data != NULL && s_voices[v].pcm_pos > 0);
+                break;
+            }
+        }
+        char msg[48];
+        snprintf(msg, sizeof(msg), "drum note %u lacks OPL4 PCM data", drum_notes[i]);
+        TEST_ASSERT_TRUE_MESSAGE(has_pcm, msg);
+    }
+}
+
+void test_opl4_pcm_toms_pitch_shift_across_floor_to_high_tom(void)
+{
+    /* Low floor tom (41) vs High tom (50) */
+    setUp();
+    yamaha_fm_note_on(9, 41, 100);
+    render_ms(20);
+    uint32_t step_low = 0;
+    const int16_t *data_low = NULL;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 41) {
+            step_low = s_voices[v].pcm_step;
+            data_low = s_voices[v].pcm_data;
+            break;
+        }
+    }
+
+    setUp();
+    yamaha_fm_note_on(9, 50, 100);
+    render_ms(20);
+    uint32_t step_high = 0;
+    const int16_t *data_high = NULL;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 50) {
+            step_high = s_voices[v].pcm_step;
+            data_high = s_voices[v].pcm_data;
+            break;
+        }
+    }
+
+    TEST_ASSERT_NOT_NULL(data_low);
+    TEST_ASSERT_EQUAL_PTR(data_low, data_high);     /* Both toms share OPL4_PCM_TOM */
+    TEST_ASSERT_TRUE(step_high > step_low * 2);      /* High tom has more than double the pitch step */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1002,5 +1060,7 @@ int main(void)
     RUN_TEST(test_opl3_waveforms_enrich_clarinet_and_oboe_harmonics);
     RUN_TEST(test_all_eight_opl3_waveforms_generate_distinct_shapes);
     RUN_TEST(test_six_operator_dx7_mode_engages_when_voice_count_under_eighteen);
+    RUN_TEST(test_opl4_pcm_wavetable_drums_render_kick_snare_clap_and_cymbals);
+    RUN_TEST(test_opl4_pcm_toms_pitch_shift_across_floor_to_high_tom);
     return UNITY_END();
 }

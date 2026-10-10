@@ -14,6 +14,12 @@
 #define KARAOKE_BOOT_SONG           (-1)
 #endif
 
+/* Bench builds: load another random song every this many milliseconds, the way a thumb on the
+ * UP/DOWN keys does; 0 turns it off. */
+#ifndef KARAOKE_STRESS_SWITCH_MS
+#define KARAOKE_STRESS_SWITCH_MS    0
+#endif
+
 #define APP_NAME                    "RT-Spark Karaoke Player"
 #define APP_VERSION                 "1.0.0"
 

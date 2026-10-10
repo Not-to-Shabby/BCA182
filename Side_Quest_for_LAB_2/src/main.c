@@ -59,6 +59,14 @@ static struct {
 /* Pause between automatic picks, so a song that will not load cannot make the player spin. */
 #define AUTO_PICK_MIN_GAP_MS    1000U
 
+#if KARAOKE_STRESS_SWITCH_MS > 0
+static struct {
+    uint32_t switches;
+    uint32_t failures;
+    uint32_t last_ms;
+} s_stress;
+#endif
+
 /* Hardware Peripheral GPIOs (D-Pad, LEDs, USART1) */
 static void init_board_peripherals(void)
 {
@@ -517,6 +525,19 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 k_mutex_unlock(&s_app.lock);
             }
         }
+
+#if KARAOKE_STRESS_SWITCH_MS > 0
+        if ((uint32_t)(now - s_stress.last_ms) >= KARAOKE_STRESS_SWITCH_MS) {
+            k_mutex_lock(&s_app.lock, K_FOREVER);
+            s_app.last_input_ms = now;
+            s_stress.switches++;
+            if (!play_random_song()) {
+                s_stress.failures++;
+            }
+            k_mutex_unlock(&s_app.lock);
+            s_stress.last_ms = k_uptime_get_32();
+        }
+#endif
 
         last_up = up;
         last_dn = dn;

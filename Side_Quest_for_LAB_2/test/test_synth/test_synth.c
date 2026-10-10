@@ -834,6 +834,54 @@ void test_electronic_808_kit_has_longer_sub_bass_tail_than_standard_kick(void)
     TEST_ASSERT_TRUE(tr808_tail > std_tail * 2.0);
 }
 
+void test_accompaniment_ducks_when_melody_channel_is_singing(void)
+{
+    /* 1. Play accompaniment alone on channel 1 */
+    yamaha_fm_set_melody_channel(0);
+    play(1, 48, 55, 100);       /* Strings accompaniment */
+    render_ms(400);
+    double solo_acc = rms_window(200, 150);
+
+    /* 2. Play accompaniment with lead melody singing on channel 0 */
+    setUp();
+    yamaha_fm_set_melody_channel(0);
+    play(1, 48, 55, 100);       /* Strings accompaniment */
+    play(0, 71, 72, 100);       /* Clarinet lead melody */
+    render_ms(400);
+
+    /* When melody is muted, accompaniment should have been attenuated by ~2.5 dB */
+    setUp();
+    yamaha_fm_set_melody_channel(0);
+    play(1, 48, 55, 100);
+    play(0, 71, 72, 100);
+    render_ms(300);
+    yamaha_fm_control_change(0, 7, 0);  /* mute melody channel */
+    render_ms(50);
+    double ducked_acc = rms_window(310, 30);
+
+    TEST_ASSERT_TRUE(ducked_acc < solo_acc * 0.88);
+}
+
+void test_opl3_waveforms_enrich_clarinet_and_oboe_harmonics(void)
+{
+    play(0, 73, 60, 100);   /* Flute: Sine */
+    render_ms(300);
+    double flute = brightness(100, 100);
+
+    setUp();
+    play(0, 71, 60, 100);   /* Clarinet: Half-Sine */
+    render_ms(300);
+    double clar = brightness(100, 100);
+
+    setUp();
+    play(0, 68, 60, 100);   /* Oboe: Absolute-Sine */
+    render_ms(300);
+    double oboe = brightness(100, 100);
+
+    TEST_ASSERT_TRUE(clar > flute * 1.15);
+    TEST_ASSERT_TRUE(oboe > clar * 1.5);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -885,5 +933,7 @@ int main(void)
     RUN_TEST(test_ensemble_voices_stay_in_tune_at_both_ends_of_the_keyboard);
     RUN_TEST(test_bass_and_brass_patches_engage_four_operator_mode);
     RUN_TEST(test_electronic_808_kit_has_longer_sub_bass_tail_than_standard_kick);
+    RUN_TEST(test_accompaniment_ducks_when_melody_channel_is_singing);
+    RUN_TEST(test_opl3_waveforms_enrich_clarinet_and_oboe_harmonics);
     return UNITY_END();
 }

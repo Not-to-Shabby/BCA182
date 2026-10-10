@@ -220,7 +220,24 @@ static void chorus_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size
 #define LIM_MASK            (LIM_W - 1U)
 
 static bool s_comp_on = true;
+static bool s_eq_on = true;
 static float s_env_db;              /* smoothed input level */
+
+/* Master Low Shelf (95 Hz, +2.5 dB) and High Shelf (6000 Hz, +2.0 dB) */
+#define LS_B0  1.0013795f
+#define LS_B1 -1.9821613f
+#define LS_B2  0.9809916f
+#define LS_A1 -1.9821876f
+#define LS_A2  0.9823448f
+
+#define HS_B0  1.1982029f
+#define HS_B1 -1.0955769f
+#define HS_B2  0.3875449f
+#define HS_A1 -0.7955999f
+#define HS_A2  0.2857707f
+
+static DTCM_BSS float s_eq_ls_s1[2], s_eq_ls_s2[2];
+static DTCM_BSS float s_eq_hs_s1[2], s_eq_hs_s2[2];
 static float s_cg = 1.0f;           /* compressor gain at the end of the previous block */
 static float s_gr_max;
 static float s_att_k;
@@ -259,6 +276,10 @@ static void master_clear(void)
     s_cg = 1.0f;
     s_clear_run = LIM_W;
     s_clean = true;
+    memset(s_eq_ls_s1, 0, sizeof(s_eq_ls_s1));
+    memset(s_eq_ls_s2, 0, sizeof(s_eq_ls_s2));
+    memset(s_eq_hs_s1, 0, sizeof(s_eq_hs_s1));
+    memset(s_eq_hs_s2, 0, sizeof(s_eq_hs_s2));
 }
 
 static float compressor_target(float peak_norm)
@@ -326,13 +347,30 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
 
     /* Fast path: the loudest sample this block can produce is under the ceiling and the limiter
      * has nothing in memory, so every needed gain is 1 and the output is the delayed input. */
-    if (s_clean && (float)pk_i * mg * top <= ceil_abs) {
+    if (s_clean && (float)pk_i * mg * top * (s_eq_on ? 1.40f : 1.0f) <= ceil_abs) {
         uint32_t cur = s_lim_n;
 
         for (size_t i = 0; i < n; i++) {
             g += step;
             float xl = (float)acc_l[i] * mg * g;
             float xr = (float)acc_r[i] * mg * g;
+            if (s_eq_on) {
+                float yl = LS_B0 * xl + s_eq_ls_s1[0];
+                s_eq_ls_s1[0] = LS_B1 * xl - LS_A1 * yl + s_eq_ls_s2[0];
+                s_eq_ls_s2[0] = LS_B2 * xl - LS_A2 * yl;
+                float yl2 = HS_B0 * yl + s_eq_hs_s1[0];
+                s_eq_hs_s1[0] = HS_B1 * yl - HS_A1 * yl2 + s_eq_hs_s2[0];
+                s_eq_hs_s2[0] = HS_B2 * yl - HS_A2 * yl2;
+                xl = yl2;
+
+                float yr = LS_B0 * xr + s_eq_ls_s1[1];
+                s_eq_ls_s1[1] = LS_B1 * xr - LS_A1 * yr + s_eq_ls_s2[1];
+                s_eq_ls_s2[1] = LS_B2 * xr - LS_A2 * yr;
+                float yr2 = HS_B0 * yr + s_eq_hs_s1[1];
+                s_eq_hs_s1[1] = HS_B1 * yr - HS_A1 * yr2 + s_eq_hs_s2[1];
+                s_eq_hs_s2[1] = HS_B2 * yr - HS_A2 * yr2;
+                xr = yr2;
+            }
             uint32_t at = cur & LIM_MASK;
             uint32_t rd = (cur + 1U) & LIM_MASK;
 
@@ -352,6 +390,23 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
         g += step;
         float xl = (float)acc_l[i] * mg * g;
         float xr = (float)acc_r[i] * mg * g;
+        if (s_eq_on) {
+            float yl = LS_B0 * xl + s_eq_ls_s1[0];
+            s_eq_ls_s1[0] = LS_B1 * xl - LS_A1 * yl + s_eq_ls_s2[0];
+            s_eq_ls_s2[0] = LS_B2 * xl - LS_A2 * yl;
+            float yl2 = HS_B0 * yl + s_eq_hs_s1[0];
+            s_eq_hs_s1[0] = HS_B1 * yl - HS_A1 * yl2 + s_eq_hs_s2[0];
+            s_eq_hs_s2[0] = HS_B2 * yl - HS_A2 * yl2;
+            xl = yl2;
+
+            float yr = LS_B0 * xr + s_eq_ls_s1[1];
+            s_eq_ls_s1[1] = LS_B1 * xr - LS_A1 * yr + s_eq_ls_s2[1];
+            s_eq_ls_s2[1] = LS_B2 * xr - LS_A2 * yr;
+            float yr2 = HS_B0 * yr + s_eq_hs_s1[1];
+            s_eq_hs_s1[1] = HS_B1 * yr - HS_A1 * yr2 + s_eq_hs_s2[1];
+            s_eq_hs_s2[1] = HS_B2 * yr - HS_A2 * yr2;
+            xr = yr2;
+        }
         float ax = (xl < 0.0f) ? -xl : xl;
         float ay = (xr < 0.0f) ? -xr : xr;
         float pk = (ax > ay) ? ax : ay;
@@ -425,9 +480,20 @@ uint32_t dsp_get_limiter_samples(void)
 /* -------------------------------------------------------------------------- */
 /* Public control                                                             */
 /* -------------------------------------------------------------------------- */
+void dsp_set_eq(bool on)
+{
+    s_eq_on = on;
+}
+
+bool dsp_get_eq(void)
+{
+    return s_eq_on;
+}
+
 void dsp_set_compressor(bool on)
 {
     s_comp_on = on;
+    s_eq_on = on;
 }
 
 bool dsp_get_compressor(void)
@@ -498,6 +564,7 @@ void dsp_init(float sample_rate)
     s_lim_rel = 1.0f - expf(-1000.0f / (DSP_LIMITER_RELEASE_MS * s_rate));
 
     s_comp_on = true;
+    s_eq_on = true;
     s_gr_max = 0.0f;
     s_lim_samples = 0;
     dsp_set_effects_level(100);

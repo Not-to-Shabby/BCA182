@@ -61,6 +61,12 @@ void dsp_set_compressor(bool on);
 bool dsp_get_compressor(void);
 
 /**
+ * @brief Master 2-Band Equalizer (Low Shelf +2.5 dB @ 95 Hz, High Shelf +2.0 dB @ 6 kHz).
+ */
+void dsp_set_eq(bool on);
+bool dsp_get_eq(void);
+
+/**
  * @brief Applies the master gain, the compressor and the limiter and writes 16-bit stereo.
  *
  * @param acc_l,acc_r Summed mix, full scale = +-32767.

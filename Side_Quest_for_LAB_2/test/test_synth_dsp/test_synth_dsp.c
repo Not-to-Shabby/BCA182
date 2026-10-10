@@ -455,6 +455,47 @@ void test_downward_expander_gates_faint_tail_below_minus_68db(void)
     }
 }
 
+void test_master_eq_boosts_sub_bass_and_treble_air(void)
+{
+    static int32_t in[20000];
+    static int16_t ol_flat[20000], or_flat[20000];
+    static int16_t ol_eq[20000], or_eq[20000];
+
+    /* 60 Hz Sub-Bass tone */
+    dsp_init((float)RATE);
+    dsp_set_compressor(false);
+    dsp_set_eq(false);
+    fill_sine(in, 20000, 60.0, 4000.0);
+    master_run(in, ol_flat, or_flat, 20000, 256);
+    double bass_flat = rms_i16(ol_flat + 5000, 10000);
+
+    dsp_init((float)RATE);
+    dsp_set_compressor(false);
+    dsp_set_eq(true);
+    master_run(in, ol_eq, or_eq, 20000, 256);
+    double bass_eq = rms_i16(ol_eq + 5000, 10000);
+
+    /* 60 Hz tone should be boosted by ~2 dB */
+    TEST_ASSERT_TRUE(bass_eq > bass_flat * 1.15);
+
+    /* 8000 Hz Treble Air tone */
+    dsp_init((float)RATE);
+    dsp_set_compressor(false);
+    dsp_set_eq(false);
+    fill_sine(in, 20000, 8000.0, 4000.0);
+    master_run(in, ol_flat, or_flat, 20000, 256);
+    double treble_flat = rms_i16(ol_flat + 5000, 10000);
+
+    dsp_init((float)RATE);
+    dsp_set_compressor(false);
+    dsp_set_eq(true);
+    master_run(in, ol_eq, or_eq, 20000, 256);
+    double treble_eq = rms_i16(ol_eq + 5000, 10000);
+
+    /* 8 kHz tone should be boosted by ~1.7 dB */
+    TEST_ASSERT_TRUE(treble_eq > treble_flat * 1.10);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -481,5 +522,6 @@ int main(void)
     RUN_TEST(test_chorus_adds_a_moving_copy_on_both_sides);
     RUN_TEST(test_chorus_without_input_stays_silent);
     RUN_TEST(test_downward_expander_gates_faint_tail_below_minus_68db);
+    RUN_TEST(test_master_eq_boosts_sub_bass_and_treble_air);
     return UNITY_END();
 }

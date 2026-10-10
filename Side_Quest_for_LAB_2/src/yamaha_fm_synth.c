@@ -101,7 +101,7 @@ void yamaha_fm_set_melody_channel(int8_t channel)
 #define EVENT_ROUND_FRAMES  (SUB_FRAMES / 2U)
 #define MAX_BANDWIDTH_HZ    11000.0f
 #ifndef THIRD_OP_MAX_VOICES
-#define THIRD_OP_MAX_VOICES 28          /* 4-op voices active up to 28 voices (enabled by 210 MHz overclock) */
+#define THIRD_OP_MAX_VOICES 28          /* 4-op voices active up to 48 voices (enabled by 210 MHz overclock) */
 #endif
 /* Each channel hears both carriers, one louder than the other, with the loud one swapped between
  * the sides. The two weights satisfy p^2 + q^2 = 1 so that a channel keeps the average power of
@@ -167,6 +167,7 @@ typedef struct {
 
     /* 3rd & 4th operators: dual FM pair (ensemble) or parallel hammer/tine pair */
     uint8_t ext;
+    uint8_t wave_m;                 /* OPL3 modulator waveform (0=Sine, 1=Half, 2=Abs) */
     uint32_t pc2, pm2;              /* Op3 carrier & Op4 modulator phases */
     float base_x, base_m2;          /* Op3 and Op4 phase increments */
     float tine_idx, tine_k;         /* Op4 modulation index and its per-chunk decay */
@@ -197,7 +198,8 @@ typedef struct {
 
 enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_CC, EV_PROGRAM, EV_BEND, EV_ALL_OFF };
 
-static DTCM_BSS int16_t s_sine[SINE_SIZE];
+static DTCM_BSS int16_t s_waves[3][SINE_SIZE];
+#define s_sine s_waves[0]
 static DTCM_BSS float s_note_inc[128];
 static float s_sample_rate = 44100.0f;
 static float s_sub_sec;
@@ -361,6 +363,21 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_SQ_LEAD]     = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
     [P_SAW_LEAD]    = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.1f},
 };
+
+enum { WAVE_SINE = 0, WAVE_HALF = 1, WAVE_ABS = 2 };
+
+/* OPL3 / TX81Z alternate modulator waveforms for woodwinds, reeds, clavinet, and synth bass */
+static const uint8_t PATCH_WAVE_M[P_COUNT] = {
+    [P_CLARINET]   = WAVE_HALF,
+    [P_OBOE]       = WAVE_ABS,
+    [P_REED_ORGAN] = WAVE_HALF,
+    [P_ACCORD]     = WAVE_HALF,
+    [P_CLAV]       = WAVE_ABS,
+    [P_SYN_BASS2]  = WAVE_HALF,
+    [P_BAGPIPE]    = WAVE_ABS,
+};
+
+/* OPL3 waveform table pointer lookup: wt[phase >> SINE_SHIFT] has ZERO branches in inner loop */
 
 /* General MIDI program number -> patch. */
 static const uint8_t PROGRAM_PATCH[128] = {
@@ -607,6 +624,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
     v->state = ST_ATTACK;
     v->age = ++s_age_counter;
     v->additive = p->additive;
+    v->wave_m = PATCH_WAVE_M[pid];
     v->level = p->level;
     v->vib = p->vib;
     {
@@ -953,7 +971,10 @@ void yamaha_fm_synth_init(uint32_t sample_rate)
     s_lead_frames = s_rate_u * EVENT_LEAD_MS / 1000U;
 
     for (unsigned i = 0; i < SINE_SIZE; i++) {
-        s_sine[i] = (int16_t)lrintf(sinf(2.0f * 3.14159265f * (float)i / (float)SINE_SIZE) * 32767.0f);
+        int16_t s = (int16_t)lrintf(sinf(2.0f * 3.14159265f * (float)i / (float)SINE_SIZE) * 32767.0f);
+        s_waves[0][i] = s;                              /* Wave 0: Full Sine */
+        s_waves[1][i] = (s > 0) ? s : 0;                /* Wave 1: Half-Sine (positive lobe) */
+        s_waves[2][i] = (s >= 0) ? s : (int16_t)(-s);   /* Wave 2: Absolute-Sine */
     }
     for (int n = 0; n < 128; n++) {
         float freq = 440.0f * exp2f(((float)n - 69.0f) / 12.0f);
@@ -1267,6 +1288,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     uint32_t pc = v->pc, pm = v->pm;
     int32_t y = v->fb_prev;
     uint32_t fbu = v->fb_u;
+    const int16_t *wt = s_waves[v->wave_m];
 
     if (v->ext == EXT_ENSEMBLE) {
         /* True 4-Operator Dual-Pair: Pair 1 (Op1/Op2) flat & Pair 2 (Op3/Op4) sharp across stereo */
@@ -1282,10 +1304,10 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         int32_t rg_b = (gr * ENSEMBLE_P_Q10) >> 10;
 
         for (size_t i = 0; i < len; i++) {
-            int32_t m1 = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+            int32_t m1 = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
             y = m1;
             pm += inc_m;
-            int32_t m2 = s_sine[pm2 >> SINE_SHIFT];
+            int32_t m2 = wt[pm2 >> SINE_SHIFT];
             pm2 += inc_m2;
             int32_t c1 = s_sine[(pc + (uint32_t)m1 * iu) >> SINE_SHIFT];
             int32_t c2 = s_sine[(pc2 + (uint32_t)m2 * iu2) >> SINE_SHIFT];
@@ -1308,7 +1330,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
 
         v->tine_idx *= v->tine_k;
         for (size_t i = 0; i < len; i++) {
-            int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+            int32_t m = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
             y = m;
             pm += inc_m;
             int32_t t = s_sine[pt >> SINE_SHIFT];
@@ -1349,7 +1371,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
         if (fbu == 0) {
             for (size_t i = 0; i < len; i++) {
-                int32_t m = s_sine[pm >> SINE_SHIFT];
+                int32_t m = wt[pm >> SINE_SHIFT];
                 pm += inc_m;
                 int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
                 pc += inc_c;
@@ -1358,7 +1380,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
             }
         } else {
             for (size_t i = 0; i < len; i++) {
-                int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+                int32_t m = wt[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
                 y = m;
                 pm += inc_m;
                 int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
@@ -1508,6 +1530,22 @@ static void render_chunk(int16_t *out, size_t frames)
         }
     }
 
+    /* Automatic sidechain ducking: when the lead melody channel is actively singing,
+     * accompaniment channels (except drums) smoothly duck by ~2.5 dB so the vocal line stands out. */
+    bool melody_singing = false;
+    if (s_melody_channel >= 0 && (dirty & (1U << s_melody_channel)) != 0U) {
+        for (int i = 0; i < FM_MAX_VOICES; i++) {
+            if (s_voices[i].active && s_voices[i].channel == (uint8_t)s_melody_channel && s_voices[i].amp > 0.03f) {
+                melody_singing = true;
+                break;
+            }
+        }
+    }
+    static float s_duck_gain = 1.0f;
+    float duck_target = (s_melody_channel >= 0) ? (melody_singing ? 0.75f : 1.0f) : 1.0f;
+    s_duck_gain = (s_melody_channel >= 0) ? (s_duck_gain + (duck_target - s_duck_gain) * 0.25f) : 1.0f;
+    int32_t duck_q12 = (int32_t)(s_duck_gain * 4096.0f);
+
     for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
         if ((dirty & (1U << ch)) == 0U) {
             continue;
@@ -1516,19 +1554,18 @@ static void render_chunk(int16_t *out, size_t frames)
         const int32_t *br = s_bus_r[ch];
         int32_t rs = fx_on ? ((int32_t)s_channels[ch].reverb * 2048) / 127 : 0;
         int32_t cs = fx_on ? ((int32_t)s_channels[ch].chorus * 2048) / 127 : 0;
+        bool duck_ch = (s_melody_channel >= 0 && ch != s_melody_channel && ch != FM_DRUM_CHANNEL && duck_q12 < 4088);
 
         for (size_t i = 0; i < frames; i++) {
-            s_acc_l[i] += bl[i];
-            s_acc_r[i] += br[i];
-        }
-        if (rs > 0) {
-            for (size_t i = 0; i < frames; i++) {
-                s_rev[i] += (int32_t)(((int64_t)(bl[i] + br[i]) * rs) >> 12);
+            int32_t l = duck_ch ? ((bl[i] * duck_q12) >> 12) : bl[i];
+            int32_t r = duck_ch ? ((br[i] * duck_q12) >> 12) : br[i];
+            s_acc_l[i] += l;
+            s_acc_r[i] += r;
+            if (rs > 0) {
+                s_rev[i] += (int32_t)(((int64_t)(l + r) * rs) >> 12);
             }
-        }
-        if (cs > 0) {
-            for (size_t i = 0; i < frames; i++) {
-                s_cho[i] += (int32_t)(((int64_t)(bl[i] + br[i]) * cs) >> 12);
+            if (cs > 0) {
+                s_cho[i] += (int32_t)(((int64_t)(l + r) * cs) >> 12);
             }
         }
     }

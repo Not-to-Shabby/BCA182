@@ -23,9 +23,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/irq.h>
 
-#define SINE_BITS           10U
-#define SINE_SIZE           (1U << SINE_BITS)
-#define SINE_SHIFT          (32U - SINE_BITS)
 #define SUB_FRAMES          DSP_BLOCK_FRAMES /* envelope / pitch / gain update interval, and the
                                                * granularity at which events and effects run */
 #define PHASE_PER_RAD       683565275.6f    /* 2^32 / (2 pi) */

@@ -25,6 +25,24 @@ void sd_card_reader_init(void);
  */
 void sd_card_lock(void);
 void sd_card_unlock(void);
+
+/**
+ * @brief Bring the card back after a failed transfer.
+ *
+ * One bad transfer can leave the STM32 SDIO driver stuck for good: the DMA channel stays claimed,
+ * the driver reports the disk as uninitialised so FatFs refuses every call before touching the
+ * card, or a stale completion makes the next read return before its data arrived. This restarts
+ * the driver (which re-runs the card initialisation) and clears the completion semaphore. Files
+ * that are open stay valid in FatFs, but a file that failed must still be reopened because FatFs
+ * keeps the error on the file object. Safe to call with sd_card_lock() held.
+ *
+ * @return true if the card answers again.
+ */
+bool sd_card_recover(void);
+
+/** Number of times sd_card_recover() has run since boot. */
+uint32_t sd_card_get_recover_count(void);
+
 bool sd_card_is_mounted(void);
 uint8_t sd_card_get_track_count(void);
 const sd_track_t *sd_card_get_track(uint8_t index);

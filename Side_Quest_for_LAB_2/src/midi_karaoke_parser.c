@@ -100,7 +100,7 @@ static struct {
 
 #define SEQ_PERIOD_MS       10
 #define SEQ_MAX_CATCHUP_US  100000U
-#define SEQ_STACK_BYTES     2048
+#define SEQ_STACK_BYTES     2560    /* a failed read restarts the SD driver on this thread */
 
 static struct k_timer s_midi_timer;
 static int64_t s_last_tick_ticks;
@@ -154,6 +154,10 @@ static uint32_t read_be32(const uint8_t *data)
            ((uint32_t)data[2] << 8) | (uint32_t)data[3];
 }
 
+/* Set when the source gave up on a read. A track cut short in the middle would leave its notes
+ * sounding for ever and its instrument silent, so the whole song stops instead. */
+static bool s_source_failed;
+
 static bool source_read(uint32_t off, uint8_t *dst, uint32_t len)
 {
     if (len > s_midi.src.size || off > s_midi.src.size - len) {
@@ -191,6 +195,7 @@ static bool cursor_fill(track_cursor_t *c, uint32_t abs)
     }
     if (!source_read(base, c->win, n)) {
         printk("[MIDI] Source read failed at offset %u\n", (unsigned)base);
+        s_source_failed = true;
         return false;
     }
     c->win_abs = base;
@@ -747,6 +752,7 @@ bool midi_karaoke_load(const midi_source_t *src)
     s_midi.num_tracks = 0;
     s_midi.is_playing = false;
     s_midi.is_paused = false;
+    s_source_failed = false;
     memset(&s_midi.stats, 0, sizeof(s_midi.stats));
 
     uint8_t hdr[14];
@@ -825,6 +831,12 @@ bool midi_karaoke_load(const midi_source_t *src)
     /* The scans read the whole file from the card; keep the display responsive meanwhile. */
     pre_parse_karaoke_lyrics();
     detect_melody_channel();
+
+    if (s_source_failed) {
+        printk("[MIDI] The song could not be read completely; not playing it\n");
+        s_midi.num_tracks = 0;
+        return false;
+    }
 
     printk("[MIDI] Loaded SMF Format %u, %u tracks (file specified %u), PPQN=%u\n",
            s_midi.format, s_midi.num_tracks, tracks_in_file, s_midi.ppqn);
@@ -1007,6 +1019,16 @@ void midi_karaoke_tick(uint32_t elapsed_us)
             }
         }
 
+        if (s_source_failed) {
+            s_midi.is_playing = false;
+            release_lyrics(0, true);
+            if (s_midi.synth.all_notes_off) {
+                s_midi.synth.all_notes_off();
+            }
+            printk("[MIDI] Playback stopped at tick %u: the song file became unreadable\n",
+                   s_midi.current_tick);
+            break;
+        }
         if (!any_active) {
             /* Playback finished */
             s_midi.is_playing = false;

@@ -19,9 +19,27 @@
 
 char g_sd_root[260] = "sd_mock_tmp";
 bool g_sd_mounted = true;
+unsigned g_sd_fail_reads;
+bool g_sd_stuck;
+unsigned g_sd_recovers;
+bool g_sd_recover_ok = true;
 
 void sd_card_lock(void) {}
 void sd_card_unlock(void) {}
+
+bool sd_card_recover(void)
+{
+    g_sd_recovers++;
+    if (g_sd_recover_ok) {
+        g_sd_stuck = false;
+    }
+    return g_sd_recover_ok;
+}
+
+uint32_t sd_card_get_recover_count(void)
+{
+    return g_sd_recovers;
+}
 
 bool sd_card_is_mounted(void)
 {
@@ -102,6 +120,11 @@ FRESULT f_open(FIL *fp, const char *path, BYTE mode)
 {
     (void)mode;
     char host[512];
+    fp->err = 0;
+    if (g_sd_stuck) {
+        fp->fp = NULL;
+        return FR_DISK_ERR;
+    }
     map_path(path, host, sizeof(host));
     fp->fp = fopen(host, "rb");
     if (fp->fp == NULL) {
@@ -124,12 +147,28 @@ FRESULT f_close(FIL *fp)
 
 FRESULT f_read(FIL *fp, void *buf, UINT btr, UINT *br)
 {
+    *br = 0;
+    if (fp->fp == NULL || fp->err != 0) {
+        return FR_DISK_ERR;
+    }
+    if (g_sd_stuck) {
+        fp->err = FR_DISK_ERR;          /* FatFs latches the error on the file when a read fails */
+        return FR_DISK_ERR;
+    }
+    if (g_sd_fail_reads > 0U) {
+        g_sd_fail_reads--;
+        fp->err = FR_DISK_ERR;
+        return FR_DISK_ERR;
+    }
     *br = (UINT)fread(buf, 1, btr, fp->fp);
     return FR_OK;
 }
 
 FRESULT f_lseek(FIL *fp, FSIZE_t ofs)
 {
+    if (fp->fp == NULL || fp->err != 0 || g_sd_stuck) {
+        return FR_DISK_ERR;
+    }
     return fseek(fp->fp, (long)ofs, SEEK_SET) == 0 ? FR_OK : FR_DISK_ERR;
 }
 

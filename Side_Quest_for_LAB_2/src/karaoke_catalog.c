@@ -36,9 +36,15 @@ static karaoke_catalog_source_t s_source = KARAOKE_SOURCE_ROM;
 static uint32_t s_total_songs = 0;
 static FIL s_idx_file;
 static bool s_idx_open = false;
+static char s_idx_path[SCAN_PATH_BYTES];
 static FIL s_song_file;
 static bool s_song_open = false;
+static char s_song_path[SCAN_PATH_BYTES + 4];
 static uint32_t s_song_pos = 0;
+
+/* A transfer that fails can leave the SDIO driver stuck; each failed access restarts the driver,
+ * reopens the file (FatFs keeps the error on the file object) and tries again. */
+#define SD_ACCESS_ATTEMPTS  3U
 static DTCM_BSS song_table_t s_scan_table;
 static bool s_scan_full = false;
 
@@ -143,6 +149,7 @@ static uint32_t open_index(void)
         fr = f_open(&s_idx_file, CANDIDATE_INDEX_PATHS[i], FA_READ);
         if (fr == FR_OK) {
             found_path = CANDIDATE_INDEX_PATHS[i];
+            snprintf(s_idx_path, sizeof(s_idx_path), "%s", found_path);
             s_idx_open = true;
             break;
         }
@@ -309,6 +316,53 @@ uint32_t karaoke_catalog_get_total_songs(void)
     return s_total_songs;
 }
 
+/* Restarts the SD driver and reopens songs.idx. */
+static bool recover_index(void)
+{
+    (void)sd_card_recover();
+    sd_card_lock();
+    f_close(&s_idx_file);
+    bool ok = (f_open(&s_idx_file, s_idx_path, FA_READ) == FR_OK);
+    sd_card_unlock();
+    return ok;
+}
+
+/* Binary search over the sorted records. @p io_error tells a failed read apart from "not found". */
+static bool search_index(uint32_t target_code, uint32_t *out_index, bool *io_error)
+{
+    sd_card_lock();
+    bool found = false;
+    uint32_t low = 0;
+    uint32_t high = s_total_songs - 1;
+
+    while (low <= high) {
+        uint32_t mid = low + (high - low) / 2;
+        FSIZE_t offset = INDEX_HEADER_BYTES + (FSIZE_t)mid * INDEX_RECORD_BYTES;
+        uint8_t rec[4];
+        UINT br = 0;
+
+        if (f_lseek(&s_idx_file, offset) != FR_OK ||
+            f_read(&s_idx_file, rec, sizeof(rec), &br) != FR_OK || br != sizeof(rec)) {
+            *io_error = true;
+            break;
+        }
+
+        uint32_t mid_code = le32(rec);
+        if (mid_code == target_code) {
+            *out_index = mid;
+            found = true;
+            break;
+        } else if (mid_code < target_code) {
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+    sd_card_unlock();
+    return found;
+}
+
 bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index)
 {
     if (!out_index || s_total_songs == 0) return false;
@@ -340,35 +394,20 @@ bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index)
         return false;
     }
 
-    /* Fast Binary Search on sorted songs.idx */
-    sd_card_lock();
-    bool found = false;
-    uint32_t low = 0;
-    uint32_t high = s_total_songs - 1;
+    /* Fast Binary Search on sorted songs.idx. A read error restarts the whole search after the
+     * card has been brought back. */
+    for (unsigned attempt = 0; attempt < SD_ACCESS_ATTEMPTS; attempt++) {
+        if (attempt > 0U && !recover_index()) {
+            continue;
+        }
+        bool io_error = false;
+        bool found = search_index(target_code, out_index, &io_error);
 
-    while (low <= high) {
-        uint32_t mid = low + (high - low) / 2;
-        FSIZE_t offset = INDEX_HEADER_BYTES + (FSIZE_t)mid * INDEX_RECORD_BYTES;
-        if (f_lseek(&s_idx_file, offset) != FR_OK) break;
-
-        uint8_t rec[4];
-        UINT br = 0;
-        if (f_read(&s_idx_file, rec, sizeof(rec), &br) != FR_OK || br != sizeof(rec)) break;
-
-        uint32_t mid_code = le32(rec);
-        if (mid_code == target_code) {
-            *out_index = mid;
-            found = true;
-            break;
-        } else if (mid_code < target_code) {
-            low = mid + 1;
-        } else {
-            if (mid == 0) break;
-            high = mid - 1;
+        if (!io_error) {
+            return found;
         }
     }
-    sd_card_unlock();
-    return found;
+    return false;
 }
 
 bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song)
@@ -404,13 +443,24 @@ bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song)
     uint8_t rec[INDEX_RECORD_BYTES];
     UINT br = 0;
 
-    sd_card_lock();
-    FRESULT fr = f_lseek(&s_idx_file, offset);
-    if (fr == FR_OK) {
-        fr = f_read(&s_idx_file, rec, sizeof(rec), &br);
+    FRESULT fr = FR_DISK_ERR;
+    for (unsigned attempt = 0; attempt < SD_ACCESS_ATTEMPTS; attempt++) {
+        if (attempt > 0U && !recover_index()) {
+            continue;
+        }
+        br = 0;
+        sd_card_lock();
+        fr = f_lseek(&s_idx_file, offset);
+        if (fr == FR_OK) {
+            fr = f_read(&s_idx_file, rec, sizeof(rec), &br);
+        }
+        sd_card_unlock();
+        if (fr == FR_OK && br == sizeof(rec)) {
+            break;
+        }
+        fr = FR_DISK_ERR;
     }
-    sd_card_unlock();
-    if (fr != FR_OK || br != sizeof(rec)) return false;
+    if (fr != FR_OK) return false;
 
     out_song->song_code = le32(rec);
 
@@ -431,9 +481,8 @@ bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song)
 
 /* Called from the sequencer thread. Playback reads sectors in a scattered order, so seek only
  * when the file position is not already where the read starts. */
-static bool song_read(void *ctx, uint32_t offset, uint8_t *dst, uint32_t len)
+static bool song_read_once(uint32_t offset, uint8_t *dst, uint32_t len)
 {
-    ARG_UNUSED(ctx);
     UINT br = 0;
     FRESULT fr = FR_OK;
 
@@ -454,14 +503,56 @@ static bool song_read(void *ctx, uint32_t offset, uint8_t *dst, uint32_t len)
     return true;
 }
 
+/* Restarts the SD driver and reopens the song file, which FatFs refuses to read again once a
+ * read has failed on it. */
+static bool recover_song(void)
+{
+    (void)sd_card_recover();
+    sd_card_lock();
+    f_close(&s_song_file);
+    bool ok = (f_open(&s_song_file, s_song_path, FA_READ) == FR_OK);
+    sd_card_unlock();
+    s_song_pos = UINT32_MAX;
+    return ok;
+}
+
+static bool song_read(void *ctx, uint32_t offset, uint8_t *dst, uint32_t len)
+{
+    ARG_UNUSED(ctx);
+
+    for (unsigned attempt = 0; attempt < SD_ACCESS_ATTEMPTS; attempt++) {
+        if (attempt > 0U && !recover_song()) {
+            continue;
+        }
+        if (song_read_once(offset, dst, len)) {
+            return true;
+        }
+    }
+    printk("[Catalog] Song read failed at offset %u after %u attempts\n",
+           (unsigned)offset, (unsigned)SD_ACCESS_ATTEMPTS);
+    return false;
+}
+
 static read_result_t open_midi_file(const char *path, midi_source_t *out)
 {
     close_song();
 
     sd_card_lock();
-    if (f_open(&s_song_file, path, FA_READ) != FR_OK) {
+    FRESULT fr = f_open(&s_song_file, path, FA_READ);
+    if (fr != FR_OK) {
         sd_card_unlock();
-        return READ_NO_FILE;
+        if (fr == FR_NO_FILE || fr == FR_NO_PATH) {
+            return READ_NO_FILE;
+        }
+        /* The card itself failed (not "no such file"): restart the driver and look once more. */
+        printk("[Catalog] Open of %s failed (FatFs error %d)\n", path, (int)fr);
+        (void)sd_card_recover();
+        sd_card_lock();
+        fr = f_open(&s_song_file, path, FA_READ);
+        if (fr != FR_OK) {
+            sd_card_unlock();
+            return (fr == FR_NO_FILE || fr == FR_NO_PATH) ? READ_NO_FILE : READ_FAILED;
+        }
     }
     FSIZE_t fsize = f_size(&s_song_file);
     if (fsize < 14U || fsize > 0x7FFFFFFFU) {
@@ -474,6 +565,7 @@ static read_result_t open_midi_file(const char *path, midi_source_t *out)
 
     s_song_open = true;
     s_song_pos = UINT32_MAX;
+    snprintf(s_song_path, sizeof(s_song_path), "%s", path);
     out->mem = NULL;
     out->size = (uint32_t)fsize;
     out->read = song_read;

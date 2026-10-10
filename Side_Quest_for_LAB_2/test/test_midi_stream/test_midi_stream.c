@@ -246,7 +246,7 @@ void test_more_tracks_than_the_old_limit_all_play(void)
     TEST_ASSERT_NOT_NULL(strstr(g_log, "prog 3 78 0;"));   /* the last track: channel 39 % 9, program 39 * 2 */
 }
 
-void test_a_track_whose_source_fails_ends_and_playback_finishes(void)
+void test_a_song_whose_source_fails_stops_and_silences_every_note(void)
 {
     build_busy_song(3, 300);
 
@@ -259,7 +259,63 @@ void test_a_track_whose_source_fails_ends_and_playback_finishes(void)
     TEST_ASSERT_TRUE(g_log_len > 0U);
     midi_player_status_t st;
     midi_karaoke_get_status(&st);
-    TEST_ASSERT_FALSE(st.is_playing);      /* finished instead of hanging */
+    TEST_ASSERT_FALSE(st.is_playing);      /* stopped instead of hanging */
+
+    /* The last thing the synth hears is "all notes off": no track is left half played. */
+    const char *tail = strrchr(g_log, ';');
+    TEST_ASSERT_NOT_NULL(tail);
+    TEST_ASSERT_TRUE(g_log_len >= 9U);
+    TEST_ASSERT_EQUAL_STRING("alloff 0 0 0;", g_log + g_log_len - 13U);
+}
+
+void test_a_failed_source_ends_the_song_early_not_at_its_natural_end(void)
+{
+    build_busy_song(3, 300);
+
+    midi_karaoke_init(&CB);
+    midi_source_t src = streamed();
+    TEST_ASSERT_TRUE(midi_karaoke_load(&src));
+    run_to_end();
+    size_t full = g_log_len;
+
+    midi_karaoke_init(&CB);
+    src = streamed();
+    TEST_ASSERT_TRUE(midi_karaoke_load(&src));
+    g_fail_after = g_reads + 2U;
+    run_to_end();
+
+    TEST_ASSERT_TRUE(g_log_len < full);
+}
+
+void test_a_source_that_fails_during_the_load_scans_is_refused(void)
+{
+    build_busy_song(3, 300);
+
+    midi_karaoke_init(&CB);
+    midi_source_t src = streamed();
+    g_fail_after = 6U;                     /* header and track heads read, the lyric scan fails */
+    TEST_ASSERT_FALSE(midi_karaoke_load(&src));
+
+    midi_player_status_t st;
+    midi_karaoke_get_status(&st);
+    TEST_ASSERT_FALSE(st.is_playing);
+    TEST_ASSERT_EQUAL_UINT16(0, st.num_tracks);
+}
+
+void test_loading_a_good_song_after_a_failed_one_plays_normally(void)
+{
+    build_busy_song(3, 300);
+    play_from_memory();
+
+    midi_karaoke_init(&CB);
+    midi_source_t bad = streamed();
+    g_fail_after = 6U;
+    TEST_ASSERT_FALSE(midi_karaoke_load(&bad));
+
+    midi_source_t good = streamed();
+    TEST_ASSERT_TRUE(midi_karaoke_load(&good));
+    run_to_end();
+    TEST_ASSERT_EQUAL_STRING(g_expected, g_log);
 }
 
 void test_a_source_that_fails_at_once_is_refused_cleanly(void)
@@ -428,7 +484,10 @@ int main(void)
     RUN_TEST(test_no_read_is_bigger_than_the_scan_window);
     RUN_TEST(test_events_straddling_a_window_edge_decode_the_same);
     RUN_TEST(test_more_tracks_than_the_old_limit_all_play);
-    RUN_TEST(test_a_track_whose_source_fails_ends_and_playback_finishes);
+    RUN_TEST(test_a_song_whose_source_fails_stops_and_silences_every_note);
+    RUN_TEST(test_a_failed_source_ends_the_song_early_not_at_its_natural_end);
+    RUN_TEST(test_a_source_that_fails_during_the_load_scans_is_refused);
+    RUN_TEST(test_loading_a_good_song_after_a_failed_one_plays_normally);
     RUN_TEST(test_a_source_that_fails_at_once_is_refused_cleanly);
     RUN_TEST(test_truncated_file_plays_what_is_there);
     RUN_TEST(test_lyrics_and_melody_detection_work_when_streamed);

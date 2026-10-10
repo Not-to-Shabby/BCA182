@@ -1,8 +1,11 @@
 #include "sd_card_reader.h"
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/storage/disk_access.h>
+#include <errno.h>
 #include <ff.h>
 #include <string.h>
 #include <strings.h>
@@ -22,6 +25,101 @@ static K_MUTEX_DEFINE(s_fs_lock);
 
 void sd_card_lock(void) { k_mutex_lock(&s_fs_lock, K_FOREVER); }
 void sd_card_unlock(void) { k_mutex_unlock(&s_fs_lock); }
+
+static uint32_t s_recover_count;
+
+/* The Zephyr SDMMC driver keeps its completion semaphore among the first members of its private
+ * data (drivers/disk/sdmmc_stm32.c, struct stm32_sdmmc_priv) and offers no way to clear it. A
+ * transfer that fails can leave a stale token there, and the next read would then return before
+ * its data arrived. The semaphore limits are checked before touching it, so a driver with another
+ * layout is left alone. */
+struct sdmmc_hsd_head {         /* start of the HAL's SD_HandleTypeDef */
+    uint32_t instance;
+    /* cppcheck-suppress unusedStructMember */
+    uint32_t clock_edge;
+    /* cppcheck-suppress unusedStructMember */
+    uint32_t clock_bypass;
+    /* cppcheck-suppress unusedStructMember */
+    uint32_t clock_power_save;
+    uint32_t bus_wide;
+    /* cppcheck-suppress unusedStructMember */
+    uint32_t hw_flow_control;
+    /* cppcheck-suppress unusedStructMember */
+    uint32_t clock_div;
+};
+
+struct sdmmc_priv_head {
+    /* cppcheck-suppress unusedStructMember */
+    void *irq_config;       /* placeholder: keeps the members below at the driver's offsets */
+    struct k_sem thread_lock;
+    struct k_sem sync;
+    struct sdmmc_hsd_head hsd;
+};
+
+#define SDIO_BASE_ADDRESS   0x40012C00U
+#define HAL_SDIO_BUS_1BIT   0x00000000U
+#define HAL_SDIO_BUS_4BIT   0x00000800U
+
+/* Both fixes below need driver internals that Zephyr keeps private. The layout is checked before
+ * anything is written, so a driver that looks different is left alone. */
+static struct sdmmc_priv_head *sdmmc_priv(void)
+{
+    const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(sdmmc1));
+    struct sdmmc_priv_head *priv = dev->data;
+
+    if (priv != NULL && priv->thread_lock.limit == 1U && priv->sync.limit == 1U &&
+        priv->hsd.instance == SDIO_BASE_ADDRESS &&
+        (priv->hsd.bus_wide == HAL_SDIO_BUS_1BIT || priv->hsd.bus_wide == HAL_SDIO_BUS_4BIT)) {
+        return priv;
+    }
+    return NULL;
+}
+
+/* The driver leaves the handle set to 4-bit bus mode after the first start. A restart then runs
+ * the card initialisation in 4-bit mode while the freshly reset card is still in 1-bit mode, so
+ * the SCR read times out and the card never comes back. The first start works because the handle
+ * begins as 1-bit. */
+static void prepare_restart(void)
+{
+    struct sdmmc_priv_head *priv = sdmmc_priv();
+
+    if (priv != NULL) {
+        priv->hsd.bus_wide = HAL_SDIO_BUS_1BIT;
+    }
+}
+
+static void drop_stale_completion(void)
+{
+    struct sdmmc_priv_head *priv = sdmmc_priv();
+
+    if (priv != NULL) {
+        k_sem_reset(&priv->sync);
+    }
+}
+
+bool sd_card_recover(void)
+{
+    bool force = true;
+    uint32_t t0 = k_uptime_get_32();
+
+    sd_card_lock();
+    s_recover_count++;
+    (void)disk_access_ioctl(SD_DISK_NAME, DISK_IOCTL_CTRL_DEINIT, &force);
+    prepare_restart();
+    int err = disk_access_init(SD_DISK_NAME);
+    if (err == 0) {
+        drop_stale_completion();
+        err = (disk_access_status(SD_DISK_NAME) == 0) ? 0 : -EIO;
+    }
+    sd_card_unlock();
+
+    printk("[SD_FS] Restarted the SD driver (#%u): %s, %u ms\n", (unsigned)s_recover_count,
+           err == 0 ? "card answers" : "card did not answer", (unsigned)(k_uptime_get_32() - t0));
+    return err == 0;
+}
+
+uint32_t sd_card_get_recover_count(void) { return s_recover_count; }
+
 static sd_track_t s_tracks[MAX_SD_TRACKS];
 static uint8_t s_track_count;
 

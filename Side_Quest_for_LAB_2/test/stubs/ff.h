@@ -24,6 +24,7 @@ typedef enum {
 typedef struct {
     FILE *fp;
     FSIZE_t objsize;
+    BYTE err;               /* like FatFs: set by a failed read, cleared only by f_open */
 } FIL;
 
 typedef struct {

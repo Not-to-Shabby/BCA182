@@ -25,7 +25,7 @@
 
 /* Thread Stack Sizes */
 #define UI_THREAD_STACK_SIZE        4096
-#define BUTTON_THREAD_STACK_SIZE    2048
+#define BUTTON_THREAD_STACK_SIZE    3072    /* loads songs, so it can end up restarting the SD driver */
 
 /* Thread Priorities */
 #define AUDIO_THREAD_PRIORITY       1

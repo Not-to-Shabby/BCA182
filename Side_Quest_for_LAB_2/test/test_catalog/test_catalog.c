@@ -67,6 +67,10 @@ void setUp(void)
     host_rmtree(g_sd_root);
     host_mkdir("");
     g_sd_mounted = true;
+    g_sd_fail_reads = 0;
+    g_sd_stuck = false;
+    g_sd_recovers = 0;
+    g_sd_recover_ok = true;
 }
 
 void tearDown(void)
@@ -465,9 +469,130 @@ void test_find_by_code_in_index_and_rom(void)
     TEST_ASSERT_FALSE(karaoke_catalog_find_by_code(5555, &idx));
 }
 
+/* ---- a transfer that fails and leaves the SD driver stuck ---- */
+
+static void open_big_song(midi_source_t *src)
+{
+    host_mkdir("midi");
+    host_write_file("midi/big.mid", 20000);
+    karaoke_catalog_init();
+    TEST_ASSERT_TRUE(karaoke_catalog_open_song(0, src));
+}
+
+void test_a_failed_song_read_is_retried_after_restarting_the_driver(void)
+{
+    midi_source_t src;
+    uint8_t sector[512];
+
+    open_big_song(&src);
+    TEST_ASSERT_TRUE(src.read(src.ctx, 0, sector, sizeof(sector)));
+
+    g_sd_stuck = true;                       /* a failed transfer leaves the driver stuck */
+    unsigned before = g_sd_recovers;
+    TEST_ASSERT_TRUE(src.read(src.ctx, 1024, sector, sizeof(sector)));
+    TEST_ASSERT_EQUAL_UINT(before + 1U, g_sd_recovers);
+
+    /* and playback carries on with the same source afterwards */
+    TEST_ASSERT_TRUE(src.read(src.ctx, 2048, sector, sizeof(sector)));
+    TEST_ASSERT_TRUE(src.read(src.ctx, 0, sector, sizeof(sector)));
+    TEST_ASSERT_EQUAL_MEMORY("MThd", sector, 4);
+}
+
+void test_a_read_error_latched_on_the_file_is_cleared_by_reopening_it(void)
+{
+    midi_source_t src;
+    uint8_t sector[512];
+
+    open_big_song(&src);
+    g_sd_fail_reads = 1;                     /* one bad read, driver itself fine */
+    TEST_ASSERT_TRUE(src.read(src.ctx, 512, sector, sizeof(sector)));
+    TEST_ASSERT_EQUAL_UINT(1, g_sd_recovers);
+}
+
+void test_a_card_that_never_recovers_gives_up_instead_of_looping(void)
+{
+    midi_source_t src;
+    uint8_t sector[512];
+
+    open_big_song(&src);
+    g_sd_stuck = true;
+    g_sd_recover_ok = false;
+    TEST_ASSERT_FALSE(src.read(src.ctx, 512, sector, sizeof(sector)));
+    TEST_ASSERT_TRUE(g_sd_recovers <= 3U);
+    g_sd_recover_ok = true;
+}
+
+void test_the_next_song_opens_after_a_failure_stuck_the_driver(void)
+{
+    midi_source_t src;
+    uint8_t sector[512];
+
+    host_mkdir("midi");
+    host_write_file("midi/a.mid", 5000);
+    host_write_file("midi/b.mid", 5000);
+    karaoke_catalog_init();
+    TEST_ASSERT_TRUE(karaoke_catalog_open_song(0, &src));
+
+    g_sd_stuck = true;
+    TEST_ASSERT_TRUE(src.read(src.ctx, 512, sector, sizeof(sector)));
+
+    g_sd_stuck = true;                       /* stuck again just as the user skips ahead */
+    TEST_ASSERT_TRUE(karaoke_catalog_open_song(1, &src));
+    TEST_ASSERT_TRUE(src.read(src.ctx, 0, sector, sizeof(sector)));
+    TEST_ASSERT_EQUAL_MEMORY("MThd", sector, 4);
+}
+
+void test_a_missing_song_does_not_restart_the_driver(void)
+{
+    host_mkdir("midi");
+    host_write_file("midi/gone.mid", 100);
+    karaoke_catalog_init();
+    host_rmtree("sd_mock_tmp/midi");
+
+    midi_source_t src;
+    TEST_ASSERT_FALSE(karaoke_catalog_open_song(0, &src));
+    TEST_ASSERT_EQUAL_UINT(0, g_sd_recovers);
+}
+
+void test_the_index_is_read_again_after_a_failed_read(void)
+{
+    song_entry_t s;
+    uint32_t idx = 99;
+
+    write_index("songs.idx", 3, 3, "KIDX", 1, 96);
+    karaoke_catalog_init();
+    TEST_ASSERT_EQUAL(KARAOKE_SOURCE_INDEX, karaoke_catalog_get_source());
+
+    g_sd_fail_reads = 1;
+    TEST_ASSERT_TRUE(karaoke_catalog_get_song(1, &s));
+    TEST_ASSERT_EQUAL_UINT32(2007, s.song_code);
+
+    g_sd_stuck = true;
+    TEST_ASSERT_TRUE(karaoke_catalog_find_by_code(3007, &idx));
+    TEST_ASSERT_EQUAL_UINT32(2, idx);
+    TEST_ASSERT_TRUE(g_sd_recovers >= 2U);
+}
+
+void test_a_code_that_is_not_in_the_index_is_not_mistaken_for_a_read_error(void)
+{
+    uint32_t idx = 0;
+
+    write_index("songs.idx", 3, 3, "KIDX", 1, 96);
+    karaoke_catalog_init();
+    TEST_ASSERT_FALSE(karaoke_catalog_find_by_code(5555, &idx));
+    TEST_ASSERT_EQUAL_UINT(0, g_sd_recovers);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_a_failed_song_read_is_retried_after_restarting_the_driver);
+    RUN_TEST(test_a_read_error_latched_on_the_file_is_cleared_by_reopening_it);
+    RUN_TEST(test_a_card_that_never_recovers_gives_up_instead_of_looping);
+    RUN_TEST(test_the_next_song_opens_after_a_failure_stuck_the_driver);
+    RUN_TEST(test_a_missing_song_does_not_restart_the_driver);
+    RUN_TEST(test_the_index_is_read_again_after_a_failed_read);
+    RUN_TEST(test_a_code_that_is_not_in_the_index_is_not_mistaken_for_a_read_error);
     RUN_TEST(test_valid_index_is_used);
     RUN_TEST(test_index_song_on_a_flat_card_still_loads);
     RUN_TEST(test_missing_index_falls_back_to_scanning);

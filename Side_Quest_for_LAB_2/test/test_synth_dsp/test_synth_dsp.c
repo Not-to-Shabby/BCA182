@@ -443,6 +443,18 @@ void test_chorus_without_input_stays_silent(void)
     }
 }
 
+void test_downward_expander_gates_faint_tail_below_minus_68db(void)
+{
+    static int32_t in[8000];
+    static int16_t ol[8000], orr[8000];
+
+    fill_sine(in, 8000, 1000.0, 5.0);   /* ~ -76 dBFS faint quantization tail */
+    master_run(in, ol, orr, 8000, 256);
+    for (size_t i = 2000; i < 8000; i++) {
+        TEST_ASSERT_EQUAL_INT16(0, ol[i]);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -468,5 +480,6 @@ int main(void)
     RUN_TEST(test_clear_removes_the_tail);
     RUN_TEST(test_chorus_adds_a_moving_copy_on_both_sides);
     RUN_TEST(test_chorus_without_input_stays_silent);
+    RUN_TEST(test_downward_expander_gates_faint_tail_below_minus_68db);
     return UNITY_END();
 }

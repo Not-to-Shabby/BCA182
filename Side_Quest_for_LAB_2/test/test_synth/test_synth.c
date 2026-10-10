@@ -803,6 +803,37 @@ void test_ensemble_voices_stay_in_tune_at_both_ends_of_the_keyboard(void)
     }
 }
 
+void test_bass_and_brass_patches_engage_four_operator_mode(void)
+{
+    uint32_t started = 0, skipped = 0;
+
+    yamaha_fm_set_third_operator(true);
+    play(0, 32, 40, 100);   /* Acoustic Bass */
+    play(1, 33, 43, 100);   /* Finger Bass */
+    play(2, 56, 60, 100);   /* Trumpet */
+    play(3, 61, 64, 100);   /* Brass Section */
+    render_ms(50);
+    yamaha_fm_get_third_operator_stats(&started, &skipped);
+    TEST_ASSERT_EQUAL_UINT32(4, started);
+    TEST_ASSERT_EQUAL_UINT32(0, skipped);
+}
+
+void test_electronic_808_kit_has_longer_sub_bass_tail_than_standard_kick(void)
+{
+    yamaha_fm_program_change(9, 0);     /* Standard Kit */
+    yamaha_fm_note_on(9, 36, 110);
+    render_ms(600);
+    double std_tail = rms_window(250, 200);
+
+    setUp();
+    yamaha_fm_program_change(9, 25);    /* TR-808 Electronic Kit */
+    yamaha_fm_note_on(9, 36, 110);
+    render_ms(600);
+    double tr808_tail = rms_window(250, 200);
+
+    TEST_ASSERT_TRUE(tr808_tail > std_tail * 2.0);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -852,5 +883,7 @@ int main(void)
     RUN_TEST(test_the_third_operator_is_used_when_the_player_is_quiet);
     RUN_TEST(test_switching_the_third_operator_off_restores_the_two_operator_sound_exactly);
     RUN_TEST(test_ensemble_voices_stay_in_tune_at_both_ends_of_the_keyboard);
+    RUN_TEST(test_bass_and_brass_patches_engage_four_operator_mode);
+    RUN_TEST(test_electronic_808_kit_has_longer_sub_bass_tail_than_standard_kick);
     return UNITY_END();
 }

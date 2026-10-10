@@ -101,7 +101,7 @@ void yamaha_fm_set_melody_channel(int8_t channel)
 #define EVENT_ROUND_FRAMES  (SUB_FRAMES / 2U)
 #define MAX_BANDWIDTH_HZ    11000.0f
 #ifndef THIRD_OP_MAX_VOICES
-#define THIRD_OP_MAX_VOICES 22          /* notes starting while more voices than this sound stay two-operator */
+#define THIRD_OP_MAX_VOICES 28          /* 4-op voices active up to 28 voices (enabled by 210 MHz overclock) */
 #endif
 /* Each channel hears both carriers, one louder than the other, with the loud one swapped between
  * the sides. The two weights satisfy p^2 + q^2 = 1 so that a channel keeps the average power of
@@ -165,11 +165,11 @@ typedef struct {
     float vib;
     int32_t gl, gr;                 /* per-sample gain, Q15 << GAIN_Q */
 
-    /* third operator: a second, detuned carrier (ensemble) or a fast second modulator (tine) */
+    /* 3rd & 4th operators: dual FM pair (ensemble) or parallel hammer/tine pair */
     uint8_t ext;
-    uint32_t pc2;                   /* its phase */
-    float base_x;                   /* its phase increment at pitch ratio 1 */
-    float tine_idx, tine_k;         /* tine modulation index and its per-chunk decay */
+    uint32_t pc2, pm2;              /* Op3 carrier & Op4 modulator phases */
+    float base_x, base_m2;          /* Op3 and Op4 phase increments */
+    float tine_idx, tine_k;         /* Op4 modulation index and its per-chunk decay */
 
     /* percussion voice */
     float tone_f, tone_f1, tone_fk;
@@ -324,15 +324,42 @@ typedef struct {
 /* Which patches get a third operator. Everything else, and every patch while the player is busy,
  * stays two-operator. */
 static const ext_patch_t EXT_PATCHES[P_COUNT] = {
-    [P_PIANO]    = {EXT_TINE, 4.01f, 1.6f, 0.030f},
-    [P_BRIGHT]   = {EXT_TINE, 4.01f, 2.0f, 0.030f},
-    [P_STRINGS]  = {EXT_ENSEMBLE, 4.0f, 0.0f, 0.0f},
-    [P_VIOLIN]   = {EXT_ENSEMBLE, 3.0f, 0.0f, 0.0f},
-    [P_CELLO]    = {EXT_ENSEMBLE, 3.0f, 0.0f, 0.0f},
-    [P_CHOIR]    = {EXT_ENSEMBLE, 4.0f, 0.0f, 0.0f},
-    [P_PAD]      = {EXT_ENSEMBLE, 5.0f, 0.0f, 0.0f},
-    [P_SYN_BRASS] = {EXT_ENSEMBLE, 4.0f, 0.0f, 0.0f},
-    [P_SAW_LEAD] = {EXT_ENSEMBLE, 5.0f, 0.0f, 0.0f},
+    /* Acoustic & Electric Keys (4-op hammer/tine + sympathetic dual-carrier body) */
+    [P_PIANO]       = {EXT_TINE, 4.01f, 1.6f, 0.030f},
+    [P_BRIGHT]      = {EXT_TINE, 4.01f, 2.0f, 0.030f},
+    [P_HONKY]       = {EXT_TINE, 3.01f, 1.5f, 0.035f},
+    [P_EPIANO]      = {EXT_TINE, 7.00f, 1.4f, 0.040f},
+    [P_CLAV]        = {EXT_TINE, 3.00f, 1.8f, 0.025f},
+
+    /* Guitars (4-op pick transient & body) */
+    [P_NYLON]       = {EXT_TINE, 3.01f, 1.2f, 0.025f},
+    [P_STEEL]       = {EXT_TINE, 4.01f, 1.4f, 0.025f},
+    [P_CLEAN_GTR]   = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
+
+    /* Basses (4-op fat dual-oscillator sub & punch) */
+    [P_ACO_BASS]    = {EXT_ENSEMBLE, 2.0f, 1.0f, 0.9f},
+    [P_FINGER_BASS] = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
+    [P_PICK_BASS]   = {EXT_TINE, 3.00f, 1.3f, 0.025f},
+    [P_SLAP]        = {EXT_TINE, 4.00f, 1.8f, 0.020f},
+    [P_SYN_BASS1]   = {EXT_ENSEMBLE, 3.5f, 1.0f, 1.1f},
+    [P_SYN_BASS2]   = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
+
+    /* Strings, Choirs & Pads (4-op stereo dual-pair ensemble) */
+    [P_STRINGS]     = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
+    [P_VIOLIN]      = {EXT_ENSEMBLE, 3.0f, 1.0f, 1.0f},
+    [P_CELLO]       = {EXT_ENSEMBLE, 3.0f, 1.0f, 1.0f},
+    [P_CHOIR]       = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
+    [P_PAD]         = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.05f},
+
+    /* Brass & Synth Leads (4-op rich section & saw lead) */
+    [P_TRUMPET]     = {EXT_ENSEMBLE, 3.0f, 1.0f, 1.0f},
+    [P_TROMBONE]    = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
+    [P_HORN]        = {EXT_ENSEMBLE, 3.0f, 1.0f, 0.9f},
+    [P_BRASS_SEC]   = {EXT_ENSEMBLE, 4.5f, 1.0f, 1.1f},
+    [P_SYN_BRASS]   = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.1f},
+    [P_SAX]         = {EXT_ENSEMBLE, 3.0f, 1.0f, 0.95f},
+    [P_SQ_LEAD]     = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
+    [P_SAW_LEAD]    = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.1f},
 };
 
 /* General MIDI program number -> patch. */
@@ -355,36 +382,48 @@ static const uint8_t PROGRAM_PATCH[128] = {
     /* 120 */ P_SFX, P_SFX, P_SFX, P_SFX, P_SFX, P_SFX, P_SFX, P_SFX,
 };
 
-static drum_recipe_t make_recipe(uint8_t note)
+static drum_recipe_t make_recipe(uint8_t note, uint8_t kit_prog)
 {
-    static const drum_recipe_t KICK  = {150.0f, 48.0f, 0.030f, 0.95f, 0.11f, 0.10f, 0.008f, true,  false};
-    static const drum_recipe_t STICK = {1700.0f, 1500.0f, 0.02f, 0.45f, 0.025f, 0.25f, 0.02f, true, false};
-    static const drum_recipe_t SNARE = {230.0f, 175.0f, 0.03f, 0.50f, 0.10f, 0.42f, 0.16f, false, false};
-    static const drum_recipe_t CLAP  = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.55f, 0.13f, false, false};
-    static const drum_recipe_t HAT_C = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.40f, 0.035f, true, false};
-    static const drum_recipe_t HAT_O = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.40f, 0.30f, true, true};
-    static const drum_recipe_t CRASH = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.42f, 0.90f, true, false};
-    static const drum_recipe_t RIDE  = {3300.0f, 3300.0f, 0.05f, 0.15f, 0.45f, 0.22f, 0.55f, true, false};
-    static const drum_recipe_t BELL  = {3300.0f, 3300.0f, 0.05f, 0.35f, 0.80f, 0.10f, 0.40f, true, false};
-    static const drum_recipe_t TAMB  = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.40f, 0.09f, true, false};
-    static const drum_recipe_t COWB  = {800.0f, 800.0f, 0.05f, 0.50f, 0.20f, 0.05f, 0.02f, true, false};
-    static const drum_recipe_t TOM   = {0.0f, 0.0f, 0.04f, 0.90f, 0.16f, 0.06f, 0.012f, true, false};
-    static const drum_recipe_t CONGA = {0.0f, 0.0f, 0.02f, 0.80f, 0.09f, 0.10f, 0.01f, true, false};
-    static const drum_recipe_t CLICK = {1000.0f, 900.0f, 0.02f, 0.50f, 0.04f, 0.10f, 0.01f, true, false};
-    static const drum_recipe_t SHAKE = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.30f, 0.05f, true, false};
-    static const drum_recipe_t GUIRO = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.30f, 0.10f, false, false};
-    static const drum_recipe_t WHIS  = {2400.0f, 2400.0f, 0.05f, 0.35f, 0.18f, 0.0f, 0.02f, false, false};
-    static const drum_recipe_t TRI   = {4200.0f, 4200.0f, 0.05f, 0.30f, 0.60f, 0.05f, 0.10f, true, false};
+    static const drum_recipe_t KICK_ACO = {135.0f, 43.0f, 0.035f, 0.95f, 0.13f, 0.08f, 0.008f, true,  false};
+    static const drum_recipe_t KICK     = {165.0f, 48.0f, 0.028f, 0.95f, 0.11f, 0.10f, 0.008f, true,  false};
+    static const drum_recipe_t STICK    = {1700.0f, 1500.0f, 0.02f, 0.45f, 0.025f, 0.25f, 0.02f, true, false};
+    static const drum_recipe_t SNARE    = {220.0f, 165.0f, 0.030f, 0.50f, 0.10f, 0.42f, 0.16f, false, false};
+    static const drum_recipe_t SNARE_EL = {270.0f, 180.0f, 0.025f, 0.55f, 0.08f, 0.46f, 0.18f, true,  false};
+    static const drum_recipe_t CLAP     = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.55f, 0.13f, false, false};
+    static const drum_recipe_t HAT_C    = {4100.0f, 4100.0f, 0.05f, 0.08f, 0.035f, 0.40f, 0.035f, true, false};
+    static const drum_recipe_t HAT_P    = {3400.0f, 3400.0f, 0.05f, 0.06f, 0.025f, 0.35f, 0.025f, true, false};
+    static const drum_recipe_t HAT_O    = {3900.0f, 3900.0f, 0.05f, 0.10f, 0.30f, 0.40f, 0.30f, true,  true};
+    static const drum_recipe_t CRASH1   = {3100.0f, 3100.0f, 0.05f, 0.15f, 0.85f, 0.42f, 0.85f, true,  false};
+    static const drum_recipe_t CRASH2   = {3600.0f, 3600.0f, 0.05f, 0.16f, 0.72f, 0.42f, 0.72f, true,  false};
+    static const drum_recipe_t SPLASH   = {4300.0f, 4300.0f, 0.05f, 0.18f, 0.35f, 0.40f, 0.35f, true,  false};
+    static const drum_recipe_t CHINA    = {2200.0f, 2200.0f, 0.05f, 0.22f, 0.58f, 0.45f, 0.58f, true,  false};
+    static const drum_recipe_t RIDE     = {3300.0f, 3300.0f, 0.05f, 0.15f, 0.45f, 0.22f, 0.55f, true,  false};
+    static const drum_recipe_t BELL     = {3300.0f, 3300.0f, 0.05f, 0.35f, 0.80f, 0.10f, 0.40f, true,  false};
+    static const drum_recipe_t TAMB     = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.40f, 0.09f, true,  false};
+    static const drum_recipe_t COWB     = {800.0f, 800.0f, 0.05f, 0.50f, 0.20f, 0.05f, 0.02f, true,  false};
+    static const drum_recipe_t TOM      = {0.0f, 0.0f, 0.04f, 0.90f, 0.16f, 0.06f, 0.012f, true, false};
+    static const drum_recipe_t CONGA    = {0.0f, 0.0f, 0.02f, 0.80f, 0.09f, 0.10f, 0.01f, true,  false};
+    static const drum_recipe_t CLICK    = {1000.0f, 900.0f, 0.02f, 0.50f, 0.04f, 0.10f, 0.01f, true, false};
+    static const drum_recipe_t SHAKE    = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.30f, 0.05f, true,  false};
+    static const drum_recipe_t GUIRO    = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.30f, 0.10f, false, false};
+    static const drum_recipe_t WHIS     = {2400.0f, 2400.0f, 0.05f, 0.35f, 0.18f, 0.0f, 0.02f, false, false};
+    static const drum_recipe_t TRI      = {4200.0f, 4200.0f, 0.05f, 0.30f, 0.60f, 0.05f, 0.10f, true,  false};
     drum_recipe_t r;
 
     switch (note) {
-    case 35: case 36: return KICK;
-    case 37: return STICK;
-    case 38: case 40: return SNARE;
-    case 39: return CLAP;
-    case 42: case 44: return HAT_C;
-    case 46: return HAT_O;
-    case 49: case 52: case 55: case 57: return CRASH;
+    case 35: r = KICK_ACO; break;
+    case 36: r = KICK;     break;
+    case 37: r = STICK;    break;
+    case 38: r = SNARE;    break;
+    case 40: r = SNARE_EL; break;
+    case 39: r = CLAP;     break;
+    case 42: r = HAT_C;    break;
+    case 44: r = HAT_P;    break;
+    case 46: r = HAT_O;    break;
+    case 49: r = CRASH1;   break;
+    case 57: r = CRASH2;   break;
+    case 55: r = SPLASH;   break;
+    case 52: r = CHINA;    break;
     case 51: case 59: return RIDE;
     case 53: return BELL;
     case 54: return TAMB;
@@ -399,7 +438,7 @@ static drum_recipe_t make_recipe(uint8_t note)
                 r.f0 = tom_hz[i] * 1.6f;
             }
         }
-        return r;
+        break;
     }
     case 60: case 61: case 62: case 63: case 64: case 65: case 66:
         r = CONGA;
@@ -411,9 +450,29 @@ static drum_recipe_t make_recipe(uint8_t note)
     case 71: case 72: return WHIS;
     case 73: case 74: return GUIRO;
     case 75: case 76: case 77: return CLICK;
-    case 80: case 81: return TRI;
-    default: return SHAKE;
+    case 80: case 81: r = TRI;   break;
+    default:          r = SHAKE; break;
     }
+
+    /* Adapt recipe characteristics based on MIDI Drum Kit Program */
+    if (kit_prog >= 16 && kit_prog <= 23) {
+        /* Power / Rock Kit: Punchier kick & gated snare */
+        if (note == 35 || note == 36) { r.f0 *= 1.15f; r.tone_lvl *= 1.1f; }
+        if (note == 38 || note == 40) { r.tone_lvl *= 1.15f; r.noise_tau *= 1.25f; }
+    } else if (kit_prog >= 24 && kit_prog <= 31) {
+        /* Electronic / TR-808 Kit: Booming sub-bass kick & snappy analog snare */
+        if (note == 35 || note == 36) { r.f1 = 38.0f; r.tone_tau = 0.28f; }
+        if (note == 38 || note == 40) { r.hp = true; r.f0 = 290.0f; }
+    } else if (kit_prog >= 8 && kit_prog <= 15) {
+        /* Room Kit: Longer ambient room decay */
+        r.tone_tau *= 1.25f;
+        r.noise_tau *= 1.30f;
+    } else if (kit_prog >= 32 && kit_prog <= 47) {
+        /* Jazz / Brush Kit: Soft brush snare & warm mellow kick */
+        if (note == 38 || note == 40) { r.noise_lvl *= 0.65f; r.noise_tau *= 1.35f; }
+        if (note == 35 || note == 36) { r.f0 *= 0.85f; r.tone_lvl *= 0.85f; }
+    }
+    return r;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -559,6 +618,12 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
     v->base_m = s_note_inc[note] * p->ratio_m;
     v->fb_u = float_to_phase(p->fb * MOD_IDX_UNIT);
 
+    if (note > 64U) {
+        /* Keyboard rate scaling: smoothly attenuate modulation depth on upper octaves (-2.5 dB/octave)
+         * to eliminate metallic FM screech on high notes. */
+        scale *= exp2f(-(float)(note - 64U) * (1.0f / 28.0f));
+    }
+
     if (p->additive) {
         scale = 1.0f;
     } else {
@@ -586,13 +651,19 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         if (!s_third_op || busy > THIRD_OP_MAX_VOICES) {
             s_ext_skipped++;
         } else if (xp->kind == EXT_ENSEMBLE) {
+            /* 4-Operator Dual-Pair: Pair 1 (Op1/Op2) flat, Pair 2 (Op3/Op4) sharp in stereo */
             float d = exp2f(xp->a / 1200.0f);
             v->ext = EXT_ENSEMBLE;
             v->base_x = v->base_c * d;
             v->base_c = v->base_c / d;
+            v->base_m2 = v->base_m * d * xp->b;
+            v->base_m = v->base_m / d;
             v->pc2 = v->pc;
+            v->pm2 = v->pm;
+            v->tine_idx = xp->c;
             s_ext_started++;
         } else {
+            /* 4-Operator Tine/Hammer Pair */
             float f_t = f0 * xp->a;
             float idx = xp->b;
             float tscale = 1.0f;
@@ -605,6 +676,9 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
                 float tt = (xp->c > s_sub_sec) ? xp->c : s_sub_sec;
                 v->ext = EXT_TINE;
                 v->base_x = s_note_inc[note] * xp->a;
+                v->base_m2 = s_note_inc[note] * (p->ratio_c * 2.003f);
+                v->pm2 = v->pc;
+                v->pc2 = v->pc;
                 v->tine_idx = idx * tscale * (0.4f + 0.6f * ((float)vel / 127.0f));
                 v->tine_k = expf(-s_sub_sec / tt);
                 s_ext_started++;
@@ -624,7 +698,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
 
 static void drum_note_on(uint8_t note, uint8_t vel)
 {
-    drum_recipe_t r = make_recipe(note);
+    drum_recipe_t r = make_recipe(note, s_channels[FM_DRUM_CHANNEL].program);
 
     if (note == 42 || note == 44) {
         for (int i = 0; i < FM_MAX_VOICES; i++) {
@@ -1195,35 +1269,42 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     uint32_t fbu = v->fb_u;
 
     if (v->ext == EXT_ENSEMBLE) {
-        /* Two carriers a few cents apart share one modulator; the first leans left and the
-         * second right, so the beating spreads across the stereo field. */
+        /* True 4-Operator Dual-Pair: Pair 1 (Op1/Op2) flat & Pair 2 (Op3/Op4) sharp across stereo */
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
+        uint32_t iu2 = float_to_phase(v->idx * v->tine_idx * MOD_IDX_UNIT);
         uint32_t inc_2 = float_to_phase(v->base_x * r);
+        uint32_t inc_m2 = float_to_phase(v->base_m2 * r);
         uint32_t pc2 = v->pc2;
+        uint32_t pm2 = v->pm2;
         int32_t lg_a = (gl * ENSEMBLE_P_Q10) >> 10;
         int32_t lg_b = (gl * ENSEMBLE_Q_Q10) >> 10;
         int32_t rg_a = (gr * ENSEMBLE_Q_Q10) >> 10;
         int32_t rg_b = (gr * ENSEMBLE_P_Q10) >> 10;
 
         for (size_t i = 0; i < len; i++) {
-            int32_t m = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
-            y = m;
+            int32_t m1 = s_sine[(pm + (uint32_t)y * fbu) >> SINE_SHIFT];
+            y = m1;
             pm += inc_m;
-            uint32_t x = (uint32_t)m * iu;
-            int32_t c1 = s_sine[(pc + x) >> SINE_SHIFT];
-            int32_t c2 = s_sine[(pc2 + x) >> SINE_SHIFT];
+            int32_t m2 = s_sine[pm2 >> SINE_SHIFT];
+            pm2 += inc_m2;
+            int32_t c1 = s_sine[(pc + (uint32_t)m1 * iu) >> SINE_SHIFT];
+            int32_t c2 = s_sine[(pc2 + (uint32_t)m2 * iu2) >> SINE_SHIFT];
             pc += inc_c;
             pc2 += inc_2;
             bl[i] += (c1 * lg_a + c2 * lg_b) >> 15;
             br[i] += (c1 * rg_a + c2 * rg_b) >> 15;
         }
         v->pc2 = pc2;
+        v->pm2 = pm2;
     } else if (v->ext == EXT_TINE) {
-        /* A second, fast-dying modulator on the same carrier: the hammer or tine at the start. */
+        /* True 4-Operator Parallel Tine/Hammer Pair */
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
         uint32_t it = float_to_phase(v->tine_idx * MOD_IDX_UNIT);
         uint32_t inc_t = float_to_phase(v->base_x * r);
-        uint32_t pt = v->pc2;
+        uint32_t inc_c2 = float_to_phase(v->base_m2 * r);
+        uint32_t pt = v->pm2;
+        uint32_t pc2 = v->pc2;
+        int32_t mix_tine = (int32_t)(v->tine_idx * 16384.0f);
 
         v->tine_idx *= v->tine_k;
         for (size_t i = 0; i < len; i++) {
@@ -1232,12 +1313,16 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
             pm += inc_m;
             int32_t t = s_sine[pt >> SINE_SHIFT];
             pt += inc_t;
-            int32_t cs = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
+            int32_t c2 = s_sine[(pc2 + (uint32_t)t * it) >> SINE_SHIFT];
+            pc2 += inc_c2;
+            int32_t c1 = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
             pc += inc_c;
+            int32_t cs = c1 + ((c2 * mix_tine) >> 15);
             bl[i] += (cs * gl) >> 15;
             br[i] += (cs * gr) >> 15;
         }
-        v->pc2 = pt;
+        v->pm2 = pt;
+        v->pc2 = pc2;
     } else if (v->additive) {
         int32_t mix = (int32_t)(v->idx * 32767.0f);
         if (fbu == 0) {

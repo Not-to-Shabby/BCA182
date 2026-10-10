@@ -284,7 +284,18 @@ static float compressor_target(float peak_norm)
     if (gr > s_gr_max) {
         s_gr_max = gr;
     }
-    return exp2f((DSP_COMP_MAKEUP_DB - gr) * (1.0f / DB_PER_OCTAVE));
+
+    float makeup = DSP_COMP_MAKEUP_DB;
+    float gate_db = (lvl > s_env_db) ? lvl : s_env_db;
+    if (gate_db < -52.0f) {
+        /* Downward expander / gate: opens instantly on note attack (lvl), closes smoothly on dying tail (s_env_db) */
+        float gate_t = (gate_db + 68.0f) * (1.0f / 16.0f);
+        if (gate_t <= 0.0f) {
+            return 0.0f;
+        }
+        makeup = DSP_COMP_MAKEUP_DB * gate_t - (1.0f - gate_t) * 12.0f;
+    }
+    return exp2f((makeup - gr) * (1.0f / DB_PER_OCTAVE));
 }
 
 static inline int16_t to_i16(float y)

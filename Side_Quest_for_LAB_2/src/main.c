@@ -17,11 +17,22 @@
 #include "random_play.h"
 
 #include <zephyr/kernel.h>
+#include <zephyr/init.h>
 #include <zephyr/random/random.h>
 #include <zephyr/sys/printk.h>
 #include <stm32f4xx.h>
 #include <stdio.h>
 #include <string.h>
+
+static int configure_overclock_flash_latency(void)
+{
+    /* Set 7 Flash wait states for 210 MHz HCLK operation with ART I/D cache */
+    FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY) |
+                 FLASH_ACR_LATENCY_7WS |
+                 FLASH_ACR_PRFTEN | FLASH_ACR_ICEN | FLASH_ACR_DCEN;
+    return 0;
+}
+SYS_INIT(configure_overclock_flash_latency, PRE_KERNEL_1, 2);
 
 /* Global Application State */
 static struct {
@@ -524,7 +535,7 @@ int main(void)
 {
     printk("\n==================================================\n");
     printk("  BCA182: RT-Spark MIDI Karaoke Player Starting   \n");
-    printk("  Yamaha FM Synth (70 Voices) + ST7789 IPS LCD    \n");
+    printk("  Yamaha FM Synth (70 Voices) @ %u MHz\n", (unsigned)(SystemCoreClock / 1000000U));
     printk("==================================================\n");
 
     k_mutex_init(&s_app.lock);

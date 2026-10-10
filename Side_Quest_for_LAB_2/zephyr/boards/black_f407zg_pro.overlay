@@ -54,3 +54,27 @@
 &rng {
 	status = "okay";
 };
+
+/* Overclock STM32F407 to 210 MHz:
+ * HSE = 8 MHz / M(8) = 1 MHz * N(420) = 420 MHz VCO
+ * SYSCLK = 420 MHz / P(2) = 210 MHz
+ * PLL48CK = 420 MHz / Q(9) = 46.67 MHz (SDIO & RNG)
+ * AHB = 210 MHz, APB1 = 26.25 MHz (<= 42 MHz max), APB2 = 52.5 MHz (<= 84 MHz max)
+ */
+&pll {
+	div-m = <8>;
+	mul-n = <420>;
+	div-p = <2>;
+	div-q = <9>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(210)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <8>;
+	apb2-prescaler = <4>;
+};
+

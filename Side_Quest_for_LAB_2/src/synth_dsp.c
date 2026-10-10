@@ -69,15 +69,20 @@ static inline int32_t sat16(int32_t x)
 /* -------------------------------------------------------------------------- */
 /* Reverb                                                                     */
 /* -------------------------------------------------------------------------- */
-#define RV_LINES        4
+#define RV_LINES        8
 #define RV_AP1_LEN      113U
 #define RV_AP2_LEN      337U
 #define RV_AP_GAIN      0.6f
 #define RV_NOISE        1e-15f          /* keeps the tail out of the denormal range */
 
-static const uint16_t RV_LEN[RV_LINES]  = { 1117U, 1361U, 1597U, 1801U };
-static const uint16_t RV_BASE[RV_LINES] = { 0U, 1117U, 2478U, 4075U };
-#define RV_MEM_SAMPLES  5876U
+/* 8 coprime delay lines for rich flutter-free concert hall / studio plate reverb */
+static const uint16_t RV_LEN[RV_LINES]  = {
+    431U, 523U, 617U, 709U, 809U, 907U, 997U, 1103U
+};
+static const uint16_t RV_BASE[RV_LINES] = {
+    0U, 431U, 954U, 1571U, 2280U, 3089U, 3996U, 4993U
+};
+#define RV_MEM_SAMPLES  6096U
 
 /* About 24 KB, read and written only by the CPU: main RAM, because the core-coupled RAM that
  * holds the voices has no room left for it. */
@@ -116,42 +121,38 @@ static void reverb_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size
             s_rv_ap2_pos = 0;
         }
 
-        float f0, f1, f2, f3;
-        float *m0 = &s_rv_mem[RV_BASE[0] + s_rv_pos[0]];
-        float *m1 = &s_rv_mem[RV_BASE[1] + s_rv_pos[1]];
-        float *m2 = &s_rv_mem[RV_BASE[2] + s_rv_pos[2]];
-        float *m3 = &s_rv_mem[RV_BASE[3] + s_rv_pos[3]];
+        float f[8];
+        float v[8];
+        float sum_v = 0.0f;
+        for (int j = 0; j < 8; j++) {
+            const float *mp = &s_rv_mem[RV_BASE[j] + s_rv_pos[j]];
+            f[j] = s_rv_lp[j] + damp * (*mp - s_rv_lp[j]);
+            s_rv_lp[j] = f[j];
+            v[j] = f[j] * s_rv_gain[j];
+            sum_v += v[j];
+        }
+        sum_v *= 0.25f;
+        float inj = z * 0.45f;
 
-        f0 = s_rv_lp[0] + damp * (*m0 - s_rv_lp[0]);
-        f1 = s_rv_lp[1] + damp * (*m1 - s_rv_lp[1]);
-        f2 = s_rv_lp[2] + damp * (*m2 - s_rv_lp[2]);
-        f3 = s_rv_lp[3] + damp * (*m3 - s_rv_lp[3]);
-        s_rv_lp[0] = f0;
-        s_rv_lp[1] = f1;
-        s_rv_lp[2] = f2;
-        s_rv_lp[3] = f3;
+        /* 8x8 Lossless Householder reflection matrix: w_j = v_j - 0.25*sum(v) + inj_j */
+        s_rv_mem[RV_BASE[0] + s_rv_pos[0]] = (v[0] - sum_v) + inj;
+        s_rv_mem[RV_BASE[1] + s_rv_pos[1]] = (v[1] - sum_v) - inj;
+        s_rv_mem[RV_BASE[2] + s_rv_pos[2]] = (v[2] - sum_v) + inj;
+        s_rv_mem[RV_BASE[3] + s_rv_pos[3]] = (v[3] - sum_v) - inj;
+        s_rv_mem[RV_BASE[4] + s_rv_pos[4]] = (v[4] - sum_v) + inj;
+        s_rv_mem[RV_BASE[5] + s_rv_pos[5]] = (v[5] - sum_v) - inj;
+        s_rv_mem[RV_BASE[6] + s_rv_pos[6]] = (v[6] - sum_v) + inj;
+        s_rv_mem[RV_BASE[7] + s_rv_pos[7]] = (v[7] - sum_v) - inj;
 
-        float v0 = f0 * s_rv_gain[0];
-        float v1 = f1 * s_rv_gain[1];
-        float v2 = f2 * s_rv_gain[2];
-        float v3 = f3 * s_rv_gain[3];
-        float inj = z * 0.5f;
-        float a = (v0 + v1) * 0.5f;
-        float b = (v2 + v3) * 0.5f;
-        float c = (v0 - v1) * 0.5f;
-        float e = (v2 - v3) * 0.5f;
+        for (int j = 0; j < 8; j++) {
+            if (++s_rv_pos[j] >= RV_LEN[j]) {
+                s_rv_pos[j] = 0;
+            }
+        }
 
-        *m0 = a + b + inj;
-        *m1 = c + e + inj;
-        *m2 = a - b + inj;
-        *m3 = c - e + inj;
-        if (++s_rv_pos[0] >= RV_LEN[0]) s_rv_pos[0] = 0;
-        if (++s_rv_pos[1] >= RV_LEN[1]) s_rv_pos[1] = 0;
-        if (++s_rv_pos[2] >= RV_LEN[2]) s_rv_pos[2] = 0;
-        if (++s_rv_pos[3] >= RV_LEN[3]) s_rv_pos[3] = 0;
-
-        float l = (f0 - f1 + f2 - f3) * 0.5f;
-        float r = (f0 + f1 - f2 - f3) * 0.5f;
+        /* Orthogonal stereo output taps: left and right decorrelated */
+        float l = (f[0] - f[1] + f[2] - f[3] + f[4] - f[5] + f[6] - f[7]) * 0.35f;
+        float r = (f[0] + f[1] - f[2] - f[3] + f[4] + f[5] - f[6] - f[7]) * 0.35f;
         out_l[i] += (int32_t)(l * ret);
         out_r[i] += (int32_t)(r * ret);
     }
@@ -187,26 +188,35 @@ static inline int32_t chorus_delay_q8(uint32_t phase)
 static void chorus_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size_t n)
 {
     uint32_t end = s_ch_phase + s_ch_inc * (uint32_t)n;
-    int32_t dl = chorus_delay_q8(s_ch_phase) * 256;
-    int32_t dr = chorus_delay_q8(s_ch_phase + 0x40000000U) * 256;
-    int32_t sl = (chorus_delay_q8(end) * 256 - dl) / (int32_t)n;
-    int32_t sr = (chorus_delay_q8(end + 0x40000000U) * 256 - dr) / (int32_t)n;
+    /* 4 quadrature delay taps: 0, 90, 180, 270 degrees for thick Dimension D chorus */
+    int32_t d0 = chorus_delay_q8(s_ch_phase) * 256;
+    int32_t d1 = chorus_delay_q8(s_ch_phase + 0x40000000U) * 256;
+    int32_t d2 = chorus_delay_q8(s_ch_phase + 0x80000000U) * 256;
+    int32_t d3 = chorus_delay_q8(s_ch_phase + 0xC0000000U) * 256;
+    int32_t s0 = (chorus_delay_q8(end) * 256 - d0) / (int32_t)n;
+    int32_t s1 = (chorus_delay_q8(end + 0x40000000U) * 256 - d1) / (int32_t)n;
+    int32_t s2 = (chorus_delay_q8(end + 0x80000000U) * 256 - d2) / (int32_t)n;
+    int32_t s3 = (chorus_delay_q8(end + 0xC0000000U) * 256 - d3) / (int32_t)n;
     uint32_t wr = s_ch_wr;
 
     for (size_t i = 0; i < n; i++) {
         s_ch_buf[wr & CH_MASK] = (int16_t)sat16(in[i] >> 1);
 
-        uint32_t wl = (uint32_t)dl >> 16;
-        int32_t fl = (dl >> 8) & 255;
-        int32_t l = (s_ch_buf[(wr - wl) & CH_MASK] * (256 - fl) + s_ch_buf[(wr - wl - 1U) & CH_MASK] * fl) >> 8;
-        uint32_t wr2 = (uint32_t)dr >> 16;
-        int32_t fr = (dr >> 8) & 255;
-        int32_t r = (s_ch_buf[(wr - wr2) & CH_MASK] * (256 - fr) + s_ch_buf[(wr - wr2 - 1U) & CH_MASK] * fr) >> 8;
+        uint32_t w0 = (uint32_t)d0 >> 16; int32_t f0 = (d0 >> 8) & 255;
+        int32_t tap0 = (s_ch_buf[(wr - w0) & CH_MASK] * (256 - f0) + s_ch_buf[(wr - w0 - 1U) & CH_MASK] * f0) >> 8;
+        uint32_t w1 = (uint32_t)d1 >> 16; int32_t f1 = (d1 >> 8) & 255;
+        int32_t tap1 = (s_ch_buf[(wr - w1) & CH_MASK] * (256 - f1) + s_ch_buf[(wr - w1 - 1U) & CH_MASK] * f1) >> 8;
+        uint32_t w2 = (uint32_t)d2 >> 16; int32_t f2 = (d2 >> 8) & 255;
+        int32_t tap2 = (s_ch_buf[(wr - w2) & CH_MASK] * (256 - f2) + s_ch_buf[(wr - w2 - 1U) & CH_MASK] * f2) >> 8;
+        uint32_t w3 = (uint32_t)d3 >> 16; int32_t f3 = (d3 >> 8) & 255;
+        int32_t tap3 = (s_ch_buf[(wr - w3) & CH_MASK] * (256 - f3) + s_ch_buf[(wr - w3 - 1U) & CH_MASK] * f3) >> 8;
+
+        int32_t l = (tap0 + tap2) >> 1;
+        int32_t r = (tap1 + tap3) >> 1;
 
         out_l[i] += (l * s_ch_ret) >> 15;
         out_r[i] += (r * s_ch_ret) >> 15;
-        dl += sl;
-        dr += sr;
+        d0 += s0; d1 += s1; d2 += s2; d3 += s3;
         wr++;
     }
     s_ch_wr = wr;
@@ -257,6 +267,8 @@ static float s_glim = 1.0f;
 static uint32_t s_lim_samples;
 static uint32_t s_clear_run;        /* consecutive samples that needed no limiting */
 static bool s_clean;                /* limiter history is all "no limiting": take the fast path */
+static uint32_t s_dith_prng = 0x12345678U;
+static float s_dith_err[2];
 
 static void master_clear(void)
 {
@@ -280,6 +292,9 @@ static void master_clear(void)
     memset(s_eq_ls_s2, 0, sizeof(s_eq_ls_s2));
     memset(s_eq_hs_s1, 0, sizeof(s_eq_hs_s1));
     memset(s_eq_hs_s2, 0, sizeof(s_eq_hs_s2));
+    s_dith_prng = 0x12345678U;
+    s_dith_err[0] = 0.0f;
+    s_dith_err[1] = 0.0f;
 }
 
 static float compressor_target(float peak_norm)
@@ -322,8 +337,26 @@ static float compressor_target(float peak_norm)
 static inline int16_t to_i16(float y)
 {
     int32_t i = (int32_t)(y + ((y >= 0.0f) ? 0.5f : -0.5f));
-
     return (int16_t)sat16(i);
+}
+
+static inline int16_t to_i16_dither(float y, int ch)
+{
+    if (fabsf(y) < 0.25f) {
+        s_dith_err[ch] = 0.0f;
+        return 0;
+    }
+    s_dith_prng = s_dith_prng * 1664525U + 1013904223U;
+    int32_t r1 = (int32_t)(s_dith_prng >> 23) - 256;
+    s_dith_prng = s_dith_prng * 1664525U + 1013904223U;
+    int32_t r2 = (int32_t)(s_dith_prng >> 23) - 256;
+    float tpdf = (float)(r1 - r2) * (1.0f / 512.0f); /* Triangular TPDF dither [-1.0, +1.0] LSB */
+
+    float target = y + tpdf + s_dith_err[ch] * 0.5f; /* 1st-order high-pass error feedback */
+    int32_t i = (int32_t)(target + ((target >= 0.0f) ? 0.5f : -0.5f));
+    int16_t out = (int16_t)sat16(i);
+    s_dith_err[ch] = y - (float)out;
+    return out;
 }
 
 void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out,
@@ -374,8 +407,8 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
             uint32_t at = cur & LIM_MASK;
             uint32_t rd = (cur + 1U) & LIM_MASK;
 
-            out[i * 2U] = to_i16(s_dl_l[rd]);
-            out[i * 2U + 1U] = to_i16(s_dl_r[rd]);
+            out[i * 2U] = to_i16_dither(s_dl_l[rd], 0);
+            out[i * 2U + 1U] = to_i16_dither(s_dl_r[rd], 1);
             s_dl_l[at] = xl;
             s_dl_r[at] = xr;
             cur++;
@@ -451,8 +484,8 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
         s_dl_r[cur & LIM_MASK] = xr;
         s_lim_n = cur + 1U;
 
-        out[i * 2U] = to_i16(dl * s_glim);
-        out[i * 2U + 1U] = to_i16(dr * s_glim);
+        out[i * 2U] = to_i16_dither(dl * s_glim, 0);
+        out[i * 2U + 1U] = to_i16_dither(dr * s_glim, 1);
     }
     s_cg = target;
 

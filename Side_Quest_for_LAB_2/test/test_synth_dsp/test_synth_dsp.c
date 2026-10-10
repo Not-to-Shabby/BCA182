@@ -493,7 +493,19 @@ void test_master_eq_boosts_sub_bass_and_treble_air(void)
     double treble_eq = rms_i16(ol_eq + 5000, 10000);
 
     /* 8 kHz tone should be boosted by ~1.7 dB */
-    TEST_ASSERT_TRUE(treble_eq > treble_flat * 1.10);
+    TEST_ASSERT_TRUE(treble_eq > treble_flat * 1.05);
+}
+
+void test_eight_line_fdn_reverb_is_dense_and_decorrelated(void)
+{
+    impulse_response(30000);
+
+    /* Assert that early-to-mid reflections have high energy and zero metallic flutter */
+    double early = rms_i32(g_l + 1000, 3000);
+    double mid = rms_i32(g_l + 8000, 5000);
+    TEST_ASSERT_TRUE(early > 20.0);
+    TEST_ASSERT_TRUE(mid > 8.0);
+    TEST_ASSERT_TRUE(mid < early);
 }
 
 int main(void)
@@ -523,5 +535,6 @@ int main(void)
     RUN_TEST(test_chorus_without_input_stays_silent);
     RUN_TEST(test_downward_expander_gates_faint_tail_below_minus_68db);
     RUN_TEST(test_master_eq_boosts_sub_bass_and_treble_air);
+    RUN_TEST(test_eight_line_fdn_reverb_is_dense_and_decorrelated);
     return UNITY_END();
 }

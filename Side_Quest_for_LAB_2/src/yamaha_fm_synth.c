@@ -16,6 +16,7 @@
 #include "dtcm.h"
 #include "synth_dsp.h"
 #include "opl4_drum_samples.h"
+#include "opl3_wave_tables.h"
 #include <math.h>
 #include <stdbool.h>
 #include <string.h>
@@ -46,6 +47,7 @@ static volatile uint8_t s_melody_percent = 100;
 #endif
 static volatile bool s_third_op = THIRD_OP_DEFAULT;
 static volatile bool s_opl4_drums = true;
+static volatile bool s_vcf_on = true;
 static uint32_t s_ext_started;
 static uint32_t s_ext_skipped;
 static volatile int8_t s_melody_channel = -1;
@@ -103,9 +105,9 @@ void yamaha_fm_set_melody_channel(int8_t channel)
 #define EVENT_ROUND_FRAMES  (SUB_FRAMES / 2U)
 #define MAX_BANDWIDTH_HZ    11000.0f
 #ifndef THIRD_OP_MAX_VOICES
-#define THIRD_OP_MAX_VOICES 28          /* 4-op voices active up to 28 voices */
+#define THIRD_OP_MAX_VOICES 22          /* 4-op voices active up to 22 voices */
 #ifndef SIX_OP_MAX_VOICES
-#define SIX_OP_MAX_VOICES   18          /* 6-op DX7 voices active up to 18 voices (@ 220 MHz) */
+#define SIX_OP_MAX_VOICES   12          /* 6-op DX7 voices active up to 12 voices */
 #endif
 #endif
 /* Each channel hears both carriers, one louder than the other, with the loud one swapped between
@@ -183,6 +185,10 @@ typedef struct {
     float base_c3, base_m3;         /* Pair 3: Op5 and Op6 phase increments */
     float tine_idx, tine_k;         /* Hammer/tine modulation index and decay */
 
+    /* Dynamic Resonant Low-Pass Filter (VCF) */
+    int32_t svf_lp, svf_bp;
+    int32_t svf_q;
+
     /* percussion & OPL4 PCM WaveTable voice */
     const int16_t *pcm_data;
     uint32_t pcm_len;
@@ -214,7 +220,6 @@ typedef struct {
 
 enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_CC, EV_PROGRAM, EV_BEND, EV_ALL_OFF };
 
-#define NUM_OPL3_WAVES      8U
 static int16_t s_waves[NUM_OPL3_WAVES][SINE_SIZE];
 #define s_sine s_waves[0]
 static DTCM_BSS float s_note_inc[128];
@@ -733,6 +738,9 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
     v->additive = p->additive;
     v->wave_m = PATCH_WAVE_M[pid];
     v->level = p->level;
+    v->svf_lp = 0;
+    v->svf_bp = 0;
+    v->svf_q = ((pid >= P_SYN_BASS1 && pid <= P_SYN_BASS2) || pid == P_SYN_BRASS || pid == P_SQ_LEAD || pid == P_SAW_LEAD || pid == P_CLAV || pid == P_SLAP) ? 15000 : 25500;
     v->vib = p->vib;
     {
         float vg = (float)vel / 127.0f;
@@ -1098,26 +1106,7 @@ void yamaha_fm_synth_init(uint32_t sample_rate)
     s_fast_rel_k = expf(-s_sub_sec / 0.006f);
     s_lead_frames = s_rate_u * EVENT_LEAD_MS / 1000U;
 
-    for (unsigned i = 0; i < SINE_SIZE; i++) {
-        float theta = 2.0f * 3.14159265f * (float)i / (float)SINE_SIZE;
-        int16_t s = (int16_t)lrintf(sinf(theta) * 32767.0f);
-        int16_t s2 = (int16_t)lrintf(sinf(2.0f * theta) * 32767.0f);
-        uint32_t q = (i * 4U) / SINE_SIZE;              /* quadrant 0, 1, 2, 3 */
-
-        s_waves[WAVE_SINE][i]    = s;
-        s_waves[WAVE_HALF][i]    = (q < 2U) ? s : 0;
-        s_waves[WAVE_ABS][i]     = (s >= 0) ? s : (int16_t)(-s);
-        s_waves[WAVE_QUARTER][i] = (q == 0U) ? s : ((q == 2U) ? (int16_t)(-s) : 0);
-        s_waves[WAVE_ALT][i]     = (q < 2U) ? s2 : 0;
-        s_waves[WAVE_CAMEL][i]   = (q < 2U) ? ((s2 >= 0) ? s2 : (int16_t)(-s2)) : 0;
-        s_waves[WAVE_SQUARE][i]  = (q < 2U) ? 28000 : -28000;
-
-        /* Wave 7: OPL3 Logarithmic Sawtooth (shaped exponential ramp per half-period) */
-        float u = (float)(i & (SINE_SIZE / 2U - 1U)) / (float)(SINE_SIZE / 2U);
-        float exp_ramp = (1.0f - expf(-3.0f * (1.0f - u))) / (1.0f - expf(-3.0f));
-        int16_t lsaw = (int16_t)lrintf(exp_ramp * 30000.0f);
-        s_waves[WAVE_LOG_SAW][i] = (q < 2U) ? lsaw : (int16_t)(-lsaw);
-    }
+    memcpy(s_waves, FLASH_OPL3_WAVES, sizeof(s_waves));
     for (int n = 0; n < 128; n++) {
         float freq = 440.0f * exp2f(((float)n - 69.0f) / 12.0f);
         s_note_inc[n] = freq * 4294967296.0f / s_sample_rate;
@@ -1301,6 +1290,16 @@ bool yamaha_fm_get_opl4_drums(void)
     return s_opl4_drums;
 }
 
+void yamaha_fm_set_vcf(bool on)
+{
+    s_vcf_on = on;
+}
+
+bool yamaha_fm_get_vcf(void)
+{
+    return s_vcf_on;
+}
+
 void yamaha_fm_get_third_operator_stats(uint32_t *started, uint32_t *skipped_busy)
 {
     if (started != NULL) {
@@ -1442,6 +1441,18 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     uint32_t fbu = v->fb_u;
     const int16_t *wt = s_waves[v->wave_m];
 
+    /* Dynamic Resonant State-Variable Filter (VCF): cutoff follows voice amplitude & velocity */
+    bool vcf_active = (s_vcf_on && !v->additive && v->ext != EXT_ENSEMBLE);
+    int32_t svf_f = 0;
+    (void)v->svf_q;
+    int32_t svf_lp = v->svf_lp;
+    int32_t svf_bp = v->svf_bp;
+    if (vcf_active) {
+        float env_f = 0.38f + 0.62f * (v->amp * (0.6f + 0.4f * v->vel_gain));
+        svf_f = (int32_t)(env_f * 24000.0f);
+        if (svf_f > 26500) svf_f = 26500;
+    }
+
     if (v->ext == EXT_ENSEMBLE) {
         uint32_t iu = float_to_phase(v->idx * MOD_IDX_UNIT);
         uint32_t iu2 = float_to_phase(v->idx * v->tine_idx * MOD_IDX_UNIT);
@@ -1538,6 +1549,10 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 int32_t c1 = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
                 pc += inc_c;
                 int32_t cs = c1 + ((c2 * mix_tine + c3 * mix_wood) >> 15);
+                if (vcf_active) {
+                    svf_lp += ((cs - svf_lp) * svf_f) >> 15;
+                    cs = svf_lp;
+                }
                 bl[i] += (cs * gl) >> 15;
                 br[i] += (cs * gr) >> 15;
             }
@@ -1555,6 +1570,10 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 int32_t c1 = s_sine[(pc + (uint32_t)m * iu + (uint32_t)t * it) >> SINE_SHIFT];
                 pc += inc_c;
                 int32_t cs = c1 + ((c2 * mix_tine) >> 15);
+                if (vcf_active) {
+                    svf_lp += ((cs - svf_lp) * svf_f) >> 15;
+                    cs = svf_lp;
+                }
                 bl[i] += (cs * gl) >> 15;
                 br[i] += (cs * gr) >> 15;
             }
@@ -1591,6 +1610,10 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 pm += inc_m;
                 int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
                 pc += inc_c;
+                if (vcf_active) {
+                    svf_lp += ((cs - svf_lp) * svf_f) >> 15;
+                    cs = svf_lp;
+                }
                 bl[i] += (cs * gl) >> 15;
                 br[i] += (cs * gr) >> 15;
             }
@@ -1601,6 +1624,10 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 pm += inc_m;
                 int32_t cs = s_sine[(pc + (uint32_t)m * iu) >> SINE_SHIFT];
                 pc += inc_c;
+                if (vcf_active) {
+                    svf_lp += ((cs - svf_lp) * svf_f) >> 15;
+                    cs = svf_lp;
+                }
                 bl[i] += (cs * gl) >> 15;
                 br[i] += (cs * gr) >> 15;
             }
@@ -1612,6 +1639,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     v->fb_prev = y;
     v->gl = gl1;
     v->gr = gr1;
+    v->svf_lp = svf_lp;
+    v->svf_bp = svf_bp;
 }
 
 static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,

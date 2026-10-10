@@ -150,6 +150,12 @@ void yamaha_fm_set_opl4_drums(bool on);
 bool yamaha_fm_get_opl4_drums(void);
 
 /**
+ * @brief Enable or disable per-voice dynamic resonant low-pass filter (VCF).
+ */
+void yamaha_fm_set_vcf(bool on);
+bool yamaha_fm_get_vcf(void);
+
+/**
  * @brief Notes that got a third operator, and notes that could have but started while the
  *        player was too busy.
  */

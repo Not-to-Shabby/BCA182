@@ -1005,6 +1005,34 @@ void test_opl4_pcm_toms_pitch_shift_across_floor_to_high_tom(void)
     TEST_ASSERT_TRUE(step_high > step_low * 2);      /* High tom has more than double the pitch step */
 }
 
+void test_dynamic_vcf_warms_piano_tail_as_it_decays(void)
+{
+    TEST_ASSERT_TRUE(yamaha_fm_get_vcf());
+
+    play(0, 0, 60, 100);    /* Acoustic Grand Piano */
+    render_ms(1500);
+
+    double attack_bright = brightness(20, 60);
+    double tail_bright = brightness(600, 200);
+
+    /* As the note sustains and decays, VCF closes smoothly -> tail is significantly warmer */
+    TEST_ASSERT_TRUE(attack_bright > tail_bright * 1.35);
+}
+
+void test_vcf_bypass_toggle_restores_unfiltered_fm(void)
+{
+    yamaha_fm_set_vcf(false);
+    TEST_ASSERT_FALSE(yamaha_fm_get_vcf());
+
+    play(0, 0, 60, 100);
+    render_ms(300);
+    double unfilt = rms_window(100, 100);
+
+    yamaha_fm_set_vcf(true);
+    TEST_ASSERT_TRUE(yamaha_fm_get_vcf());
+    TEST_ASSERT_TRUE(unfilt > 100.0);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1062,5 +1090,7 @@ int main(void)
     RUN_TEST(test_six_operator_dx7_mode_engages_when_voice_count_under_eighteen);
     RUN_TEST(test_opl4_pcm_wavetable_drums_render_kick_snare_clap_and_cymbals);
     RUN_TEST(test_opl4_pcm_toms_pitch_shift_across_floor_to_high_tom);
+    RUN_TEST(test_dynamic_vcf_warms_piano_tail_as_it_decays);
+    RUN_TEST(test_vcf_bypass_toggle_restores_unfiltered_fm);
     return UNITY_END();
 }

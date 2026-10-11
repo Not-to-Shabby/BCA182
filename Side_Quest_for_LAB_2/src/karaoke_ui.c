@@ -30,6 +30,7 @@ static uint8_t s_last_voices = 0xFFU;
 static int s_last_vu_l = -1;
 static int s_last_vu_r = -1;
 static bool s_frame_initialized = false;
+static bool s_mixer_redraw = true;      /* the whole mixer screen must be drawn again */
 
 static void pad_string(char *dst, const char *src, size_t max_len)
 {
@@ -110,6 +111,7 @@ void karaoke_ui_set_view(ui_view_mode_t mode)
     memset(s_last_cur_lyric, 0, sizeof(s_last_cur_lyric));
     memset(s_last_prev_lyric, 0, sizeof(s_last_prev_lyric));
     memset(s_last_up_lyric, 0, sizeof(s_last_up_lyric));
+    s_mixer_redraw = true;
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
 
@@ -449,7 +451,7 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
     lcd_fill_rect(0, 26, 239, 40, LCD_COLOR_BLACK);
     lcd_show_string(14, 26, "UP/DN: Select  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
 
-    /* 3. Setting Rows (y: 42 to 184) */
+    /* 3. Setting rows (y: 42 to 190), 25 px apart */
     static const char *labels[] = {
         "Master Volume",
         "Instrument Vol",
@@ -465,49 +467,212 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
 
-        lcd_fill_rect(8, y, 231, y + 25, bg);
-        lcd_draw_rect(8, y, 231, y + 25, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+        lcd_fill_rect(8, y, 231, y + 22, bg);
+        lcd_draw_rect(8, y, 231, y + 22, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
 
         char buf[32];
         snprintf(buf, sizeof(buf), "%s: %u%%", labels[i], vals[i]);
-        lcd_show_string(14, y + 2, buf, fg, bg);
+        lcd_show_string(14, y + 1, buf, fg, bg);
 
         /* Gauge bar: width up to 180 pixels */
         uint16_t gw = (uint16_t)(((uint32_t)vals[i] * 180U) / maxs[i]);
         if (gw > 180) gw = 180;
-        lcd_draw_rect(14, y + 17, 196, y + 22, LCD_COLOR_BLACK);
+        lcd_draw_rect(14, y + 17, 196, y + 21, LCD_COLOR_BLACK);
         if (gw > 0) {
-            lcd_fill_rect(15, y + 18, 15 + gw, y + 21, sel ? LCD_COLOR_GREEN : LCD_COLOR_CYAN);
+            lcd_fill_rect(15, y + 18, 15 + gw, y + 20, sel ? LCD_COLOR_GREEN : LCD_COLOR_CYAN);
         }
         if (gw < 180) {
-            lcd_fill_rect(15 + gw + 1, y + 18, 195, y + 21, LCD_COLOR_BLACK);
+            lcd_fill_rect(15 + gw + 1, y + 18, 195, y + 20, LCD_COLOR_BLACK);
         }
 
-        y += 28;
+        y += 25;
     }
 
-    /* 4. Row 5: Sound Card Bank Selector */
-    {
-        bool sel = (cursor == 4);
+    /* 4. Row 5: sound card bank selector, row 6: opens the mixer */
+    for (uint8_t r = 4; r < 6; r++) {
+        bool sel = (cursor == r);
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
-
-        lcd_fill_rect(8, y, 231, y + 25, bg);
-        lcd_draw_rect(8, y, 231, y + 25, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
-
         char buf[32];
-        snprintf(buf, sizeof(buf), "Sound Card: <%s>", (bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
-        lcd_show_string(14, y + 5, buf, fg, bg);
+
+        lcd_fill_rect(8, y, 231, y + 22, bg);
+        lcd_draw_rect(8, y, 231, y + 22, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+        if (r == 4) {
+            snprintf(buf, sizeof(buf), "Sound Card: <%s>", (bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
+        } else {
+            snprintf(buf, sizeof(buf), "Mixer: sections & channels >");
+        }
+        lcd_show_string(14, y + 3, buf, fg, bg);
+        y += 25;
     }
 
     /* 5. Status line */
-    lcd_fill_rect(8, 186, 231, 200, LCD_COLOR_BLACK);
-    lcd_show_string(14, 186, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+    lcd_fill_rect(8, 194, 231, 206, LCD_COLOR_BLACK);
+    lcd_show_string(14, 192, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
 
-    /* 6. Footer (y: 204 to 239) */
-    lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 208, "OK: Save & Return to Song", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    /* 6. Footer */
+    lcd_fill_rect(0, 208, 239, 239, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 208, (cursor == 5) ? "OK: Open the mixer" : "OK: Save & Return to Song", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 224, "Survives Reset & Shutdown", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+
+    k_mutex_unlock(&s_ui_lcd_mutex);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Mixer screen                                                               */
+/* -------------------------------------------------------------------------- */
+#define MIX_VISIBLE_ROWS    8U
+#define MIX_ROW_H           21U
+#define MIX_LIST_Y          40U
+
+static uint32_t s_mix_row_hash[MIX_VISIBLE_ROWS];
+static uint8_t s_mix_last_top = 0xFFU;
+static uint8_t s_mix_last_foot = 0xFFU;
+static bool s_mix_last_song = false;
+
+static uint32_t mix_hash(uint32_t h, uint32_t v)
+{
+    return (h ^ v) * 16777619U;
+}
+
+void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uint8_t programs[16],
+                             const uint8_t levels[16], uint16_t drum_mask, bool song_mix)
+{
+    if (s_view_mode != UI_VIEW_MIXER) return;
+    if (cursor >= MIX_ITEM_COUNT) cursor = MIX_ITEM_COUNT - 1U;
+
+    if (k_mutex_lock(&s_ui_lcd_mutex, K_MSEC(50)) != 0) {
+        return;
+    }
+
+    uint8_t top = 0;
+    if (cursor >= 4U) top = (uint8_t)(cursor - 3U);
+    if (top > MIX_ITEM_COUNT - MIX_VISIBLE_ROWS) top = (uint8_t)(MIX_ITEM_COUNT - MIX_VISIBLE_ROWS);
+
+    if (s_mixer_redraw) {
+        s_mix_last_top = 0xFFU;
+        s_mix_last_foot = 0xFFU;
+        memset(s_mix_row_hash, 0, sizeof(s_mix_row_hash));
+        lcd_fill_rect(0, 0, 239, 239, LCD_COLOR_BLACK);
+        lcd_fill_rect(0, 26, 239, 38, LCD_COLOR_BLACK);
+        lcd_show_string(14, 24, "UP/DN: Row  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+        s_mix_last_song = !song_mix;
+        s_mixer_redraw = false;
+    }
+    if (s_mix_last_song != song_mix) {
+        lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
+        lcd_show_string(8, 3, song_mix ? "=== MIXER (this song) ===" : "=== MIXER (default) ===",
+                        LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+        s_mix_last_song = song_mix;
+    }
+    if (s_mix_last_top != top) {
+        memset(s_mix_row_hash, 0, sizeof(s_mix_row_hash));      /* scrolled: every row shows another item */
+        s_mix_last_top = top;
+    }
+
+    for (uint8_t slot = 0; slot < MIX_VISIBLE_ROWS; slot++) {
+        uint8_t item = (uint8_t)(top + slot);
+        mix_item_kind_t kind = karaoke_mix_item_kind(item);
+        bool sel = (item == cursor);
+        int value = karaoke_mix_item_value(mix, item);
+        int state = 0;
+        uint8_t ch = 0;
+        uint8_t lvl = 0;
+        bool drum = false;
+
+        if (kind == MIX_KIND_CHANNEL) {
+            ch = (uint8_t)(item - MIX_ITEM_CHANNEL0);
+            state = karaoke_mix_channel_state(mix, ch);
+            lvl = levels[ch] > 24U ? 1U : 0U;
+            drum = (drum_mask & (1U << ch)) != 0U;
+        }
+        bool changed = karaoke_mix_item_changed(mix, item);
+        uint32_t h = 2166136261U;
+        h = mix_hash(h, item);
+        h = mix_hash(h, (uint32_t)(value + 1000));
+        h = mix_hash(h, (uint32_t)state + (sel ? 16U : 0U) + (changed ? 64U : 0U) + (uint32_t)lvl * 256U);
+        h = mix_hash(h, drum ? 1U : 0U);
+        h = mix_hash(h, kind == MIX_KIND_CHANNEL ? yamaha_fm_section_of_program(programs[ch]) : 0U);
+        if (h == s_mix_row_hash[slot] && h != 0U) {
+            continue;
+        }
+        s_mix_row_hash[slot] = h;
+
+        uint16_t y = (uint16_t)(MIX_LIST_Y + slot * MIX_ROW_H);
+        uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_BLACK;
+        uint16_t fg = sel ? LCD_COLOR_YELLOW : (changed ? LCD_COLOR_CYAN : LCD_COLOR_WHITE);
+        char name[32];
+        char val[12];
+
+        if (kind == MIX_KIND_CHANNEL) {
+            char scratch[12];
+
+            snprintf(name, sizeof(name), "%s %s", karaoke_mix_item_name(item, scratch, sizeof(scratch)),
+                     drum ? "Drums" : karaoke_mix_item_name((uint8_t)yamaha_fm_section_of_program(programs[ch]), NULL, 0));
+            if (state == 1) {
+                snprintf(val, sizeof(val), "MUTE");
+            } else if (state == 2) {
+                snprintf(val, sizeof(val), "SOLO");
+            } else {
+                snprintf(val, sizeof(val), "%d%%", value);
+            }
+        } else if (kind == MIX_KIND_TONE) {
+            snprintf(name, sizeof(name), "%s", karaoke_mix_item_name(item, NULL, 0));
+            snprintf(val, sizeof(val), "%+ddB", value);
+        } else if (kind == MIX_KIND_ACTION) {
+            snprintf(name, sizeof(name), "%s", karaoke_mix_item_name(item, NULL, 0));
+            val[0] = '\0';
+        } else {
+            snprintf(name, sizeof(name), "%s", karaoke_mix_item_name(item, NULL, 0));
+            snprintf(val, sizeof(val), "%d%%", value);
+        }
+        if (state == 1) fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_RED;
+        if (state == 2) fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN;
+
+        lcd_fill_rect(0, y, 239, (uint16_t)(y + MIX_ROW_H - 1U), bg);
+        if (kind == MIX_KIND_ACTION) {
+            lcd_show_string(10, y + 2, name, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN, bg);
+            continue;
+        }
+        lcd_show_string(10, y, name, fg, bg);
+        lcd_show_string((uint16_t)(238U - 8U * (uint16_t)strlen(val) - ((kind == MIX_KIND_CHANNEL) ? 12U : 0U)), y, val, fg, bg);
+        if (kind == MIX_KIND_CHANNEL) {
+            lcd_fill_rect(228, (uint16_t)(y + 4), 235, (uint16_t)(y + 11), lvl ? LCD_COLOR_GREEN : LCD_COLOR_DARKGREY);
+        }
+
+        /* bar under the text: percent rows from the left, tone rows from the middle */
+        lcd_fill_rect(10, (uint16_t)(y + 17), 227, (uint16_t)(y + 19), LCD_COLOR_DARKGREY);
+        uint16_t bar_color = sel ? LCD_COLOR_GREEN : (changed ? LCD_COLOR_CYAN : LCD_COLOR_GRAY);
+        if (kind == MIX_KIND_TONE) {
+            int mid = 10 + 109;
+            int w = (value * 109) / MIX_TONE_MAX_DB;
+            if (w > 0) {
+                lcd_fill_rect((uint16_t)mid, (uint16_t)(y + 17), (uint16_t)(mid + w), (uint16_t)(y + 19), bar_color);
+            } else if (w < 0) {
+                lcd_fill_rect((uint16_t)(mid + w), (uint16_t)(y + 17), (uint16_t)mid, (uint16_t)(y + 19), bar_color);
+            }
+        } else if (state == 0) {
+            int w = (value * 217) / (int)MIX_PERCENT_MAX;
+            if (w > 0) {
+                lcd_fill_rect(10, (uint16_t)(y + 17), (uint16_t)(10 + w), (uint16_t)(y + 19), bar_color);
+            }
+        }
+    }
+
+    /* footer: what OK does on the selected row */
+    uint8_t foot = (uint8_t)(karaoke_mix_item_kind(cursor));
+    if (cursor == MIX_ITEM_RESET) foot = 10;
+    if (cursor == MIX_ITEM_SAVE_ALL) foot = 11;
+    if (s_mix_last_foot != foot) {
+        const char *line1 = "OK: Reset this row";
+        if (foot == MIX_KIND_CHANNEL) line1 = "OK: Mute > Solo > Normal";
+        if (foot == 10) line1 = "OK: Back to default mix";
+        if (foot == 11) line1 = "OK: Use for every song";
+        lcd_fill_rect(0, 210, 239, 239, LCD_COLOR_DARKGREY);
+        lcd_show_string(8, 210, line1, LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+        lcd_show_string(8, 225, "Hold OK: Save & Close", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+        s_mix_last_foot = foot;
+    }
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }

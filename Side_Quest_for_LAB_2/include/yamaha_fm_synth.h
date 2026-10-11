@@ -199,6 +199,9 @@ bool yamaha_fm_get_channel_solo(uint8_t channel);
 /** Sets every channel back to 100 %, unmuted, not soloed (done for each new song). Sections are kept. */
 void yamaha_fm_reset_channel_mix(void);
 
+/** Bit n set = MIDI channel n currently plays drums (channel 10, and any part a GS message made one). */
+uint16_t yamaha_fm_get_drum_parts(void);
+
 /** Reverb and chorus on their own, in percent of the effects level (0 to 200, default 100). */
 void yamaha_fm_set_reverb_level(uint8_t percent);
 void yamaha_fm_set_chorus_level(uint8_t percent);

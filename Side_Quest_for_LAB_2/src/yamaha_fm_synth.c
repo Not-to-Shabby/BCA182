@@ -371,6 +371,11 @@ static inline bool is_drum_part(uint8_t ch)
     return (s_drum_parts & (1U << (ch & 15U))) != 0U;
 }
 
+uint16_t yamaha_fm_get_drum_parts(void)
+{
+    return s_drum_parts;
+}
+
 static int16_t s_waves[NUM_OPL3_WAVES][SINE_SIZE];
 #define s_sine s_waves[0]
 static DTCM_BSS float s_note_inc[128];

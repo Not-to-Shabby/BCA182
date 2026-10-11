@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include "midi_karaoke_parser.h"
 
+#include "karaoke_mix.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,7 +23,8 @@ typedef enum {
     UI_VIEW_BROWSER = 0,
     UI_VIEW_PLAYING,
     UI_VIEW_NUMBER_SELECT,
-    UI_VIEW_SETTINGS
+    UI_VIEW_SETTINGS,
+    UI_VIEW_MIXER
 } ui_view_mode_t;
 
 typedef struct {
@@ -101,6 +104,20 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
  * @param bank Current sound card bank (0=Yamaha OPL4, 1=Roland SC-55).
  */
 void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody, uint8_t bank);
+
+/**
+ * @brief Draw the mixer: a scrolling list of MIX_ITEM_COUNT rows with the selected row kept in view.
+ *        Only rows whose content changed are redrawn.
+ *
+ * @param cursor Selected row (0 .. MIX_ITEM_COUNT - 1).
+ * @param mix Values to show.
+ * @param programs General MIDI program of each channel (names the instrument group).
+ * @param levels Current loudness of each channel (0-255), shown as an activity dot.
+ * @param drum_mask Bit n set = channel n is a drum part.
+ * @param song_mix True if this song has a mix of its own, false if it plays the default.
+ */
+void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uint8_t programs[16],
+                             const uint8_t levels[16], uint16_t drum_mask, bool song_mix);
 
 #ifdef __cplusplus
 }

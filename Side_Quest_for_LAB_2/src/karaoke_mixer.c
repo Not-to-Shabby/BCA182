@@ -15,6 +15,10 @@ _Static_assert((unsigned)SYNTH_SECT_COUNT == MIX_SECTIONS, "MIX_SECTIONS must eq
 
 #define MIX_FILE_MAX    384U
 
+/* Shared by loading and saving. Every caller holds the application lock, so they never overlap, and
+ * keeping it out of the stack matters: the button thread that saves has only a few KB. */
+static char s_file_buf[MIX_FILE_MAX];
+
 static karaoke_mix_t s_mix;             /* what is playing now */
 static karaoke_mix_t s_default;         /* what a song without its own mix starts with */
 static uint32_t s_song_code;
@@ -39,23 +43,21 @@ void karaoke_mixer_apply(const karaoke_mix_t *mix)
 
 static bool load_file(const char *path, karaoke_mix_t *out)
 {
-    char buf[MIX_FILE_MAX];
     size_t len = 0;
 
-    if (!mix_store_read(path, buf, sizeof(buf) - 1U, &len) || len == 0U) {
+    if (!mix_store_read(path, s_file_buf, sizeof(s_file_buf) - 1U, &len) || len == 0U) {
         return false;
     }
-    buf[len] = '\0';
-    return karaoke_mix_parse(out, buf);
+    s_file_buf[len] = '\0';
+    return karaoke_mix_parse(out, s_file_buf);
 }
 
 static void save_file(const char *path, const karaoke_mix_t *mix)
 {
-    char buf[MIX_FILE_MAX];
-    size_t len = karaoke_mix_format(mix, buf, sizeof(buf));
+    size_t len = karaoke_mix_format(mix, s_file_buf, sizeof(s_file_buf));
 
     if (len > 0U) {
-        (void)mix_store_write(path, buf, len);
+        (void)mix_store_write(path, s_file_buf, len);
     }
 }
 

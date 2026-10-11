@@ -1185,6 +1185,40 @@ void test_channel_activity_reporting_for_led_matrix(void)
     TEST_ASSERT_EQUAL_UINT8(36, drum);
 }
 
+void test_gs_rhythm_part_turns_another_channel_into_a_drum_part(void)
+{
+    setUp();
+    yamaha_fm_program_change(10, 25);          /* TR-808 kit */
+    yamaha_fm_note_on(10, 36, 100);            /* melodic until the GS message arrives */
+    render_ms(20);
+    bool drum = false;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 10 && s_voices[v].is_drum) drum = true;
+    }
+    TEST_ASSERT_FALSE(drum);
+
+    setUp();
+    yamaha_fm_set_rhythm_part(10, true);
+    yamaha_fm_program_change(10, 25);
+    yamaha_fm_note_on(10, 36, 100);
+    render_ms(20);
+    drum = false;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 10 && s_voices[v].is_drum && s_voices[v].note == 36) drum = true;
+    }
+    TEST_ASSERT_TRUE(drum);
+
+    yamaha_fm_synth_reset();                   /* a new song starts with channel 10 only */
+    render_ms(20);
+    yamaha_fm_note_on(10, 36, 100);
+    render_ms(20);
+    drum = false;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 10 && s_voices[v].is_drum) drum = true;
+    }
+    TEST_ASSERT_FALSE(drum);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1249,5 +1283,6 @@ int main(void)
     RUN_TEST(test_hybrid_attack_toggle_disables_pcm_transients);
     RUN_TEST(test_sound_bank_switching_toggles_between_opl4_and_sc55_samples);
     RUN_TEST(test_channel_activity_reporting_for_led_matrix);
+    RUN_TEST(test_gs_rhythm_part_turns_another_channel_into_a_drum_part);
     return UNITY_END();
 }

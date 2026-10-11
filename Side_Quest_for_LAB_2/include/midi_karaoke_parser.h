@@ -47,6 +47,8 @@ typedef struct {
     void (*control_change)(uint8_t channel, uint8_t control, uint8_t value);
     void (*pitch_bend)(uint8_t channel, uint16_t bend);
     void (*all_notes_off)(void);
+    /** Optional. A Roland GS message made @p channel a drum part (true) or a melodic part (false). */
+    void (*rhythm_part)(uint8_t channel, bool is_drum);
     /** Optional. Called once each time the sequencer wakes, with the song clock in
      *  microseconds, so the receiver can map song time to its own clock. */
     void (*song_clock)(uint32_t song_us);

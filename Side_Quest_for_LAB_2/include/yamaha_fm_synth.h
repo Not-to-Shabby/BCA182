@@ -204,6 +204,9 @@ void yamaha_fm_reset_event_stats(void);
  */
 void yamaha_fm_all_notes_off(void);
 
+/** Marks a MIDI channel as a drum part (Roland GS rhythm part). Channel 10 is always one at reset. */
+void yamaha_fm_set_rhythm_part(uint8_t channel, bool is_drum);
+
 /**
  * @brief Render stereo 16-bit interleaved PCM samples directly into the audio buffer.
  *

@@ -112,7 +112,7 @@ static int run_song(const char *path, double seconds, const char *out, int volum
 
     midi_synth_callbacks_t cb = {
         .note_on = w_note_on, .note_off = w_note_off,
-        .program_change = yamaha_fm_program_change, .control_change = yamaha_fm_control_change,
+        .program_change = yamaha_fm_program_change, .control_change = yamaha_fm_control_change, .rhythm_part = yamaha_fm_set_rhythm_part,
         .pitch_bend = yamaha_fm_pitch_bend, .all_notes_off = yamaha_fm_all_notes_off,
         .song_clock = yamaha_fm_song_time_anchor, .event_time = yamaha_fm_song_time_event,
     };

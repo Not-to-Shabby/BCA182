@@ -46,6 +46,7 @@ typedef enum {
     MEV_BEND,
     MEV_TEMPO,
     MEV_TEXT,
+    MEV_RHYTHM_PART,     /* Roland GS 'use for rhythm part': chan = part's channel, d1 = 0 off / 1-2 drum map */
     MEV_SKIP
 } ev_kind_t;
 
@@ -380,7 +381,24 @@ static ev_kind_t read_event(track_cursor_t *c, midi_event_t *ev)
         return MEV_SKIP;
     }
     if (status == 0xF0U || status == 0xF7U) {
-        cursor_skip(c, cursor_vlq(c));
+        uint32_t sl = cursor_vlq(c);
+        uint8_t sx[8];
+        uint32_t got = 0;
+
+        while (got < sizeof(sx) && got < sl && cursor_next(c, &sx[got])) {
+            got++;
+        }
+        cursor_skip(c, sl - got);
+        /* Roland GS: 41 dev 42 12 40 1p 15 map (p: 0 = part 10, 1..9 = parts 1..9, A..F = parts 11..16) */
+        if (status == 0xF0U && got >= 8U && sx[0] == 0x41U && sx[2] == 0x42U && sx[3] == 0x12U &&
+            sx[4] == 0x40U && (sx[5] & 0xF0U) == 0x10U && sx[6] == 0x15U) {
+            uint8_t p = (uint8_t)(sx[5] & 0x0FU);
+            if (p <= 0x0FU) {
+                ev->chan = (p == 0U) ? 9U : (p <= 9U ? (uint8_t)(p - 1U) : p);
+                ev->d1 = (sx[7] > 2U) ? 0U : sx[7];
+                return MEV_RHYTHM_PART;
+            }
+        }
         return MEV_SKIP;
     }
     if (status >= 0xF0U) {
@@ -1009,6 +1027,12 @@ static void process_track_event(track_cursor_t *cur)
         if (s_midi.synth.pitch_bend) {
             announce_event_time();
             s_midi.synth.pitch_bend(ev.chan, (uint16_t)(((uint16_t)ev.d2 << 7) | (uint16_t)ev.d1));
+        }
+        break;
+    case MEV_RHYTHM_PART:
+        if (s_midi.synth.rhythm_part) {
+            announce_event_time();
+            s_midi.synth.rhythm_part(ev.chan, ev.d1 != 0U);
         }
         break;
     case MEV_SKIP:

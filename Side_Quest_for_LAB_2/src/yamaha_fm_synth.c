@@ -219,7 +219,15 @@ typedef struct {
     uint8_t type, ch, a, b;
 } synth_event_t;
 
-enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_CC, EV_PROGRAM, EV_BEND, EV_ALL_OFF };
+enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_CC, EV_PROGRAM, EV_BEND, EV_ALL_OFF, EV_RHYTHM };
+
+/* Bit n set = MIDI channel n plays drum sounds. Only the audio thread reads it. */
+static uint16_t s_drum_parts = 1U << FM_DRUM_CHANNEL;
+
+static inline bool is_drum_part(uint8_t ch)
+{
+    return (s_drum_parts & (1U << (ch & 15U))) != 0U;
+}
 
 static int16_t s_waves[NUM_OPL3_WAVES][SINE_SIZE];
 #define s_sine s_waves[0]
@@ -951,9 +959,9 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
     }
 }
 
-static void drum_note_on(uint8_t note, uint8_t vel)
+static void drum_note_on(uint8_t ch, uint8_t note, uint8_t vel)
 {
-    drum_recipe_t r = make_recipe(note, s_channels[FM_DRUM_CHANNEL].program);
+    drum_recipe_t r = make_recipe(note, s_channels[ch].program);
 
     if (note == 42 || note == 44) {
         for (int i = 0; i < FM_MAX_VOICES; i++) {
@@ -972,7 +980,7 @@ static void drum_note_on(uint8_t note, uint8_t vel)
     memset(v, 0, sizeof(*v));
     v->active = true;
     v->is_drum = true;
-    v->channel = FM_DRUM_CHANNEL;
+    v->channel = ch;
     v->note = note;
     v->open_hat = r.open_hat;
     v->state = ST_RELEASE;              /* one-shots: first in line to be stolen */
@@ -992,7 +1000,7 @@ static void drum_note_on(uint8_t note, uint8_t vel)
     v->amp = (r.tone_lvl > r.noise_lvl) ? r.tone_lvl : r.noise_lvl;
 
     if (s_opl4_drums) {
-        opl4_drum_wave_t w = make_opl4_wave(note, s_channels[FM_DRUM_CHANNEL].program);
+        opl4_drum_wave_t w = make_opl4_wave(note, s_channels[ch].program);
         v->pcm_data = w.data;
         v->pcm_len = w.len;
         v->pcm_pos = 0;
@@ -1032,6 +1040,7 @@ static void apply_pedal_up(uint8_t ch)
 
 static void reset_channels(void)
 {
+    s_drum_parts = 1U << FM_DRUM_CHANNEL;
     for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
         midi_channel_state_t *c = &s_channels[ch];
         memset(c, 0, sizeof(*c));
@@ -1143,8 +1152,8 @@ static void apply_event(const synth_event_t *e)
 
     switch (e->type) {
     case EV_NOTE_ON:
-        if (ch == FM_DRUM_CHANNEL) {
-            drum_note_on(e->a, e->b);
+        if (is_drum_part(ch)) {
+            drum_note_on(ch, e->a, e->b);
         } else {
             fm_note_on(ch, e->a, e->b, s_channels[ch].program);
         }
@@ -1160,6 +1169,13 @@ static void apply_event(const synth_event_t *e)
         break;
     case EV_BEND:
         s_channels[ch].bend = (int16_t)((int)(e->a | (e->b << 7)) - 8192);
+        break;
+    case EV_RHYTHM:
+        if (e->a != 0U) {
+            s_drum_parts |= (uint16_t)(1U << (ch & 15U));
+        } else {
+            s_drum_parts &= (uint16_t)~(1U << (ch & 15U));
+        }
         break;
     case EV_ALL_OFF:
         for (int i = 0; i < FM_MAX_VOICES; i++) {
@@ -1339,6 +1355,15 @@ void yamaha_fm_pitch_bend(uint8_t channel, uint16_t bend)
     if (push_event(EV_BEND, channel, (uint8_t)(bend & 0x7FU), (uint8_t)(bend >> 7))) {
         s_last_bend[channel] = bend;
     }
+}
+
+void yamaha_fm_set_rhythm_part(uint8_t channel, bool is_drum)
+{
+    if (channel >= FM_MIDI_CHANNELS) {
+        s_stamp_valid = false;
+        return;
+    }
+    push_event(EV_RHYTHM, channel, is_drum ? 1U : 0U, 0);
 }
 
 void yamaha_fm_all_notes_off(void)
@@ -1999,7 +2024,7 @@ static void render_chunk(int16_t *out, size_t frames)
         const int32_t *br = s_bus_r[ch];
         int32_t rs = fx_on ? ((int32_t)s_channels[ch].reverb * 2048) / 127 : 0;
         int32_t cs = fx_on ? ((int32_t)s_channels[ch].chorus * 2048) / 127 : 0;
-        bool duck_ch = (s_melody_channel >= 0 && ch != s_melody_channel && ch != FM_DRUM_CHANNEL && duck_q12 < 4088);
+        bool duck_ch = (s_melody_channel >= 0 && ch != s_melody_channel && !is_drum_part(ch) && duck_q12 < 4088);
 
         for (size_t i = 0; i < frames; i++) {
             int32_t l = duck_ch ? ((bl[i] * duck_q12) >> 12) : bl[i];
@@ -2048,6 +2073,7 @@ static const midi_synth_callbacks_t s_synth_callbacks = {
     .control_change = yamaha_fm_control_change,
     .pitch_bend = yamaha_fm_pitch_bend,
     .all_notes_off = yamaha_fm_all_notes_off,
+    .rhythm_part = yamaha_fm_set_rhythm_part,
     .song_clock = yamaha_fm_song_time_anchor,
     .event_time = yamaha_fm_song_time_event
 };

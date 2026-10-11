@@ -1859,7 +1859,9 @@ static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
     int32_t tq = (int32_t)(ta * drum_scale);
     int32_t nq = (int32_t)(na * drum_scale);
     int32_t pq = has_pcm ? (int32_t)(v->pcm_amp * v->vel_gain * drum_scale * 0.65f) : 0;
-    if (has_pcm) {
+    if (v->pcm_data != NULL) {
+        /* Keyed on the voice having a sample at all, not on the sample still playing: the synth
+         * layers must not jump back to full level the moment the sample runs out. */
         tq = (tq * 3) >> 3;
         nq = (nq * 3) >> 3;
     }

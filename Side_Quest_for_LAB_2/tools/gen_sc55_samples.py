@@ -6,6 +6,7 @@ waveforms via HTTP Range requests from SC-55.sf2 and writes them as const int16_
 Flash ROM tables to include/sc55_samples.h.
 """
 
+import math
 import os
 import struct
 import urllib.request
@@ -15,7 +16,6 @@ SMPL_OFFSET = 108  # Byte offset of sample 0 in SC-55.sf2
 
 def lowpass_taps(n=31, cutoff=0.22):
     """Windowed-sinc low-pass (cutoff in cycles/sample of the source rate) used before 2:1 decimation."""
-    import math
     mid = (n - 1) / 2.0
     taps = []
     for i in range(n):
@@ -76,11 +76,14 @@ def fetch_sf2_resampled(start_sample, src_rate, out_len, apply_tail_fade=True, s
         pos += step
 
     valid = len(out)
-    fade_len = min(128 if valid < out_len else 64, valid)
+    truncated = src_len is not None and int(out_len * step) + 8 < src_len
     if apply_tail_fade:
+        # A recording cut while still loud needs a long smooth fade (raised cosine over the last
+        # 40 %); a 3 ms ramp is heard as a click at the end of every hit.
+        fade_len = min(int(valid * 0.40) if truncated else 128, valid)
         for k in range(fade_len):
             idx = valid - fade_len + k
-            out[idx] *= (fade_len - 1 - k) / float(fade_len)
+            out[idx] *= 0.5 * (1.0 + math.cos(math.pi * (k + 1) / float(fade_len + 1)))
     while len(out) < out_len:
         out.append(0.0)
 

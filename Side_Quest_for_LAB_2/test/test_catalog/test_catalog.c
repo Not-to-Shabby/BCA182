@@ -583,6 +583,24 @@ void test_a_code_that_is_not_in_the_index_is_not_mistaken_for_a_read_error(void)
     TEST_ASSERT_EQUAL_UINT(0, g_sd_recovers);
 }
 
+void test_doom_e1m1_song_code_66666_opens_from_flash(void)
+{
+    uint32_t idx = 0;
+    song_entry_t s;
+    midi_source_t src;
+
+    karaoke_catalog_init();
+    TEST_ASSERT_TRUE(karaoke_catalog_find_by_code(KARAOKE_DOOM_SONG_CODE, &idx));
+    TEST_ASSERT_EQUAL_UINT32(KARAOKE_DOOM_SONG_INDEX, idx);
+    TEST_ASSERT_TRUE(karaoke_catalog_get_song(idx, &s));
+    TEST_ASSERT_EQUAL_UINT32(KARAOKE_DOOM_SONG_CODE, s.song_code);
+    TEST_ASSERT_EQUAL_STRING("At Doom's Gate (E1M1)", s.title);
+    TEST_ASSERT_TRUE(karaoke_catalog_open_song(idx, &src));
+    TEST_ASSERT_NOT_NULL(src.mem);
+    TEST_ASSERT_EQUAL_UINT32(17758, src.size);
+    TEST_ASSERT_EQUAL_MEMORY("MThd", src.mem, 4);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -593,6 +611,7 @@ int main(void)
     RUN_TEST(test_a_missing_song_does_not_restart_the_driver);
     RUN_TEST(test_the_index_is_read_again_after_a_failed_read);
     RUN_TEST(test_a_code_that_is_not_in_the_index_is_not_mistaken_for_a_read_error);
+    RUN_TEST(test_doom_e1m1_song_code_66666_opens_from_flash);
     RUN_TEST(test_valid_index_is_used);
     RUN_TEST(test_index_song_on_a_flat_card_still_loads);
     RUN_TEST(test_missing_index_falls_back_to_scanning);

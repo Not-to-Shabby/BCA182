@@ -354,10 +354,12 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_EPIANO]      = {EXT_TINE, 7.00f, 1.4f, 0.040f},
     [P_CLAV]        = {EXT_TINE, 3.00f, 1.8f, 0.025f},
 
-    /* Guitars (4-op pick transient & body) */
+    /* Guitars (4-op pick transient & double-tracked overdrive/distortion body) */
     [P_NYLON]       = {EXT_TINE, 3.01f, 1.2f, 0.025f},
     [P_STEEL]       = {EXT_TINE, 4.01f, 1.4f, 0.025f},
     [P_CLEAN_GTR]   = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
+    [P_OD_GTR]      = {EXT_ENSEMBLE, 4.5f, 1.0f, 1.1f},
+    [P_DIST_GTR]    = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.15f},
 
     /* Basses (4-op fat dual-oscillator sub & punch) */
     [P_ACO_BASS]    = {EXT_ENSEMBLE, 2.0f, 1.0f, 0.9f},

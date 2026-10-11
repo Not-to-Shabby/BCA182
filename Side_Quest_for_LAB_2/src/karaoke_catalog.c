@@ -11,6 +11,7 @@
 #include "karaoke_catalog.h"
 #include "dtcm.h"
 #include "karaoke_embedded_songs.h"
+#include "doom_e1m1_midi.h"
 #include "sd_card_reader.h"
 #include "song_path.h"
 #include "song_scan.h"
@@ -365,7 +366,12 @@ static bool search_index(uint32_t target_code, uint32_t *out_index, bool *io_err
 
 bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index)
 {
-    if (!out_index || s_total_songs == 0) return false;
+    if (!out_index) return false;
+    if (target_code == KARAOKE_DOOM_SONG_CODE) {
+        *out_index = KARAOKE_DOOM_SONG_INDEX;
+        return true;
+    }
+    if (s_total_songs == 0) return false;
 
     if (s_source == KARAOKE_SOURCE_ROM) {
         for (uint32_t i = 0; i < ROM_SONG_COUNT; i++) {
@@ -412,7 +418,17 @@ bool karaoke_catalog_find_by_code(uint32_t target_code, uint32_t *out_index)
 
 bool karaoke_catalog_get_song(uint32_t index, song_entry_t *out_song)
 {
-    if (!out_song || index >= s_total_songs) return false;
+    if (!out_song) return false;
+    if (index == KARAOKE_DOOM_SONG_INDEX) {
+        memset(out_song, 0, sizeof(*out_song));
+        out_song->song_code = KARAOKE_DOOM_SONG_CODE;
+        snprintf(out_song->title, sizeof(out_song->title), "At Doom's Gate (E1M1)");
+        snprintf(out_song->singer, sizeof(out_song->singer), "Bobby Prince (DOOM 1993)");
+        snprintf(out_song->language, sizeof(out_song->language), "DOS");
+        snprintf(out_song->filename, sizeof(out_song->filename), "D_E1M1.MID");
+        return true;
+    }
+    if (index >= s_total_songs) return false;
 
     if (s_source == KARAOKE_SOURCE_ROM) {
         *out_song = ROM_SONGS[index];
@@ -575,7 +591,16 @@ static read_result_t open_midi_file(const char *path, midi_source_t *out)
 
 bool karaoke_catalog_open_song(uint32_t index, midi_source_t *out_src)
 {
-    if (!out_src || index >= s_total_songs) return false;
+    if (!out_src) return false;
+    if (index == KARAOKE_DOOM_SONG_INDEX) {
+        close_song();
+        out_src->mem = DOOM_E1M1_MIDI;
+        out_src->size = DOOM_E1M1_MIDI_LEN;
+        out_src->read = NULL;
+        out_src->ctx = NULL;
+        return true;
+    }
+    if (index >= s_total_songs) return false;
 
     if (s_source == KARAOKE_SOURCE_ROM) {
         close_song();

@@ -19,6 +19,9 @@
 extern "C" {
 #endif
 
+#define KARAOKE_DOOM_SONG_CODE      66666U
+#define KARAOKE_DOOM_SONG_INDEX     0x66666U
+
 /**
  * @brief Where the song list comes from.
  */

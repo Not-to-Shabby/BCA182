@@ -490,14 +490,21 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
 
                 /* Next / Prev Song: UP / DOWN */
                 if (up && !last_up) {
-                    if (s_app.current_song_index > 0) {
+                    uint32_t total = karaoke_catalog_get_total_songs();
+                    if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
+                        s_app.current_song_index = (total > 0) ? total - 1 : 0;
+                        play_song(s_app.current_song_index);
+                    } else if (s_app.current_song_index > 0) {
                         s_app.current_song_index--;
                         play_song(s_app.current_song_index);
                     }
                 }
                 if (dn && !last_dn) {
                     uint32_t total = karaoke_catalog_get_total_songs();
-                    if (s_app.current_song_index + 1 < total) {
+                    if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
+                        s_app.current_song_index = 0;
+                        play_song(s_app.current_song_index);
+                    } else if (s_app.current_song_index + 1 < total) {
                         s_app.current_song_index++;
                         play_song(s_app.current_song_index);
                     }

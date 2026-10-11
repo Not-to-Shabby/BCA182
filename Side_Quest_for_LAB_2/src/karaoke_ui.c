@@ -62,6 +62,10 @@ void karaoke_ui_init(void)
 
 static void render_static_player_frame(void)
 {
+    /* 0. Rows 0..144 are repainted below; the rest of the screen may still hold the previous
+     * view (the browser and number-entry footers sit down there), so wipe it first. */
+    lcd_fill_rect(0, 145, 239, 239, LCD_COLOR_BLACK);
+
     /* 1. Header Bar background */
     lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
 

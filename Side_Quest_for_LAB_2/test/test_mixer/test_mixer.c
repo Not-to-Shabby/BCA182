@@ -232,6 +232,38 @@ void test_a_corrupt_song_file_falls_back_to_the_default(void)
     for (int i = 0; i < SYNTH_SECT_COUNT; i++) TEST_ASSERT_EQUAL_UINT8(100, g_sect[i]);
 }
 
+void test_leaving_twice_writes_only_once(void)
+{
+    karaoke_mixer_init();
+    karaoke_mixer_song_started(5);
+    karaoke_mixer_adjust(0, +1);
+    karaoke_mixer_leave();
+    karaoke_mixer_leave();
+    karaoke_mixer_leave();
+    TEST_ASSERT_EQUAL_INT(1, g_writes);
+}
+
+void test_set_as_default_keeps_per_song_channel_settings_out_of_other_songs(void)
+{
+    karaoke_mixer_init();
+    karaoke_mixer_song_started(1);
+    karaoke_mixer_adjust(0, -1);                                      /* a section change */
+    karaoke_mixer_click(MIX_ITEM_CHANNEL0 + 3);                       /* mute channel 4 */
+    karaoke_mixer_adjust(MIX_ITEM_CHANNEL0 + 5, -1);                  /* channel 6 at 95 % */
+    karaoke_mixer_click(MIX_ITEM_SAVE_ALL);
+    TEST_ASSERT_EQUAL_UINT8(95, karaoke_mixer_get_default()->section[0]);
+    TEST_ASSERT_EQUAL_UINT16(0, karaoke_mixer_get_default()->mute);
+    TEST_ASSERT_EQUAL_UINT8(100, karaoke_mixer_get_default()->channel[5]);
+    TEST_ASSERT_TRUE(karaoke_mixer_song_has_own_mix());               /* this song keeps its channel settings */
+    karaoke_mixer_leave();
+    karaoke_mixer_song_started(2);
+    TEST_ASSERT_EQUAL_UINT8(95, g_sect[0]);
+    TEST_ASSERT_EQUAL_UINT16(0, g_mute);
+    karaoke_mixer_song_started(1);
+    TEST_ASSERT_EQUAL_UINT16(0x0008, g_mute);
+    TEST_ASSERT_EQUAL_UINT8(95, g_chan[5]);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -245,5 +277,7 @@ int main(void)
     RUN_TEST(test_reset_this_song_returns_to_the_default_not_to_flat);
     RUN_TEST(test_a_missing_card_does_not_break_the_mixer);
     RUN_TEST(test_a_corrupt_song_file_falls_back_to_the_default);
+    RUN_TEST(test_leaving_twice_writes_only_once);
+    RUN_TEST(test_set_as_default_keeps_per_song_channel_settings_out_of_other_songs);
     return UNITY_END();
 }

@@ -48,7 +48,10 @@ void karaoke_mixer_adjust(uint8_t item, int direction);
 /** Click on a row: channel mute/solo cycle, reset of a value row, or one of the two action rows. */
 void karaoke_mixer_click(uint8_t item);
 
-/** Leaving the mixer: saves the song's mix if it differs from the default, or removes its file. */
+/**
+ * Saves the song's mix if it differs from the default, or removes its file. Does nothing if the mix
+ * has not changed since it was loaded or last saved, so it is cheap to call on every song change.
+ */
 void karaoke_mixer_leave(void);
 
 #ifdef __cplusplus

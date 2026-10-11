@@ -58,6 +58,8 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
 | | **BOTH UP + DOWN** | PC5 + PC1 | **Enter NUMBER SELECT Mode** (Direct 5-Digit Song Entry) |
 | | **BOTH LEFT + RIGHT** | PC0 + PC4 | **Enter AUDIO SETTINGS Mixer** (Inst/Drums Volume) |
 | **Status LEDs** | Blue / Red | PF11 / PF12 | Playing (Blue) / Paused (Red) |
+| **Onboard RGB Matrix** | SK6805 Data Out | PA7 | 800 kHz serial data stream |
+| | Matrix Power Enable | PF2 | Active LOW power switch |
 
 ---
 

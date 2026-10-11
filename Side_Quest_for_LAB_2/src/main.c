@@ -13,6 +13,7 @@
 #include "karaoke_ui.h"
 #include "karaoke_catalog.h"
 #include "karaoke_settings.h"
+#include "karaoke_mixer.h"
 #include "sd_card_reader.h"
 #include "random_play.h"
 #include "led_matrix.h"
@@ -133,6 +134,7 @@ static bool play_song(uint32_t index)
         return false;
     }
     yamaha_fm_set_melody_channel(midi_karaoke_get_melody_channel());
+    karaoke_mixer_song_started(s.song_code);
     midi_karaoke_play();
     random_play_note(&s_app.random, index);
     printk("[App] Started playing: #%u - %s (%s)\n", (unsigned)s.song_code, s.title, s.singer);
@@ -617,6 +619,7 @@ int main(void)
 
     /* 5. Initialize Persistent Audio Settings (survives reset & shutdown) */
     karaoke_settings_init();
+    karaoke_mixer_init();
 
     /* 6. Start a random song (a KARAOKE_BOOT_SONG of 0 or more picks a fixed one for bench builds) */
     k_msleep(100);

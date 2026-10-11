@@ -272,9 +272,13 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
     }
 }
 
+/* Set when the mixer opens or a button pair was pressed, cleared once all four directions are up. */
+static bool s_mixer_latch;
+
 /* Both are called with s_app.lock held. */
 static void open_mixer(void)
 {
+    s_mixer_latch = true;
     s_app.mixer_cursor = 0;
     s_app.ui_mode = UI_VIEW_MIXER;
     karaoke_ui_set_view(UI_VIEW_MIXER);
@@ -377,6 +381,12 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
     static uint32_t both_lr_hold_ticks = 0;
     static uint32_t press_hold_ticks = 0;
 
+    /* Ticks each direction has been held, for the mixer's delayed first step and hold-to-repeat */
+    static uint32_t up_rep = 0;
+    static uint32_t dn_rep = 0;
+    static uint32_t lt_rep = 0;
+    static uint32_t rt_rep = 0;
+
 #ifdef KARAOKE_MIXER_SELFTEST
     uint32_t selftest_at = k_uptime_get_32() + 8000U;
 #endif
@@ -399,12 +409,28 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
             s_app.last_input_ms = k_uptime_get_32();
         }
 
+        up_rep = up ? up_rep + 1U : 0U;
+        dn_rep = dn ? dn_rep + 1U : 0U;
+        lt_rep = lt ? lt_rep + 1U : 0U;
+        rt_rep = rt ? rt_rep + 1U : 0U;
+        if (!up && !dn && !lt && !rt) {
+            s_mixer_latch = false;      /* every direction released: the mixer takes input again */
+        }
+
         /* 1. Simultaneous UP + DOWN Detection -> Enter NUMBER SELECT Mode */
         if (up && dn) {
+            s_mixer_latch = true;
             both_ud_hold_ticks++;
             if (both_ud_hold_ticks == 10) { /* ~200 ms debounce */
                 k_mutex_lock(&s_app.lock, K_FOREVER);
-                if (s_app.ui_mode != UI_VIEW_NUMBER_SELECT) {
+                if (s_app.ui_mode == UI_VIEW_SETTINGS) {
+                    /* No OK button needed: UP + DOWN saves and returns to the song */
+                    karaoke_settings_save();
+                    s_app.ui_mode = UI_VIEW_PLAYING;
+                    karaoke_ui_set_view(UI_VIEW_PLAYING);
+                } else if (s_app.ui_mode == UI_VIEW_MIXER) {
+                    close_mixer();
+                } else if (s_app.ui_mode != UI_VIEW_NUMBER_SELECT) {
                     s_app.ui_mode = UI_VIEW_NUMBER_SELECT;
                     song_entry_t cur;
                     if (karaoke_catalog_get_song(s_app.current_song_index, &cur)) {
@@ -422,10 +448,14 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
 
         /* 2. Simultaneous LEFT + RIGHT Detection -> Enter AUDIO SETTINGS Mixer */
         if (lt && rt) {
+            s_mixer_latch = true;
             both_lr_hold_ticks++;
             if (both_lr_hold_ticks == 10) { /* ~200 ms debounce */
                 k_mutex_lock(&s_app.lock, K_FOREVER);
-                if (s_app.ui_mode != UI_VIEW_SETTINGS) {
+                if (s_app.ui_mode == UI_VIEW_MIXER) {
+                    /* Mute > Solo > Normal on a channel, reset on a value row, or the action rows */
+                    karaoke_mixer_click(s_app.mixer_cursor);
+                } else if (s_app.ui_mode != UI_VIEW_SETTINGS) {
                     s_app.ui_mode = UI_VIEW_SETTINGS;
                     s_app.settings_cursor = 0;
                     karaoke_ui_set_view(UI_VIEW_SETTINGS);
@@ -588,16 +618,18 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     }
                 }
             } else if (mode == UI_VIEW_MIXER) {
-                /* Mixer: UP/DOWN pick a row, LEFT/RIGHT adjust it. Holding repeats after 400 ms. */
-                static uint32_t up_rep = 0, dn_rep = 0, lt_rep = 0, rt_rep = 0;
-                up_rep = up ? up_rep + 1U : 0U;
-                dn_rep = dn ? dn_rep + 1U : 0U;
-                lt_rep = lt ? lt_rep + 1U : 0U;
-                rt_rep = rt ? rt_rep + 1U : 0U;
-                bool up_go = (up && !last_up) || (up_rep > 20U && (up_rep % 3U) == 0U);
-                bool dn_go = (dn && !last_dn) || (dn_rep > 20U && (dn_rep % 3U) == 0U);
-                bool lt_go = (lt && !last_lt) || (lt_rep > 20U && (lt_rep % 3U) == 0U);
-                bool rt_go = (rt && !last_rt) || (rt_rep > 20U && (rt_rep % 3U) == 0U);
+                /* Mixer: UP/DOWN pick a row, LEFT/RIGHT adjust it. The first step comes after 60 ms so that
+                 * a pair pressed almost together (the mixer's click) is not taken for two single presses;
+                 * holding repeats after 400 ms. Nothing counts until every button was released after a
+                 * pair press or after entering the mixer. */
+#define MIXER_FIRST_TICKS   3U
+#define MIXER_REPEAT_TICKS  20U
+                bool free_ud = !s_mixer_latch && !(up && dn);
+                bool free_lr = !s_mixer_latch && !(lt && rt);
+                bool up_go = free_ud && up && (up_rep == MIXER_FIRST_TICKS || (up_rep > MIXER_REPEAT_TICKS && (up_rep % 3U) == 0U));
+                bool dn_go = free_ud && dn && (dn_rep == MIXER_FIRST_TICKS || (dn_rep > MIXER_REPEAT_TICKS && (dn_rep % 3U) == 0U));
+                bool lt_go = free_lr && lt && (lt_rep == MIXER_FIRST_TICKS || (lt_rep > MIXER_REPEAT_TICKS && (lt_rep % 3U) == 0U));
+                bool rt_go = free_lr && rt && (rt_rep == MIXER_FIRST_TICKS || (rt_rep > MIXER_REPEAT_TICKS && (rt_rep % 3U) == 0U));
 
                 if (up_go) {
                     s_app.mixer_cursor = (uint8_t)((s_app.mixer_cursor + MIX_ITEM_COUNT - 1U) % MIX_ITEM_COUNT);

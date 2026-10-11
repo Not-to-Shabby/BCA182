@@ -512,7 +512,7 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
 
     /* 6. Footer */
     lcd_fill_rect(0, 208, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 208, (cursor == 5) ? "OK: Open the mixer" : "OK: Save & Return to Song", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 208, (cursor == 5) ? "RIGHT: Open the mixer" : "UP+DN together: Save & Exit", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 224, "Survives Reset & Shutdown", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
@@ -664,13 +664,13 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
     if (cursor == MIX_ITEM_RESET) foot = 10;
     if (cursor == MIX_ITEM_SAVE_ALL) foot = 11;
     if (s_mix_last_foot != foot) {
-        const char *line1 = "OK: Reset this row";
-        if (foot == MIX_KIND_CHANNEL) line1 = "OK: Mute > Solo > Normal";
-        if (foot == 10) line1 = "OK: Back to default mix";
-        if (foot == 11) line1 = "OK: Use for every song";
+        const char *line1 = "L+R together: Reset row";
+        if (foot == MIX_KIND_CHANNEL) line1 = "L+R together: Mute / Solo";
+        if (foot == 10) line1 = "L+R together: Default mix";
+        if (foot == 11) line1 = "L+R together: Use for all";
         lcd_fill_rect(0, 210, 239, 239, LCD_COLOR_DARKGREY);
         lcd_show_string(8, 210, line1, LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
-        lcd_show_string(8, 225, "Hold OK: Save & Close", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+        lcd_show_string(8, 225, "UP+DN together: Save & Exit", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
         s_mix_last_foot = foot;
     }
 

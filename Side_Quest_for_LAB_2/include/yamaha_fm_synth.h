@@ -23,6 +23,17 @@ extern "C" {
 #define FM_MIDI_CHANNELS    16
 #define FM_DRUM_CHANNEL     9  /* 0-indexed Channel 10 */
 
+typedef enum {
+    SYNTH_BANK_YAMAHA_OPL4 = 0,
+    SYNTH_BANK_ROLAND_SC55 = 1
+} synth_sound_bank_t;
+
+/**
+ * @brief Select active WaveTable sound bank (Yamaha OPL4 YRW801 vs. Roland Sound Canvas SC-55).
+ */
+void yamaha_fm_set_sound_bank(synth_sound_bank_t bank);
+synth_sound_bank_t yamaha_fm_get_sound_bank(void);
+
 /**
  * @brief Initialize the Yamaha FM synthesizer engine and patch tables.
  *

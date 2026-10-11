@@ -93,12 +93,14 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
 /**
  * @brief Render the audio settings mixer screen.
  *
- * @param cursor Active selected row: 0=Master Vol, 1=Instrument Gain, 2=Drums Gain.
+ * @param cursor Active selected row: 0=Master Vol, 1=Instrument Gain, 2=Drums Gain, 3=Melody Gain, 4=Sound Card.
  * @param vol Current master volume (0-100%).
  * @param inst Current instrument gain (20-200%).
  * @param drum Current drum gain (20-200%).
+ * @param melody Current melody gain (20-250%).
+ * @param bank Current sound card bank (0=Yamaha OPL4, 1=Roland SC-55).
  */
-void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody);
+void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody, uint8_t bank);
 
 #ifdef __cplusplus
 }

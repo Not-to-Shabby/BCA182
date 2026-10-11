@@ -17,6 +17,7 @@
 #include "synth_dsp.h"
 #include "opl4_drum_samples.h"
 #include "opl4_melodic_samples.h"
+#include "sc55_samples.h"
 #include "opl3_wave_tables.h"
 #include <math.h>
 #include <stdbool.h>
@@ -47,6 +48,7 @@ static volatile bool s_third_op = THIRD_OP_DEFAULT;
 static volatile bool s_opl4_drums = true;
 static volatile bool s_hybrid_pcm = true;
 static volatile bool s_vcf_on = true;
+static volatile synth_sound_bank_t s_sound_bank = SYNTH_BANK_YAMAHA_OPL4;
 static uint32_t s_ext_started;
 static uint32_t s_ext_skipped;
 static volatile int8_t s_melody_channel = -1;
@@ -547,30 +549,41 @@ typedef struct {
 static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
 {
     opl4_drum_wave_t w = { NULL, 0, 1.0f };
+    bool sc55 = (s_sound_bank == SYNTH_BANK_ROLAND_SC55);
+    const int16_t *p_kick    = sc55 ? SC55_PCM_KICK    : OPL4_PCM_KICK;
+    const int16_t *p_snare   = sc55 ? SC55_PCM_SNARE   : OPL4_PCM_SNARE;
+    const int16_t *p_stick   = sc55 ? SC55_PCM_STICK   : OPL4_PCM_STICK;
+    const int16_t *p_clap    = sc55 ? SC55_PCM_CLAP    : OPL4_PCM_CLAP;
+    const int16_t *p_hat_c   = sc55 ? SC55_PCM_HAT_C   : OPL4_PCM_HAT_C;
+    const int16_t *p_hat_o   = sc55 ? SC55_PCM_HAT_O   : OPL4_PCM_HAT_O;
+    const int16_t *p_crash   = sc55 ? SC55_PCM_CRASH   : OPL4_PCM_CRASH;
+    const int16_t *p_ride    = sc55 ? SC55_PCM_RIDE    : OPL4_PCM_RIDE;
+    const int16_t *p_tom     = sc55 ? SC55_PCM_TOM     : OPL4_PCM_TOM;
+    const int16_t *p_cowbell = sc55 ? SC55_PCM_COWBELL : OPL4_PCM_COWBELL;
 
     switch (note) {
-    case 35: w.data = OPL4_PCM_KICK;    w.len = OPL4_PCM_KICK_LEN;    w.pitch = 0.90f; break;
-    case 36: w.data = OPL4_PCM_KICK;    w.len = OPL4_PCM_KICK_LEN;    w.pitch = 1.04f; break;
-    case 37: w.data = OPL4_PCM_STICK;   w.len = OPL4_PCM_STICK_LEN;   w.pitch = 1.00f; break;
-    case 38: w.data = OPL4_PCM_SNARE;   w.len = OPL4_PCM_SNARE_LEN;   w.pitch = 1.00f; break;
-    case 39: w.data = OPL4_PCM_CLAP;    w.len = OPL4_PCM_CLAP_LEN;    w.pitch = 1.00f; break;
-    case 40: w.data = OPL4_PCM_SNARE;   w.len = OPL4_PCM_SNARE_LEN;   w.pitch = 1.14f; break;
-    case 42: w.data = OPL4_PCM_HAT_C;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 1.00f; break;
-    case 44: w.data = OPL4_PCM_HAT_C;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 0.86f; break;
-    case 46: w.data = OPL4_PCM_HAT_O;   w.len = OPL4_PCM_HAT_O_LEN;   w.pitch = 1.00f; break;
-    case 49: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.00f; break;
-    case 57: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.15f; break;
-    case 55: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.45f; break;
-    case 52: w.data = OPL4_PCM_CRASH;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 0.82f; break;
-    case 51: w.data = OPL4_PCM_RIDE;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.00f; break;
-    case 59: w.data = OPL4_PCM_RIDE;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.08f; break;
-    case 53: w.data = OPL4_PCM_RIDE;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.35f; break;
-    case 54: w.data = OPL4_PCM_HAT_C;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 1.25f; break;
-    case 56: w.data = OPL4_PCM_COWBELL; w.len = OPL4_PCM_COWBELL_LEN; w.pitch = 1.00f; break;
+    case 35: w.data = p_kick;    w.len = OPL4_PCM_KICK_LEN;    w.pitch = 0.90f; break;
+    case 36: w.data = p_kick;    w.len = OPL4_PCM_KICK_LEN;    w.pitch = 1.04f; break;
+    case 37: w.data = p_stick;   w.len = OPL4_PCM_STICK_LEN;   w.pitch = 1.00f; break;
+    case 38: w.data = p_snare;   w.len = OPL4_PCM_SNARE_LEN;   w.pitch = 1.00f; break;
+    case 39: w.data = p_clap;    w.len = OPL4_PCM_CLAP_LEN;    w.pitch = 1.00f; break;
+    case 40: w.data = p_snare;   w.len = OPL4_PCM_SNARE_LEN;   w.pitch = 1.14f; break;
+    case 42: w.data = p_hat_c;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 1.00f; break;
+    case 44: w.data = p_hat_c;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 0.86f; break;
+    case 46: w.data = p_hat_o;   w.len = OPL4_PCM_HAT_O_LEN;   w.pitch = 1.00f; break;
+    case 49: w.data = p_crash;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.00f; break;
+    case 57: w.data = p_crash;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.15f; break;
+    case 55: w.data = p_crash;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 1.45f; break;
+    case 52: w.data = p_crash;   w.len = OPL4_PCM_CRASH_LEN;   w.pitch = 0.82f; break;
+    case 51: w.data = p_ride;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.00f; break;
+    case 59: w.data = p_ride;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.08f; break;
+    case 53: w.data = p_ride;    w.len = OPL4_PCM_RIDE_LEN;    w.pitch = 1.35f; break;
+    case 54: w.data = p_hat_c;   w.len = OPL4_PCM_HAT_C_LEN;   w.pitch = 1.25f; break;
+    case 56: w.data = p_cowbell; w.len = OPL4_PCM_COWBELL_LEN; w.pitch = 1.00f; break;
     case 41: case 43: case 45: case 47: case 48: case 50: {
         static const float tom_p[] = {0.65f, 0.77f, 0.92f, 1.12f, 1.31f, 1.54f};
         static const uint8_t tom_n[] = {41, 43, 45, 47, 48, 50};
-        w.data = OPL4_PCM_TOM;
+        w.data = p_tom;
         w.len = OPL4_PCM_TOM_LEN;
         for (unsigned i = 0; i < sizeof(tom_n); i++) {
             if (tom_n[i] == note) {
@@ -580,12 +593,12 @@ static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
         break;
     }
     case 60: case 61: case 62: case 63: case 64: case 65: case 66:
-        w.data = OPL4_PCM_TOM;
+        w.data = p_tom;
         w.len = OPL4_PCM_TOM_LEN;
         w.pitch = 1.65f + 0.18f * (float)(note - 60);
         break;
     case 67: case 68:
-        w.data = OPL4_PCM_COWBELL;
+        w.data = p_cowbell;
         w.len = OPL4_PCM_COWBELL_LEN;
         w.pitch = (note == 67) ? 1.35f : 1.10f;
         break;
@@ -855,6 +868,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
     }
 
     if (s_hybrid_pcm && s_third_op && busy <= THIRD_OP_MAX_VOICES) {
+        bool sc55 = (s_sound_bank == SYNTH_BANK_ROLAND_SC55);
         const int16_t *pcm = NULL;
         uint32_t plen = 0;
         float root_hz = 261.6256f;
@@ -862,23 +876,29 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         float p_tau = 0.050f;
 
         if (pid == P_PIANO || pid == P_BRIGHT) {
-            pcm = OPL4_PCM_PIANO;
+            pcm = sc55 ? SC55_PCM_PIANO : OPL4_PCM_PIANO;
             plen = OPL4_PCM_PIANO_LEN;
             root_hz = OPL4_PCM_PIANO_ROOT_HZ;
             p_amp = 0.22f;
             p_tau = 0.055f;
         } else if (pid == P_STEEL || pid == P_NYLON) {
-            pcm = OPL4_PCM_GUITAR;
+            pcm = sc55 ? SC55_PCM_GUITAR : OPL4_PCM_GUITAR;
             plen = OPL4_PCM_GUITAR_LEN;
-            root_hz = OPL4_PCM_GUITAR_ROOT_HZ;
+            root_hz = sc55 ? SC55_PCM_GUITAR_ROOT_HZ : OPL4_PCM_GUITAR_ROOT_HZ;
             p_amp = 0.25f;
             p_tau = 0.045f;
         } else if (pid == P_FINGER_BASS || pid == P_PICK_BASS || pid == P_SLAP || pid == P_ACO_BASS) {
-            pcm = OPL4_PCM_BASS;
+            pcm = sc55 ? SC55_PCM_BASS : OPL4_PCM_BASS;
             plen = OPL4_PCM_BASS_LEN;
             root_hz = OPL4_PCM_BASS_ROOT_HZ;
             p_amp = 0.26f;
             p_tau = 0.038f;
+        } else if (sc55 && (pid == P_OD_GTR || pid == P_DIST_GTR)) {
+            pcm = SC55_PCM_DIST_GTR;
+            plen = SC55_PCM_DIST_GTR_LEN;
+            root_hz = SC55_PCM_DIST_GTR_ROOT_HZ;
+            p_amp = 0.28f;
+            p_tau = 0.055f;
         }
 
         if (pcm != NULL) {
@@ -1353,6 +1373,16 @@ void yamaha_fm_set_hybrid_attack(bool on)
 bool yamaha_fm_get_hybrid_attack(void)
 {
     return s_hybrid_pcm;
+}
+
+void yamaha_fm_set_sound_bank(synth_sound_bank_t bank)
+{
+    s_sound_bank = (bank == SYNTH_BANK_ROLAND_SC55) ? SYNTH_BANK_ROLAND_SC55 : SYNTH_BANK_YAMAHA_OPL4;
+}
+
+synth_sound_bank_t yamaha_fm_get_sound_bank(void)
+{
+    return s_sound_bank;
 }
 
 void yamaha_fm_set_vcf(bool on)

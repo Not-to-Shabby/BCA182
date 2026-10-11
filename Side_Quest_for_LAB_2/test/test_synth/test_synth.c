@@ -1108,6 +1108,61 @@ void test_hybrid_attack_toggle_disables_pcm_transients(void)
     TEST_ASSERT_TRUE(yamaha_fm_get_hybrid_attack());
 }
 
+void test_sound_bank_switching_toggles_between_opl4_and_sc55_samples(void)
+{
+    /* 1. Yamaha OPL4 Bank */
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_YAMAHA_OPL4);
+    TEST_ASSERT_EQUAL(SYNTH_BANK_YAMAHA_OPL4, yamaha_fm_get_sound_bank());
+    yamaha_fm_note_on(9, 38, 100); /* Snare */
+    render_ms(20);
+    const int16_t *snare_opl4 = NULL;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].is_drum && s_voices[v].note == 38) {
+            snare_opl4 = s_voices[v].pcm_data;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(snare_opl4);
+    TEST_ASSERT_EQUAL_PTR(OPL4_PCM_SNARE, snare_opl4);
+
+    /* 2. Roland Sound Canvas SC-55 Bank */
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_ROLAND_SC55);
+    TEST_ASSERT_EQUAL(SYNTH_BANK_ROLAND_SC55, yamaha_fm_get_sound_bank());
+    yamaha_fm_note_on(9, 38, 100); /* Snare */
+    render_ms(20);
+    const int16_t *snare_sc55 = NULL;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].is_drum && s_voices[v].note == 38) {
+            snare_sc55 = s_voices[v].pcm_data;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(snare_sc55);
+    TEST_ASSERT_EQUAL_PTR(SC55_PCM_SNARE, snare_sc55);
+    TEST_ASSERT_NOT_EQUAL(snare_opl4, snare_sc55);
+
+    /* Test DOOM Distortion Guitar gets SC-55 bite in SC-55 mode */
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_ROLAND_SC55);
+    play(0, 30, 60, 100); /* Distortion Guitar C4 */
+    render_ms(20);
+    const int16_t *dist_sc55 = NULL;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 0 && s_voices[v].note == 60) {
+            dist_sc55 = s_voices[v].pcm_data;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(dist_sc55);
+    TEST_ASSERT_EQUAL_PTR(SC55_PCM_DIST_GTR, dist_sc55);
+
+    /* Switch back to OPL4 mode default */
+    yamaha_fm_set_sound_bank(SYNTH_BANK_YAMAHA_OPL4);
+    TEST_ASSERT_EQUAL(SYNTH_BANK_YAMAHA_OPL4, yamaha_fm_get_sound_bank());
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1170,5 +1225,6 @@ int main(void)
     RUN_TEST(test_vcf_bypass_toggle_restores_unfiltered_fm);
     RUN_TEST(test_hybrid_pcm_attack_attaches_to_piano_and_acoustic_guitar);
     RUN_TEST(test_hybrid_attack_toggle_disables_pcm_transients);
+    RUN_TEST(test_sound_bank_switching_toggles_between_opl4_and_sc55_samples);
     return UNITY_END();
 }

@@ -31,7 +31,8 @@ static karaoke_settings_t s_settings = {
     .master_volume = 80,
     .instrument_gain = 100,
     .drum_gain = 100,
-    .melody_gain = 100
+    .melody_gain = 100,
+    .sound_bank = 0
 };
 
 static void apply_hardware_settings(void)
@@ -40,6 +41,7 @@ static void apply_hardware_settings(void)
     yamaha_fm_set_instrument_gain(s_settings.instrument_gain);
     yamaha_fm_set_drum_gain(s_settings.drum_gain);
     yamaha_fm_set_melody_gain(s_settings.melody_gain);
+    yamaha_fm_set_sound_bank((synth_sound_bank_t)s_settings.sound_bank);
 }
 
 static void rtc_save_backup(void)
@@ -55,6 +57,7 @@ static void rtc_save_backup(void)
 
     RTC->BKP0R = SETTINGS_MAGIC;
     RTC->BKP1R = packed;
+    RTC->BKP2R = (uint32_t)s_settings.sound_bank;
 #endif
 }
 
@@ -70,6 +73,7 @@ static bool rtc_load_backup(void)
         uint8_t inst = (uint8_t)((packed >> 8) & 0xFFU);
         uint8_t drum = (uint8_t)((packed >> 16) & 0xFFU);
         uint8_t mel  = (uint8_t)((packed >> 24) & 0xFFU);
+        uint8_t bank = (uint8_t)(RTC->BKP2R & 1U);
 
         if (vol <= 100 && inst >= 20 && inst <= 200 && drum >= 20 && drum <= 200) {
             s_settings.master_volume = vol;
@@ -78,8 +82,9 @@ static bool rtc_load_backup(void)
             if (mel >= 20) {
                 s_settings.melody_gain = mel;
             }
-            printk("[Settings] Restored from RTC Backup: Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%%\n",
-                   vol, inst, drum, s_settings.melody_gain);
+            s_settings.sound_bank = bank;
+            printk("[Settings] Restored from RTC Backup: Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s\n",
+                   vol, inst, drum, s_settings.melody_gain, bank ? "Roland SC-55" : "Yamaha OPL4");
             return true;
         }
     }
@@ -111,7 +116,7 @@ static bool sd_load_cfg(void)
     }
     buf[br] = '\0';
 
-    int vol = -1, inst = -1, drum = -1, mel = -1;
+    int vol = -1, inst = -1, drum = -1, mel = -1, bank = -1;
     char *line = strtok(buf, "\r\n");
     while (line != NULL) {
         if (strncmp(line, "VOL=", 4) == 0) {
@@ -122,6 +127,8 @@ static bool sd_load_cfg(void)
             drum = atoi(line + 5);
         } else if (strncmp(line, "MELODY=", 7) == 0) {
             mel = atoi(line + 7);
+        } else if (strncmp(line, "BANK=", 5) == 0) {
+            bank = atoi(line + 5);
         }
         line = strtok(NULL, "\r\n");
     }
@@ -143,11 +150,15 @@ static bool sd_load_cfg(void)
         s_settings.melody_gain = (uint8_t)mel;
         updated = true;
     }
+    if (bank >= 0 && bank <= 1) {
+        s_settings.sound_bank = (uint8_t)bank;
+        updated = true;
+    }
 
     if (updated) {
-        printk("[Settings] Restored from " SETTINGS_CFG_PATH ": Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%%\n",
+        printk("[Settings] Restored from " SETTINGS_CFG_PATH ": Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s\n",
                s_settings.master_volume, s_settings.instrument_gain, s_settings.drum_gain,
-               s_settings.melody_gain);
+               s_settings.melody_gain, s_settings.sound_bank ? "Roland SC-55" : "Yamaha OPL4");
     }
     return updated;
 }
@@ -165,17 +176,19 @@ static void sd_save_cfg(void)
         return;
     }
 
-    char buf[112];
+    char buf[128];
     int len = snprintf(buf, sizeof(buf),
                        "# RT-Spark Karaoke Audio Settings\n"
                        "VOL=%u\n"
                        "INST=%u\n"
                        "DRUM=%u\n"
-                       "MELODY=%u\n",
+                       "MELODY=%u\n"
+                       "BANK=%u\n",
                        s_settings.master_volume,
                        s_settings.instrument_gain,
                        s_settings.drum_gain,
-                       s_settings.melody_gain);
+                       s_settings.melody_gain,
+                       s_settings.sound_bank);
 
     if (len > 0) {
         UINT bw = 0;
@@ -240,6 +253,13 @@ void karaoke_settings_set_melody_gain(uint8_t gain)
     if (gain > 250) gain = 250;
     s_settings.melody_gain = gain;
     yamaha_fm_set_melody_gain(gain);
+    rtc_save_backup();
+}
+
+void karaoke_settings_set_sound_bank(uint8_t bank)
+{
+    s_settings.sound_bank = bank ? 1 : 0;
+    yamaha_fm_set_sound_bank((synth_sound_bank_t)s_settings.sound_bank);
     rtc_save_backup();
 }
 

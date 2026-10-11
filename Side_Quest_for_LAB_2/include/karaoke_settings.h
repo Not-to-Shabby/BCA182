@@ -23,6 +23,7 @@ typedef struct {
     uint8_t instrument_gain;  /* 50% to 200%, default 100% */
     uint8_t drum_gain;        /* 20% to 200%, default 100% */
     uint8_t melody_gain;      /* 20% to 250%, default 100%, scales the lyric-following channel */
+    uint8_t sound_bank;       /* 0 = Yamaha OPL4, 1 = Roland SC-55 */
 } karaoke_settings_t;
 
 /**
@@ -55,6 +56,11 @@ void karaoke_settings_set_drum_gain(uint8_t gain);
  * @brief Update the lead melody gain (20-250%) and apply immediately to FM synth.
  */
 void karaoke_settings_set_melody_gain(uint8_t gain);
+
+/**
+ * @brief Update active sound card bank (0 = Yamaha OPL4, 1 = Roland SC-55).
+ */
+void karaoke_settings_set_sound_bank(uint8_t bank);
 
 /**
  * @brief Save active settings to non-volatile storage (RTC Backup Domain + SD card file).

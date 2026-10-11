@@ -201,7 +201,7 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
 
         if (mode == UI_VIEW_SETTINGS) {
             const karaoke_settings_t *cfg = karaoke_settings_get();
-            karaoke_ui_render_settings(set_cursor, cfg->master_volume, cfg->instrument_gain, cfg->drum_gain, cfg->melody_gain);
+            karaoke_ui_render_settings(set_cursor, cfg->master_volume, cfg->instrument_gain, cfg->drum_gain, cfg->melody_gain, cfg->sound_bank);
         } else if (mode == UI_VIEW_NUMBER_SELECT) {
             uint32_t search_code = digits_to_code(num_digits);
             uint32_t match_idx = 0;
@@ -424,10 +424,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 uint8_t cur_mel  = cfg->melody_gain;
 
                 if (up && !last_up) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 3) % 4;
+                    s_app.settings_cursor = (s_app.settings_cursor + 4) % 5;
                 }
                 if (dn && !last_dn) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 4;
+                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 5;
                 }
 
                 if (lt && !last_lt) {
@@ -439,6 +439,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         karaoke_settings_set_drum_gain(cur_drum >= 25 ? cur_drum - 5 : 20);
                     } else if (s_app.settings_cursor == 3) {
                         karaoke_settings_set_melody_gain(cur_mel >= 25 ? cur_mel - 5 : 20);
+                    } else if (s_app.settings_cursor == 4) {
+                        karaoke_settings_set_sound_bank(cfg->sound_bank ? 0 : 1);
                     }
                 }
 
@@ -451,6 +453,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         karaoke_settings_set_drum_gain(cur_drum <= 195 ? cur_drum + 5 : 200);
                     } else if (s_app.settings_cursor == 3) {
                         karaoke_settings_set_melody_gain(cur_mel <= 245 ? cur_mel + 5 : 250);
+                    } else if (s_app.settings_cursor == 4) {
+                        karaoke_settings_set_sound_bank(cfg->sound_bank ? 0 : 1);
                     }
                 }
             } else if (mode == UI_VIEW_BROWSER) {

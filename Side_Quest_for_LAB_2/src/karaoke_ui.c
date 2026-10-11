@@ -9,6 +9,7 @@
 
 #include "karaoke_ui.h"
 #include "lcd_st7789.h"
+#include "yamaha_fm_synth.h"
 #include <stdio.h>
 #include <string.h>
 #include <zephyr/kernel.h>
@@ -303,10 +304,11 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
         }
     }
 
-    /* 6. Active Voice Polyphony HUD: Differential update */
+    /* 6. Active Voice Polyphony & Active Sound Card HUD: Differential update */
     if (active_voices != s_last_voices) {
         s_last_voices = active_voices;
-        snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  FM:44k ", active_voices);
+        bool sc55 = (yamaha_fm_get_sound_bank() == SYNTH_BANK_ROLAND_SC55);
+        snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  [%s] ", active_voices, sc55 ? "SC55" : "OPL4");
         lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
     }
 
@@ -431,7 +433,7 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
 
-void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody)
+void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody, uint8_t bank)
 {
     if (s_view_mode != UI_VIEW_SETTINGS) return;
 
@@ -443,11 +445,11 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
     lcd_fill_rect(0, 0, 239, 24, LCD_COLOR_NAVY);
     lcd_show_string(32, 4, "=== AUDIO SETTINGS ===", LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
 
-    /* 2. Instructions (y: 28 to 56) */
-    lcd_fill_rect(0, 26, 239, 42, LCD_COLOR_BLACK);
-    lcd_show_string(14, 28, "UP/DN: Select  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+    /* 2. Instructions (y: 26 to 40) */
+    lcd_fill_rect(0, 26, 239, 40, LCD_COLOR_BLACK);
+    lcd_show_string(14, 26, "UP/DN: Select  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
 
-    /* 3. Three Setting Rows (y: 66 to 175) */
+    /* 3. Setting Rows (y: 42 to 184) */
     static const char *labels[] = {
         "Master Volume",
         "Instrument Vol",
@@ -457,38 +459,52 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
     uint8_t vals[] = { vol, inst, drum, melody };
     static const uint8_t maxs[] = { 100, 200, 200, 250 };
 
-    uint16_t y = 46;
+    uint16_t y = 42;
     for (uint8_t i = 0; i < 4; i++) {
         bool sel = (i == cursor);
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
 
-        lcd_fill_rect(8, y, 231, y + 32, bg);
-        lcd_draw_rect(8, y, 231, y + 32, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+        lcd_fill_rect(8, y, 231, y + 25, bg);
+        lcd_draw_rect(8, y, 231, y + 25, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
 
         char buf[32];
         snprintf(buf, sizeof(buf), "%s: %u%%", labels[i], vals[i]);
-        lcd_show_string(14, y + 4, buf, fg, bg);
+        lcd_show_string(14, y + 2, buf, fg, bg);
 
         /* Gauge bar: width up to 180 pixels */
         uint16_t gw = (uint16_t)(((uint32_t)vals[i] * 180U) / maxs[i]);
         if (gw > 180) gw = 180;
-        lcd_draw_rect(14, y + 22, 196, y + 28, LCD_COLOR_BLACK);
+        lcd_draw_rect(14, y + 17, 196, y + 22, LCD_COLOR_BLACK);
         if (gw > 0) {
-            lcd_fill_rect(15, y + 23, 15 + gw, y + 27, sel ? LCD_COLOR_GREEN : LCD_COLOR_CYAN);
+            lcd_fill_rect(15, y + 18, 15 + gw, y + 21, sel ? LCD_COLOR_GREEN : LCD_COLOR_CYAN);
         }
         if (gw < 180) {
-            lcd_fill_rect(15 + gw + 1, y + 23, 195, y + 27, LCD_COLOR_BLACK);
+            lcd_fill_rect(15 + gw + 1, y + 18, 195, y + 21, LCD_COLOR_BLACK);
         }
 
-        y += 38;
+        y += 28;
     }
 
-    /* 4. Status line */
-    lcd_fill_rect(8, 188, 231, 202, LCD_COLOR_BLACK);
-    lcd_show_string(14, 188, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+    /* 4. Row 5: Sound Card Bank Selector */
+    {
+        bool sel = (cursor == 4);
+        uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
+        uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
 
-    /* 5. Footer (y: 204 to 239) */
+        lcd_fill_rect(8, y, 231, y + 25, bg);
+        lcd_draw_rect(8, y, 231, y + 25, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Sound Card: <%s>", (bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
+        lcd_show_string(14, y + 5, buf, fg, bg);
+    }
+
+    /* 5. Status line */
+    lcd_fill_rect(8, 186, 231, 200, LCD_COLOR_BLACK);
+    lcd_show_string(14, 186, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+
+    /* 6. Footer (y: 204 to 239) */
     lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 208, "OK: Save & Return to Song", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 224, "Survives Reset & Shutdown", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);

@@ -70,11 +70,14 @@ static void render_frames(int16_t *dst, size_t frames)
 /* ---- song mode: wrap the synth callbacks to observe what the sequencer does ---- */
 
 static int g_third = 1;
+static synth_sound_bank_t g_bank = SYNTH_BANK_YAMAHA_OPL4;
+static int g_solo = -1;      /* SOLO=<channel>: play only that MIDI channel */
 static bool g_held[FM_MIDI_CHANNELS][128];
 static long g_steals, g_note_ons;
 
 static void w_note_on(uint8_t c, uint8_t n, uint8_t v)
 {
+    if (g_solo >= 0 && c != (uint8_t)g_solo) return;
     int busy = 0;
     for (int i = 0; i < FM_MAX_VOICES; i++) busy += s_voices[i].active ? 1 : 0;
     if (busy >= FM_MAX_VOICES) g_steals++;
@@ -118,6 +121,7 @@ static int run_song(const char *path, double seconds, const char *out, int volum
     };
     yamaha_fm_synth_init(RATE);
     yamaha_fm_set_third_operator(g_third != 0);
+    yamaha_fm_set_sound_bank(g_bank);
     midi_karaoke_init(&cb);
     if (!midi_karaoke_load_memory(midi, (uint32_t)len)) { fprintf(stderr, "bad MIDI\n"); return 1; }
     midi_karaoke_play();
@@ -127,6 +131,8 @@ static int run_song(const char *path, double seconds, const char *out, int volum
     uint64_t done = 0, last_us = 0;
     int max_voices = 0, max_hung = 0;
     long over_limit_blocks = 0;
+    int sample_a = 0;
+    uint64_t sample_due = 0;
 
     while (done + BLOCK_WORDS / 2 <= frames) {
         uint64_t us = (done + BLOCK_WORDS / 2) * 1000000ULL / RATE;
@@ -140,8 +146,15 @@ static int run_song(const char *path, double seconds, const char *out, int volum
         if (busy > max_voices) max_voices = busy;
         if (busy > 24) over_limit_blocks++;
         if (done % RATE < BLOCK_WORDS / 2) {
-            int h = count_hung();
+            /* A note-off is applied up to the scheduling lead after the sequencer sent it, so a voice
+             * only counts as hung if it is still hung 500 ms later (the minimum of two samples). */
+            sample_a = count_hung();
+            sample_due = done + RATE / 2;
+        }
+        if (sample_due != 0 && done >= sample_due) {
+            int h = sample_a < count_hung() ? sample_a : count_hung();
             if (h > max_hung) max_hung = h;
+            sample_due = 0;
         }
     }
 
@@ -162,6 +175,7 @@ static int run_note(int program, int note, int vel, double seconds, const char *
 {
     yamaha_fm_synth_init(RATE);
     yamaha_fm_set_third_operator(g_third != 0);
+    yamaha_fm_set_sound_bank(g_bank);
     yamaha_fm_program_change((uint8_t)channel, (uint8_t)program);
     size_t frames = (size_t)(seconds * RATE);
     int16_t *pcm = calloc(frames * 2, sizeof(int16_t));
@@ -181,6 +195,10 @@ int main(int argc, char **argv)
     /* THIRD_OP=0 in the environment renders with the two-operator voices, for A/B comparison. */
     const char *t3 = getenv("THIRD_OP");
     g_third = !(t3 != NULL && t3[0] == '0');
+    const char *so = getenv("SOLO");
+    g_solo = (so != NULL && so[0] != '\0') ? atoi(so) : -1;
+    const char *bk = getenv("BANK");   /* BANK=1 selects the Roland SC-55 samples */
+    g_bank = (bk != NULL && bk[0] == '1') ? SYNTH_BANK_ROLAND_SC55 : SYNTH_BANK_YAMAHA_OPL4;
 
     if (argc >= 7 && strcmp(argv[1], "note") == 0) {
         return run_note(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atof(argv[5]), argv[6],

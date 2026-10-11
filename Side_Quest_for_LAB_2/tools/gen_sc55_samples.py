@@ -104,6 +104,22 @@ def main():
     tom     = fetch_sf2_resampled(21628954, 44100, 3969, True, src_len=25340)  # Tom Mid 1 [Stan1] [649]
     cowbell = fetch_sf2_resampled(8315813,  44100, 2205, True, src_len=5184)  # CowbellG#3 [307]
 
+    # Per-key samples from the SC-55 Standard drum preset (each key plays its own recording)
+    kick2    = fetch_sf2_resampled(21855950, 44100, 3969, True, src_len=4643)    # Kick2 [656] key 35
+    snare_f  = fetch_sf2_resampled(21829791, 44100, 5000, True, src_len=14995)   # Fat Snare [654] key 38
+    hat_p    = fetch_sf2_resampled(22031913, 44100, 1500, True, src_len=3324)    # Pedal Hi Hat [661] key 44
+    splash   = fetch_sf2_resampled(21942806, 44100, 9000, True, src_len=84013)   # Splash Cymbal [659] key 55
+    ride_b   = fetch_sf2_resampled(22227472, 44100, 7000, True, src_len=78848)   # Ride Bell [664] key 53
+    ride2    = fetch_sf2_resampled(22306343, 44100, 8000, True, src_len=101893)  # Ride Cymbal2 [665] key 59
+    china    = fetch_sf2_resampled(8528837,  44100, 9000, True, src_len=84480)   # ChinaCym [322] key 52
+    tamb     = fetch_sf2_resampled(16870314, 44100, 3500, True, src_len=8704)    # Tambourine [533] key 54
+    tom41    = fetch_sf2_resampled(8915154,  44100, 6000, True, src_len=41700)   # F2 [348] key 41
+    tom43    = fetch_sf2_resampled(8861463,  44100, 6000, True, src_len=36493)   # G2 [346] key 43
+    tom45    = fetch_sf2_resampled(8830224,  44100, 6000, True, src_len=31216)   # A2 [345] key 45
+    tom47    = fetch_sf2_resampled(8795212,  44100, 5500, True, src_len=25112)   # B2 [337] key 47
+    tom48    = fetch_sf2_resampled(8774349,  44100, 5000, True, src_len=20840)   # C3 [336] key 48
+    tom50    = fetch_sf2_resampled(8756774,  44100, 4500, True, src_len=17552)   # D3 [335] key 50
+
     # Melodic Attack Transients
     piano    = fetch_sf2_resampled(652425,   44100, 1874, False, src_len=25604) # SC55 Piano C4m [50]
     guitar   = fetch_sf2_resampled(10376166, 44100, 1433, False, src_len=83456) # SC88SteelstrGt C4 [375]
@@ -121,6 +137,20 @@ def main():
         ("RIDE", ride),
         ("TOM", tom),
         ("COWBELL", cowbell),
+        ("KICK2", kick2),
+        ("SNARE_FAT", snare_f),
+        ("HAT_P", hat_p),
+        ("SPLASH", splash),
+        ("RIDE_BELL", ride_b),
+        ("RIDE2", ride2),
+        ("CHINA", china),
+        ("TAMB", tamb),
+        ("TOM41", tom41),
+        ("TOM43", tom43),
+        ("TOM45", tom45),
+        ("TOM47", tom47),
+        ("TOM48", tom48),
+        ("TOM50", tom50),
         ("PIANO", piano),
         ("GUITAR", guitar),
         ("BASS", bass),

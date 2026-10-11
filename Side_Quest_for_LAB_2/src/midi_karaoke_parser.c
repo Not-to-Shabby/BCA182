@@ -729,6 +729,7 @@ static void detect_melody_channel(void)
 
     static DTCM_BSS uint8_t reached[16][MELODY_MAX_SYLLABLES / 8U];
     uint32_t hits[16] = {0}, notes[16] = {0};
+    uint16_t drum_parts = 1U << 9;      /* channel 10, plus any part a Roland GS message made a drum part */
     midi_event_t ev;
     track_cursor_t c;
 
@@ -736,9 +737,6 @@ static void detect_melody_channel(void)
 
     memset(reached, 0, sizeof(reached));
     for (uint16_t t = 0; t < s_midi.num_tracks; t++) {
-        if (t == (uint16_t)s_lyric_track && s_midi.num_tracks > 1U) {
-            continue; /* Skip lyric track: no musical notes */
-        }
         uint32_t tick = 0;
         uint32_t ev_cnt = 0;
         uint32_t t_notes = 0;
@@ -754,9 +752,17 @@ static void detect_melody_channel(void)
                 break;
             }
             ev_cnt++;
+            if (k == MEV_RHYTHM_PART) {
+                if (ev.d1 != 0U) {
+                    drum_parts |= (uint16_t)(1U << ev.chan);
+                } else if (ev.chan != 9U) {
+                    drum_parts &= (uint16_t)~(1U << ev.chan);
+                }
+            }
             if (k != MEV_NOTE_ON || ev.d2 == 0U) {
-                if (ev_cnt >= 48U && t_notes == 0U) {
-                    break; /* Conductor / tempo / metadata track: skip */
+                if (ev_cnt >= 48U && t_notes == 0U && t != (uint16_t)s_lyric_track) {
+                    break; /* Conductor / tempo / metadata track: skip. The lyric track is read to the end:
+                            * many songs keep the guide vocal's notes on it. */
                 }
                 continue;
             }
@@ -773,7 +779,7 @@ static void detect_melody_channel(void)
 
     uint64_t best_score = 0;
     for (int ch = 0; ch < 16; ch++) {
-        if (ch == 9 || notes[ch] == 0U || hits[ch] * 100U < s_nsyl * MELODY_MIN_HIT_PERCENT) {
+        if ((drum_parts & (1U << ch)) != 0U || notes[ch] == 0U || hits[ch] * 100U < s_nsyl * MELODY_MIN_HIT_PERCENT) {
             continue;
         }
         uint64_t score = ((uint64_t)hits[ch] * hits[ch] * 1000U) / notes[ch];

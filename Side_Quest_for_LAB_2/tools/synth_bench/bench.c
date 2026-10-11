@@ -124,6 +124,7 @@ static int run_song(const char *path, double seconds, const char *out, int volum
     yamaha_fm_set_sound_bank(g_bank);
     midi_karaoke_init(&cb);
     if (!midi_karaoke_load_memory(midi, (uint32_t)len)) { fprintf(stderr, "bad MIDI\n"); return 1; }
+    yamaha_fm_set_melody_channel(midi_karaoke_get_melody_channel());
     midi_karaoke_play();
 
     size_t frames = (size_t)(seconds * RATE);
@@ -131,6 +132,9 @@ static int run_song(const char *path, double seconds, const char *out, int volum
     uint64_t done = 0, last_us = 0;
     int max_voices = 0, max_hung = 0;
     long over_limit_blocks = 0;
+    int lead_prev = -2, lead_switches = 0;
+    long lead_same = 0, lead_blocks = 0;
+    int lyric_ch = midi_karaoke_get_melody_channel();
     int sample_a = 0;
     uint64_t sample_due = 0;
 
@@ -140,6 +144,12 @@ static int run_song(const char *path, double seconds, const char *out, int volum
         last_us = us;
         yamaha_fm_synth_render(pcm + done * 2, BLOCK_WORDS);
         done += BLOCK_WORDS / 2;
+        {
+            int ld = yamaha_fm_get_lead_channel();
+            if (ld != lead_prev) { if (lead_prev != -2) lead_switches++; lead_prev = ld; }
+            lead_blocks++;
+            if (ld == lyric_ch) lead_same++;
+        }
 
         int busy = 0;
         for (int i = 0; i < FM_MAX_VOICES; i++) busy += s_voices[i].active ? 1 : 0;
@@ -163,6 +173,8 @@ static int run_song(const char *path, double seconds, const char *out, int volum
     report(pcm, frames, "after volume  ");
     printf("note_ons=%ld voice_steals=%ld max_voices_in_use=%d blocks_with_>24_voices=%ld max_hung_notes=%d\n",
            g_note_ons, g_steals, max_voices, over_limit_blocks, max_hung);
+    printf("lead: lyric_channel=%d switches=%d share_on_lyric_channel=%.2f\n", lyric_ch, lead_switches,
+           lead_blocks ? (double)lead_same / (double)lead_blocks : 0.0);
     printf("synth counters: steals=%u audible_steals=%u dropped_events=%u\n",
            (unsigned)yamaha_fm_get_steal_count(), (unsigned)yamaha_fm_get_audible_steal_count(),
            (unsigned)yamaha_fm_get_dropped_events());

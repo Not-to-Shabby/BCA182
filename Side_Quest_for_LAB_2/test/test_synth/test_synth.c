@@ -503,6 +503,95 @@ void test_melody_gain_is_clamped_and_drum_channel_is_refused(void)
     TEST_ASSERT_EQUAL_INT8(3, s_melody_channel);
 }
 
+/* ---- lead tracker: which channel carries the tune ---- */
+
+/* One beat: a single note on `line_ch` (a melody) over a three-note chord on `chord_ch`. */
+static void lead_beat(uint8_t line_ch, uint8_t line_prog, uint8_t line_note, uint8_t chord_ch, uint8_t chord_prog)
+{
+    if (line_ch != 0xFF) {
+        yamaha_fm_program_change(line_ch, line_prog);
+        yamaha_fm_note_on(line_ch, line_note, 100);
+    }
+    if (chord_ch != 0xFF) {
+        yamaha_fm_program_change(chord_ch, chord_prog);
+        yamaha_fm_note_on(chord_ch, 48, 80);
+        yamaha_fm_note_on(chord_ch, 52, 80);
+        yamaha_fm_note_on(chord_ch, 55, 80);
+    }
+    render_ms(250);
+    if (line_ch != 0xFF) {
+        yamaha_fm_note_off(line_ch, line_note, 0);
+    }
+    if (chord_ch != 0xFF) {
+        yamaha_fm_note_off(chord_ch, 48, 0);
+        yamaha_fm_note_off(chord_ch, 52, 0);
+        yamaha_fm_note_off(chord_ch, 55, 0);
+    }
+    render_ms(250);
+    g_frames = 0;
+}
+
+void test_lead_is_found_without_lyrics_from_a_single_line_over_chords(void)
+{
+    yamaha_fm_set_melody_channel(-1);
+    for (int i = 0; i < 12; i++) {
+        lead_beat(2, 73, (uint8_t)(67 + (i % 5)), 1, 0);
+    }
+    TEST_ASSERT_EQUAL_INT8(2, yamaha_fm_get_lead_channel());
+}
+
+void test_lead_is_the_melody_not_the_bass_line_or_the_chords(void)
+{
+    yamaha_fm_set_melody_channel(-1);
+    yamaha_fm_program_change(3, 33);                         /* finger bass */
+    yamaha_fm_program_change(1, 48);                         /* string chords */
+    yamaha_fm_program_change(2, 73);                         /* flute tune */
+    for (int i = 0; i < 12; i++) {
+        uint8_t tune = (uint8_t)(72 + (i % 5));
+        yamaha_fm_note_on(3, (uint8_t)(36 + (i % 3)), 100);
+        yamaha_fm_note_on(1, 48, 80);
+        yamaha_fm_note_on(1, 52, 80);
+        yamaha_fm_note_on(1, 55, 80);
+        yamaha_fm_note_on(2, tune, 100);
+        render_ms(250);
+        yamaha_fm_note_off(3, (uint8_t)(36 + (i % 3)), 0);
+        yamaha_fm_note_off(1, 48, 0);
+        yamaha_fm_note_off(1, 52, 0);
+        yamaha_fm_note_off(1, 55, 0);
+        yamaha_fm_note_off(2, tune, 0);
+        render_ms(250);
+        g_frames = 0;
+    }
+    TEST_ASSERT_EQUAL_INT8(2, yamaha_fm_get_lead_channel());
+}
+
+void test_an_instrument_takes_the_tune_when_the_singer_rests_and_hands_it_back(void)
+{
+    yamaha_fm_set_melody_channel(0);                         /* the channel that follows the lyrics */
+    for (int i = 0; i < 8; i++) {
+        lead_beat(0, 54, (uint8_t)(64 + (i % 4)), 1, 0);     /* singer + piano chords */
+    }
+    TEST_ASSERT_EQUAL_INT8(0, yamaha_fm_get_lead_channel());
+
+    for (int i = 0; i < 16; i++) {                           /* the singer rests: a flute plays the tune */
+        lead_beat(4, 73, (uint8_t)(72 + (i % 5)), 1, 0);
+    }
+    TEST_ASSERT_EQUAL_INT8(4, yamaha_fm_get_lead_channel());
+
+    for (int i = 0; i < 12; i++) {                           /* the singer comes back */
+        lead_beat(0, 54, (uint8_t)(64 + (i % 4)), 1, 0);
+    }
+    TEST_ASSERT_EQUAL_INT8(0, yamaha_fm_get_lead_channel());
+}
+
+void test_lead_resets_with_the_song(void)
+{
+    yamaha_fm_set_melody_channel(5);
+    TEST_ASSERT_EQUAL_INT8(5, yamaha_fm_get_lead_channel());
+    yamaha_fm_set_melody_channel(-1);
+    TEST_ASSERT_EQUAL_INT8(-1, yamaha_fm_get_lead_channel());
+}
+
 /* ---- timestamped events, sends, flush ---- */
 
 void test_a_stamped_event_sounds_at_its_frame(void)
@@ -1284,5 +1373,9 @@ int main(void)
     RUN_TEST(test_sound_bank_switching_toggles_between_opl4_and_sc55_samples);
     RUN_TEST(test_channel_activity_reporting_for_led_matrix);
     RUN_TEST(test_gs_rhythm_part_turns_another_channel_into_a_drum_part);
+    RUN_TEST(test_lead_is_found_without_lyrics_from_a_single_line_over_chords);
+    RUN_TEST(test_lead_is_the_melody_not_the_bass_line_or_the_chords);
+    RUN_TEST(test_an_instrument_takes_the_tune_when_the_singer_rests_and_hands_it_back);
+    RUN_TEST(test_lead_resets_with_the_song);
     return UNITY_END();
 }

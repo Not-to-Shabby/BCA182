@@ -127,6 +127,14 @@ uint8_t yamaha_fm_get_melody_gain(void);
 void yamaha_fm_set_melody_channel(int8_t channel);
 
 /**
+ * @brief Channel the synth currently treats as the tune, or -1 if none is clear yet. It starts as
+ *        the channel given to yamaha_fm_set_melody_channel() (the one following the lyrics) and
+ *        changes while the song plays: it is found from the notes alone, so an instrument that
+ *        takes the tune from the singer in a break becomes the lead, and the singer gets it back.
+ */
+int8_t yamaha_fm_get_lead_channel(void);
+
+/**
  * @brief Song clock, from the sequencer (see midi_synth_callbacks_t::song_clock).
  */
 void yamaha_fm_song_time_anchor(uint32_t song_us);

@@ -125,6 +125,26 @@ void test_chords_do_not_beat_a_single_line(void)
     TEST_ASSERT_EQUAL_INT8(0, midi_karaoke_get_melody_channel());
 }
 
+void test_guide_vocal_notes_stored_on_the_lyric_track_are_found(void)
+{
+    begin_file(2);
+    {
+        uint32_t t = begin_track();       /* one track: a lyric and a note on every beat */
+        for (int i = 0; i < SYLLABLES; i++) {
+            put_vlq(i == 0 ? 0 : PPQN - 10U);
+            put(0xFF); put(0x05); put(2); put('l'); put('a');
+            put_vlq(0);
+            put(0x90); put(64); put(90);
+            put_vlq(10);
+            put(0x80); put(64); put(0);
+        }
+        end_track(t);
+    }
+    note_track(5, SYLLABLES * 6, 20);     /* a busy accompaniment that overlaps some syllables */
+    TEST_ASSERT_TRUE(midi_karaoke_load_memory(g_smf, g_len));
+    TEST_ASSERT_EQUAL_INT8(0, midi_karaoke_get_melody_channel());
+}
+
 void test_song_without_lyrics_has_no_melody_channel(void)
 {
     begin_file(1);
@@ -148,6 +168,7 @@ int main(void)
     RUN_TEST(test_channel_following_the_syllables_is_the_lead);
     RUN_TEST(test_busy_channel_overlapping_by_chance_does_not_win);
     RUN_TEST(test_chords_do_not_beat_a_single_line);
+    RUN_TEST(test_guide_vocal_notes_stored_on_the_lyric_track_are_found);
     RUN_TEST(test_song_without_lyrics_has_no_melody_channel);
     RUN_TEST(test_drum_channel_is_never_the_lead);
     return UNITY_END();

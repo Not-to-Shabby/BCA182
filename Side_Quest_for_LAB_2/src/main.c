@@ -241,14 +241,14 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
             uint8_t vol = audio_get_volume();
 
             karaoke_ui_update_player(&status, pk_l, pk_r, voices, vol);
-            led_matrix_update_instruments(midi_karaoke_get_melody_channel(), pk_l, pk_r);
+            led_matrix_update_instruments(yamaha_fm_get_lead_channel(), pk_l, pk_r);
             audio_reset_peak_meters();
             update_status_led(status.is_playing && !status.is_paused);
         }
 
         if (mode != UI_VIEW_PLAYING) {
             const audio_diagnostics_t *diag = audio_get_diagnostics();
-            led_matrix_update_instruments(midi_karaoke_get_melody_channel(), diag->peak_left, diag->peak_right);
+            led_matrix_update_instruments(yamaha_fm_get_lead_channel(), diag->peak_left, diag->peak_right);
         }
 
         k_msleep(UI_THREAD_PERIOD_MS);

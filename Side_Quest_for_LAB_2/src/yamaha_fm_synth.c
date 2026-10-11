@@ -459,8 +459,8 @@ static const fm_patch_t PATCHES[P_COUNT] = {
     [P_SYN_BRASS]   = {1, 1,     1.2f, 3.0f, 0.10f, 0.8f, 0.020f, 0.1f, 1.00f, 0.10f, 0.28f, 0.03f, false},
     [P_SAX]         = {1, 1,     1.2f, 2.1f, 0.10f, 0.9f, 0.030f, 0.1f, 1.00f, 0.07f, 0.32f, 0.05f, false},
     [P_OBOE]        = {1, 1,     1.6f, 2.4f, 0.10f, 0.5f, 0.040f, 0.1f, 1.00f, 0.07f, 0.34f, 0.05f, false},
-    [P_CLARINET]    = {1, 2,     0.9f, 1.3f, 0.10f, 0.1f, 0.040f, 0.1f, 1.00f, 0.07f, 0.07f, 0.03f, false},
-    [P_FLUTE]       = {1, 1,     0.35f, 0.45f, 0.15f, 0.05f, 0.060f, 0.1f, 1.00f, 0.10f, 0.22f, 0.09f, false},
+    [P_CLARINET]    = {1, 2,     0.9f, 1.3f, 0.10f, 0.1f, 0.040f, 0.1f, 1.00f, 0.07f, 0.28f, 0.03f, false},
+    [P_FLUTE]       = {1, 1,     0.35f, 0.45f, 0.15f, 0.05f, 0.060f, 0.1f, 1.00f, 0.10f, 0.34f, 0.09f, false},
     [P_WHISTLE]     = {1, 1,     0.1f, 0.1f, 0.10f, 0.0f, 0.050f, 0.1f, 1.00f, 0.08f, 0.34f, 0.08f, false},
     [P_SQ_LEAD]     = {1, 2,     1.8f, 1.6f, 0.20f, 0.2f, 0.004f, 0.1f, 1.00f, 0.06f, 0.26f, 0.00f, false},
     [P_SAW_LEAD]    = {1, 1,     3.4f, 3.0f, 0.20f, 1.4f, 0.004f, 0.1f, 1.00f, 0.06f, 0.26f, 0.00f, false},
@@ -521,6 +521,7 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_SAX]         = {EXT_ENSEMBLE, 3.0f, 1.0f, 0.95f},
     [P_SQ_LEAD]     = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
     [P_SAW_LEAD]    = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.1f},
+
 };
 
 enum {

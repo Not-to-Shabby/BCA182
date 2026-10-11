@@ -124,8 +124,8 @@ static led_color_t get_instrument_color(uint8_t prog, uint8_t ch, uint8_t drum_n
 {
     led_color_t c = {0, 0, 0};
 
-    if (ch == 9) {
-        /* MIDI Channel 10: Dynamic Drum Color based on hit type */
+    if ((yamaha_fm_get_drum_parts() & (1U << ch)) != 0U) {
+        /* Drum Parts (Channel 10, or GS rhythm assignments): Dynamic Drum Color based on hit type */
         if (drum_note == 35 || drum_note == 36) {
             /* Bass Drum / Kick: Solid Red */
             c.r = 255; c.g = 10; c.b = 10;

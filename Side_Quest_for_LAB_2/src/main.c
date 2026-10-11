@@ -430,7 +430,12 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     karaoke_ui_set_view(UI_VIEW_PLAYING);
                 } else if (s_app.ui_mode == UI_VIEW_MIXER) {
                     close_mixer();
-                } else if (s_app.ui_mode != UI_VIEW_NUMBER_SELECT) {
+                } else if (s_app.ui_mode == UI_VIEW_NUMBER_SELECT) {
+                    /* Cancel: back to the song that is playing */
+                    s_app.ui_mode = UI_VIEW_PLAYING;
+                    karaoke_ui_set_view(UI_VIEW_PLAYING);
+                    printk("[Nav] Number select cancelled\n");
+                } else {
                     s_app.ui_mode = UI_VIEW_NUMBER_SELECT;
                     song_entry_t cur;
                     if (karaoke_catalog_get_song(s_app.current_song_index, &cur)) {

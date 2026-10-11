@@ -30,6 +30,7 @@ static uint8_t s_last_voices = 0xFFU;
 static int s_last_vu_l = -1;
 static int s_last_vu_r = -1;
 static bool s_frame_initialized = false;
+static uint32_t s_title_song_id = 0xFFFFFFFFU;     /* song whose artist and title are on the LCD */
 static bool s_mixer_redraw = true;      /* the whole mixer screen must be drawn again */
 
 static void pad_string(char *dst, const char *src, size_t max_len)
@@ -89,6 +90,7 @@ static void render_static_player_frame(void)
     lcd_fill_rect(138, 194, 203, 202, LCD_COLOR_DARKGREY);
 
     s_frame_initialized = true;
+    s_title_song_id = 0xFFFFFFFFU;      /* the wipe above removed the artist and title: draw them again */
     s_last_vol = 0xFFU;
     s_last_sec = 0xFFFFFFFFU;
     s_last_voices = 0xFFU;
@@ -160,6 +162,7 @@ void karaoke_ui_set_current_song(const song_entry_t *song)
         lcd_draw_rect(4, 96, 235, 120, LCD_COLOR_YELLOW);
         lcd_show_string(10, 100, "    [Loading Song...]    ", LCD_COLOR_YELLOW, LCD_COLOR_DARKCYAN);
         s_frame_initialized = true;
+        s_title_song_id = s_song_id;
     } else {
         s_frame_initialized = false;
     }
@@ -196,9 +199,8 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
     }
 
     /* 2. Artist & Song Title (redrawn per song: scanned files can all report code 0) */
-    static uint32_t s_last_song_id = 0xFFFFFFFFU;
-    if (s_last_song_id != s_song_id) {
-        s_last_song_id = s_song_id;
+    if (s_title_song_id != s_song_id) {
+        s_title_song_id = s_song_id;
 
         lcd_fill_rect(0, 24, 239, 68, LCD_COLOR_BLACK);
 
@@ -421,7 +423,7 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
             pad_string(buf, preview_artist, 26);
             lcd_show_string(12, 146, buf, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
         }
-        lcd_show_string(12, 166, "[Ready - OK to Play]", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+        lcd_show_string(12, 166, "[Ready - hold UP/DN]", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
     } else {
         lcd_show_string(40, 138, "No Song Matching", LCD_COLOR_RED, LCD_COLOR_BLACK);
         lcd_show_string(24, 158, "Enter 5-digit number", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
@@ -429,8 +431,8 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
 
     /* 5. Footer (y: 194 to 239) */
     lcd_fill_rect(0, 194, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 200, "HOLD UP/DN or OK: Play", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 218, "HOLD OK: Cancel / Return", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 200, "HOLD UP or DOWN: Play", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 218, "UP+DN together: Cancel", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }

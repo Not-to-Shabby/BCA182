@@ -852,7 +852,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         v->sus = p->sustain;
     }
 
-    if (s_hybrid_pcm) {
+    if (s_hybrid_pcm && s_third_op && busy <= THIRD_OP_MAX_VOICES) {
         const int16_t *pcm = NULL;
         uint32_t plen = 0;
         float root_hz = 261.6256f;

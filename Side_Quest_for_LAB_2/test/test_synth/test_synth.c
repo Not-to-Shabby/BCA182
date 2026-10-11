@@ -636,20 +636,20 @@ void test_a_section_gain_changes_only_its_own_instruments(void)
     piano_plain = note_level(0, 0, 60);
 
     setUp();
-    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, 50);
+    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, -6); /* -6 dB is ~0.50x half level */
     double flute_half = note_level(0, 73, 72);
-    TEST_ASSERT_FLOAT_WITHIN((float)flute_plain * 0.05f, (float)flute_plain * 0.5f, (float)flute_half);
+    TEST_ASSERT_FLOAT_WITHIN((float)flute_plain * 0.06f, (float)flute_plain * 0.501f, (float)flute_half);
 
     setUp();
-    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, 50);
+    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, -6);
     double piano_same = note_level(0, 0, 60);
     TEST_ASSERT_FLOAT_WITHIN((float)piano_plain * 0.03f, (float)piano_plain, (float)piano_same);
 
     setUp();
-    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, 0);
+    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, SYNTH_MIX_DB_MIN);
     TEST_ASSERT_TRUE(note_level(0, 73, 72) < flute_plain * 0.01);
-    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, 250);
-    TEST_ASSERT_EQUAL_UINT8(SYNTH_MIX_MAX_PERCENT, yamaha_fm_get_section_gain(SYNTH_SECT_REEDS));
+    yamaha_fm_set_section_gain(SYNTH_SECT_REEDS, 100);
+    TEST_ASSERT_EQUAL_INT8(SYNTH_MIX_DB_MAX, yamaha_fm_get_section_gain(SYNTH_SECT_REEDS));
 }
 
 void test_a_drum_section_gain_changes_only_its_own_drums(void)
@@ -660,13 +660,13 @@ void test_a_drum_section_gain_changes_only_its_own_drums(void)
     double snare_plain = rms_window(0, 100);
 
     setUp();
-    yamaha_fm_set_section_gain(SYNTH_SECT_SNARE, 0);
+    yamaha_fm_set_section_gain(SYNTH_SECT_SNARE, SYNTH_MIX_DB_MIN);
     yamaha_fm_note_on(9, 38, 110);
     render_ms(120);
     TEST_ASSERT_TRUE(rms_window(0, 100) < snare_plain * 0.02);
 
     setUp();
-    yamaha_fm_set_section_gain(SYNTH_SECT_SNARE, 0);
+    yamaha_fm_set_section_gain(SYNTH_SECT_SNARE, SYNTH_MIX_DB_MIN);
     yamaha_fm_note_on(9, 36, 110);                    /* a kick is not in the snare section */
     render_ms(120);
     TEST_ASSERT_TRUE(rms_window(0, 100) > snare_plain * 0.2);
@@ -677,8 +677,8 @@ void test_channel_gain_mute_and_solo(void)
     double plain = note_level(0, 73, 72);
 
     setUp();
-    yamaha_fm_set_channel_gain(0, 50);
-    TEST_ASSERT_FLOAT_WITHIN((float)plain * 0.05f, (float)plain * 0.5f, (float)note_level(0, 73, 72));
+    yamaha_fm_set_channel_gain(0, -6);
+    TEST_ASSERT_FLOAT_WITHIN((float)plain * 0.06f, (float)plain * 0.501f, (float)note_level(0, 73, 72));
 
     setUp();
     yamaha_fm_set_channel_mute(0, true);
@@ -712,17 +712,17 @@ void test_channel_gain_mute_and_solo(void)
 
 void test_resetting_the_channel_mix_keeps_the_section_levels(void)
 {
-    yamaha_fm_set_section_gain(SYNTH_SECT_BASS, 70);
-    yamaha_fm_set_channel_gain(3, 40);
+    yamaha_fm_set_section_gain(SYNTH_SECT_BASS, -3);
+    yamaha_fm_set_channel_gain(3, -6);
     yamaha_fm_set_channel_mute(4, true);
     yamaha_fm_set_channel_solo(5, true);
     yamaha_fm_reset_channel_mix();
-    TEST_ASSERT_EQUAL_UINT8(100, yamaha_fm_get_channel_gain(3));
+    TEST_ASSERT_EQUAL_INT8(0, yamaha_fm_get_channel_gain(3));
     TEST_ASSERT_FALSE(yamaha_fm_get_channel_mute(4));
     TEST_ASSERT_FALSE(yamaha_fm_get_channel_solo(5));
-    TEST_ASSERT_EQUAL_UINT8(70, yamaha_fm_get_section_gain(SYNTH_SECT_BASS));
+    TEST_ASSERT_EQUAL_INT8(-3, yamaha_fm_get_section_gain(SYNTH_SECT_BASS));
     yamaha_fm_synth_init(RATE);
-    TEST_ASSERT_EQUAL_UINT8(100, yamaha_fm_get_section_gain(SYNTH_SECT_BASS));
+    TEST_ASSERT_EQUAL_INT8(0, yamaha_fm_get_section_gain(SYNTH_SECT_BASS));
 }
 
 /* ---- timestamped events, sends, flush ---- */

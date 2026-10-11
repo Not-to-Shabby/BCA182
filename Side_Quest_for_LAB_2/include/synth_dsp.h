@@ -45,11 +45,14 @@ void dsp_set_effects_level(uint8_t percent);
 uint8_t dsp_get_effects_level(void);
 bool dsp_effects_active(void);
 
-/** Reverb and chorus returns on their own, in percent of the effects level (0 to 200, default 100). */
-void dsp_set_reverb_level(uint8_t percent);
-void dsp_set_chorus_level(uint8_t percent);
-uint8_t dsp_get_reverb_level(void);
-uint8_t dsp_get_chorus_level(void);
+/** Reverb and chorus returns in decibels (-40 dB to +10 dB, default 0 dB unity). <= -40 dB is muted. */
+#define DSP_MIX_DB_MIN          (-40)
+#define DSP_MIX_DB_MAX          10
+
+void dsp_set_reverb_db(int8_t db);
+void dsp_set_chorus_db(int8_t db);
+int8_t dsp_get_reverb_db(void);
+int8_t dsp_get_chorus_db(void);
 
 /** Largest tone offset in either direction, in dB. */
 #define DSP_TONE_MAX_DB        6

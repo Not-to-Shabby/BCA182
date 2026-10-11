@@ -58,8 +58,8 @@
 
 static float s_rate = 44100.0f;
 static uint8_t s_fx_level = 100;
-static uint8_t s_rv_level = 100;        /* reverb return, percent of the effects level */
-static uint8_t s_ch_level = 100;        /* chorus return, percent of the effects level */
+static int8_t s_rv_db = 0;              /* reverb return in dB (-40 to +10, 0 = unity) */
+static int8_t s_cho_db = 0;             /* chorus return in dB (-40 to +10, 0 = unity) */
 static float s_rv_ret;                  /* reverb return gain */
 static int32_t s_ch_ret;                /* chorus return gain, Q15 */
 
@@ -616,12 +616,25 @@ bool dsp_get_compressor(void)
     return s_comp_on;
 }
 
+static float db_to_linear_gain(int8_t db)
+{
+    if (db <= DSP_MIX_DB_MIN) {
+        return 0.0f;
+    }
+    if (db == 0) {
+        return 1.0f;
+    }
+    return exp2f((float)db * (1.0f / 6.0205999f));
+}
+
 static void update_returns(void)
 {
     float all = (float)s_fx_level / 100.0f;
+    float rv_g = db_to_linear_gain(s_rv_db);
+    float cho_g = db_to_linear_gain(s_cho_db);
 
-    s_rv_ret = ((float)DSP_REVERB_RETURN_Q15 * all * ((float)s_rv_level / 100.0f)) * (1.0f / 32768.0f);
-    s_ch_ret = (int32_t)((float)DSP_CHORUS_RETURN_Q15 * all * ((float)s_ch_level / 100.0f));
+    s_rv_ret = ((float)DSP_REVERB_RETURN_Q15 * all * rv_g) * (1.0f / 32768.0f);
+    s_ch_ret = (int32_t)((float)DSP_CHORUS_RETURN_Q15 * all * cho_g);
 }
 
 void dsp_set_effects_level(uint8_t percent)
@@ -633,26 +646,30 @@ void dsp_set_effects_level(uint8_t percent)
     update_returns();
 }
 
-void dsp_set_reverb_level(uint8_t percent)
+void dsp_set_reverb_db(int8_t db)
 {
-    s_rv_level = (percent > 200U) ? 200U : percent;
+    if (db < DSP_MIX_DB_MIN) db = DSP_MIX_DB_MIN;
+    if (db > DSP_MIX_DB_MAX) db = DSP_MIX_DB_MAX;
+    s_rv_db = db;
     update_returns();
 }
 
-void dsp_set_chorus_level(uint8_t percent)
+void dsp_set_chorus_db(int8_t db)
 {
-    s_ch_level = (percent > 200U) ? 200U : percent;
+    if (db < DSP_MIX_DB_MIN) db = DSP_MIX_DB_MIN;
+    if (db > DSP_MIX_DB_MAX) db = DSP_MIX_DB_MAX;
+    s_cho_db = db;
     update_returns();
 }
 
-uint8_t dsp_get_reverb_level(void)
+int8_t dsp_get_reverb_db(void)
 {
-    return s_rv_level;
+    return s_rv_db;
 }
 
-uint8_t dsp_get_chorus_level(void)
+int8_t dsp_get_chorus_db(void)
 {
-    return s_ch_level;
+    return s_cho_db;
 }
 
 /* RBJ shelf: gain in dB, shelf slope S. Writes b0 b1 b2 a1 a2 (a0 divided out). */
@@ -728,7 +745,7 @@ uint8_t dsp_get_effects_level(void)
 
 bool dsp_effects_active(void)
 {
-    return s_fx_level > 0U && (s_rv_level > 0U || s_ch_level > 0U);
+    return s_fx_level > 0U && (s_rv_db > DSP_MIX_DB_MIN || s_cho_db > DSP_MIX_DB_MIN);
 }
 
 void dsp_effects_process(const int32_t *rev_in, const int32_t *cho_in,
@@ -789,8 +806,8 @@ void dsp_init(float sample_rate)
     s_gr_max = 0.0f;
     s_lim_samples = 0;
     dsp_set_effects_level(100);
-    s_rv_level = 100;
-    s_ch_level = 100;
+    s_rv_db = 0;
+    s_cho_db = 0;
     update_returns();
     dsp_set_tone(0, 0);
     memcpy(s_eq_coef, s_eq_pending, sizeof(s_eq_coef));

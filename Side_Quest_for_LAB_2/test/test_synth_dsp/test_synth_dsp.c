@@ -499,7 +499,7 @@ void test_master_eq_boosts_sub_bass_and_treble_air(void)
 void test_reverb_and_chorus_levels_are_independent(void)
 {
     dsp_init((float)RATE);
-    dsp_set_reverb_level(0);
+    dsp_set_reverb_db(-40);
     impulse_response(30000);
     for (size_t i = 0; i < 10000; i++) {
         TEST_ASSERT_EQUAL_INT32(0, g_l[i]);          /* only the reverb was fed: nothing comes back */
@@ -510,15 +510,15 @@ void test_reverb_and_chorus_levels_are_independent(void)
     impulse_response(30000);
     double full = rms_i32(g_l + 2000, 6000);
     dsp_init((float)RATE);
-    dsp_set_reverb_level(50);
+    dsp_set_reverb_db(-6);                           /* -6 dB is ~0.50x return */
     impulse_response(30000);
-    TEST_ASSERT_FLOAT_WITHIN((float)full * 0.05f, (float)full * 0.5f, (float)rms_i32(g_l + 2000, 6000));
+    TEST_ASSERT_FLOAT_WITHIN((float)full * 0.06f, (float)full * 0.501f, (float)rms_i32(g_l + 2000, 6000));
 
-    dsp_set_reverb_level(0);
-    dsp_set_chorus_level(0);
+    dsp_set_reverb_db(-40);
+    dsp_set_chorus_db(-40);
     TEST_ASSERT_FALSE(dsp_effects_active());
-    dsp_set_reverb_level(250);
-    TEST_ASSERT_EQUAL_UINT8(200, dsp_get_reverb_level());
+    dsp_set_reverb_db(50);
+    TEST_ASSERT_EQUAL_INT8(DSP_MIX_DB_MAX, dsp_get_reverb_db());
 }
 
 static double tone_gain_db(double hz, int8_t bass, int8_t treble)

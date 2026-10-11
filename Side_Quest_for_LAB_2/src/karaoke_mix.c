@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MIX_STEP_PERCENT    5
 
 static const char *const SECTION_NAMES[MIX_SECTIONS] = {
     "Piano / Keys", "Organ", "Guitar", "Bass", "Strings / Choir", "Brass", "Reeds / Pipes",
@@ -152,15 +151,8 @@ static const char *const GM_NAMES[128] = {
 
 void karaoke_mix_defaults(karaoke_mix_t *mix)
 {
+    /* 0 dB is the natural unity default for all faders and flat for tone controls */
     memset(mix, 0, sizeof(*mix));
-    for (size_t i = 0; i < MIX_SECTIONS; i++) {
-        mix->section[i] = 100;
-    }
-    for (size_t i = 0; i < MIX_CHANNELS; i++) {
-        mix->channel[i] = 100;
-    }
-    mix->reverb = 100;
-    mix->chorus = 100;
 }
 
 bool karaoke_mix_equal(const karaoke_mix_t *a, const karaoke_mix_t *b)
@@ -213,12 +205,12 @@ int karaoke_mix_item_value(const karaoke_mix_t *mix, uint8_t item)
 
 int karaoke_mix_item_max(uint8_t item)
 {
-    return (karaoke_mix_item_kind(item) == MIX_KIND_TONE) ? MIX_TONE_MAX_DB : (int)MIX_PERCENT_MAX;
+    return (karaoke_mix_item_kind(item) == MIX_KIND_TONE) ? MIX_TONE_MAX_DB : MIX_DB_MAX;
 }
 
 int karaoke_mix_item_min(uint8_t item)
 {
-    return (karaoke_mix_item_kind(item) == MIX_KIND_TONE) ? -MIX_TONE_MAX_DB : 0;
+    return (karaoke_mix_item_kind(item) == MIX_KIND_TONE) ? -MIX_TONE_MAX_DB : MIX_DB_MIN;
 }
 
 static void set_value(karaoke_mix_t *mix, uint8_t item, int v)
@@ -250,15 +242,7 @@ void karaoke_mix_item_adjust(karaoke_mix_t *mix, uint8_t item, int direction)
     if (k == MIX_KIND_ACTION || direction == 0) {
         return;
     }
-    int step = (k == MIX_KIND_TONE) ? 1 : MIX_STEP_PERCENT;
-    int v = karaoke_mix_item_value(mix, item);
-
-    if (k != MIX_KIND_TONE) {
-        /* land on multiples of the step even if the value came from an edited file */
-        v = (direction > 0) ? ((v / step) + 1) * step : (((v + step - 1) / step) - 1) * step;
-    } else {
-        v += (direction > 0) ? step : -step;
-    }
+    int v = karaoke_mix_item_value(mix, item) + (direction > 0 ? 1 : -1);
     set_value(mix, item, v);
 }
 
@@ -269,7 +253,7 @@ void karaoke_mix_item_reset(karaoke_mix_t *mix, uint8_t item)
     if (k == MIX_KIND_ACTION) {
         return;
     }
-    set_value(mix, item, (k == MIX_KIND_TONE) ? 0 : 100);
+    set_value(mix, item, 0); /* 0 dB */
     if (k == MIX_KIND_CHANNEL) {
         uint16_t bit = (uint16_t)(1U << (item - MIX_ITEM_CHANNEL0));
         mix->mute &= (uint16_t)~bit;
@@ -309,7 +293,7 @@ bool karaoke_mix_item_changed(const karaoke_mix_t *mix, uint8_t item)
     mix_item_kind_t k = karaoke_mix_item_kind(item);
 
     if (k == MIX_KIND_ACTION) return false;
-    if (karaoke_mix_item_value(mix, item) != ((k == MIX_KIND_TONE) ? 0 : 100)) return true;
+    if (karaoke_mix_item_value(mix, item) != 0) return true;
     return k == MIX_KIND_CHANNEL && karaoke_mix_channel_state(mix, (uint8_t)(item - MIX_ITEM_CHANNEL0)) != 0;
 }
 
@@ -325,7 +309,7 @@ size_t karaoke_mix_format(const karaoke_mix_t *mix, char *out, size_t out_size)
     if (w < 0 || (size_t)w >= out_size - n) return 0;
     n += (size_t)w;
     for (size_t i = 0; i < MIX_SECTIONS; i++) {
-        w = snprintf(out + n, out_size - n, "%s%u", (i > 0U) ? "," : "", (unsigned)mix->section[i]);
+        w = snprintf(out + n, out_size - n, "%s%d", (i > 0U) ? "," : "", (int)mix->section[i]);
         if (w < 0 || (size_t)w >= out_size - n) return 0;
         n += (size_t)w;
     }
@@ -333,12 +317,12 @@ size_t karaoke_mix_format(const karaoke_mix_t *mix, char *out, size_t out_size)
     if (w < 0 || (size_t)w >= out_size - n) return 0;
     n += (size_t)w;
     for (size_t i = 0; i < MIX_CHANNELS; i++) {
-        w = snprintf(out + n, out_size - n, "%s%u", (i > 0U) ? "," : "", (unsigned)mix->channel[i]);
+        w = snprintf(out + n, out_size - n, "%s%d", (i > 0U) ? "," : "", (int)mix->channel[i]);
         if (w < 0 || (size_t)w >= out_size - n) return 0;
         n += (size_t)w;
     }
-    w = snprintf(out + n, out_size - n, "\nMUTE=%u\nSOLO=%u\nREV=%u\nCHO=%u\nBASS=%d\nTREBLE=%d\n",
-                 (unsigned)mix->mute, (unsigned)mix->solo, (unsigned)mix->reverb, (unsigned)mix->chorus,
+    w = snprintf(out + n, out_size - n, "\nMUTE=%u\nSOLO=%u\nREV=%d\nCHO=%d\nBASS=%d\nTREBLE=%d\n",
+                 (unsigned)mix->mute, (unsigned)mix->solo, (int)mix->reverb, (int)mix->chorus,
                  (int)mix->bass, (int)mix->treble);
     if (w < 0 || (size_t)w >= out_size - n) return 0;
     return n + (size_t)w;
@@ -349,7 +333,7 @@ static int clamp_int(long v, int lo, int hi)
     return (v < lo) ? lo : ((v > hi) ? hi : (int)v);
 }
 
-static void parse_list(const char *s, uint8_t *dst, size_t count)
+static void parse_list(const char *s, int8_t *dst, size_t count)
 {
     for (size_t i = 0; i < count && *s != '\0'; i++) {
         char *end = NULL;
@@ -358,7 +342,7 @@ static void parse_list(const char *s, uint8_t *dst, size_t count)
         if (end == s) {
             break;
         }
-        dst[i] = (uint8_t)clamp_int(v, 0, (int)MIX_PERCENT_MAX);
+        dst[i] = (int8_t)clamp_int(v, MIX_DB_MIN, MIX_DB_MAX);
         s = (*end == ',') ? end + 1 : end;
     }
 }
@@ -397,10 +381,10 @@ bool karaoke_mix_parse(karaoke_mix_t *mix, const char *text)
                     mix->solo = (uint16_t)clamp_int(v, 0, 0xFFFF);
                     any = true;
                 } else if (klen == 3U && strncmp(line, "REV", 3) == 0) {
-                    mix->reverb = (uint8_t)clamp_int(v, 0, (int)MIX_PERCENT_MAX);
+                    mix->reverb = (int8_t)clamp_int(v, MIX_DB_MIN, MIX_DB_MAX);
                     any = true;
                 } else if (klen == 3U && strncmp(line, "CHO", 3) == 0) {
-                    mix->chorus = (uint8_t)clamp_int(v, 0, (int)MIX_PERCENT_MAX);
+                    mix->chorus = (int8_t)clamp_int(v, MIX_DB_MIN, MIX_DB_MAX);
                     any = true;
                 } else if (klen == 4U && strncmp(line, "BASS", 4) == 0) {
                     mix->bass = (int8_t)clamp_int(v, -MIX_TONE_MAX_DB, MIX_TONE_MAX_DB);

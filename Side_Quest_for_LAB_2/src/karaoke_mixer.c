@@ -135,7 +135,7 @@ void karaoke_mixer_click(uint8_t item)
         /* Channels differ from song to song, so only the song-independent part becomes the default. */
         s_default = s_mix;
         for (uint8_t ch = 0; ch < MIX_CHANNELS; ch++) {
-            s_default.channel[ch] = 100;
+            s_default.channel[ch] = 0;
         }
         s_default.mute = 0;
         s_default.solo = 0;

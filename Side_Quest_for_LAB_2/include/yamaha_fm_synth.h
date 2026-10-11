@@ -156,35 +156,36 @@ uint8_t yamaha_fm_get_effects_level(void);
 
 /* The mixer sections (synth_sections.h) and the percent limit that every mixer level shares. */
 
-#define SYNTH_MIX_MAX_PERCENT   200
+#define SYNTH_MIX_DB_MIN        (-40)
+#define SYNTH_MIX_DB_MAX        10
 
-/** Level of one mixer section in percent (0 to 200, default 100). Out-of-range sections are ignored. */
-void yamaha_fm_set_section_gain(uint8_t section, uint8_t percent);
-uint8_t yamaha_fm_get_section_gain(uint8_t section);
+/** Level of one mixer section in decibels (-40 dB to +10 dB, default 0 dB unity). <= -40 dB is muted. */
+void yamaha_fm_set_section_gain(uint8_t section, int8_t db);
+int8_t yamaha_fm_get_section_gain(uint8_t section);
 
 /** Section a General MIDI program or a drum key belongs to. */
 uint8_t yamaha_fm_section_of_program(uint8_t program);
 uint8_t yamaha_fm_section_of_drum(uint8_t note);
 
-/** Level, mute and solo of one MIDI channel (0-15). While any channel is soloed, the others are silent. */
-void yamaha_fm_set_channel_gain(uint8_t channel, uint8_t percent);
-uint8_t yamaha_fm_get_channel_gain(uint8_t channel);
+/** Level in dB (-40 to +10, 0 = unity), mute and solo of one MIDI channel (0-15). */
+void yamaha_fm_set_channel_gain(uint8_t channel, int8_t db);
+int8_t yamaha_fm_get_channel_gain(uint8_t channel);
 void yamaha_fm_set_channel_mute(uint8_t channel, bool mute);
 bool yamaha_fm_get_channel_mute(uint8_t channel);
 void yamaha_fm_set_channel_solo(uint8_t channel, bool solo);
 bool yamaha_fm_get_channel_solo(uint8_t channel);
 
-/** Sets every channel back to 100 %, unmuted, not soloed (done for each new song). Sections are kept. */
+/** Sets every channel back to 0 dB, unmuted, not soloed (done for each new song). Sections are kept. */
 void yamaha_fm_reset_channel_mix(void);
 
 /** Bit n set = MIDI channel n currently plays drums (channel 10, and any part a GS message made one). */
 uint16_t yamaha_fm_get_drum_parts(void);
 
-/** Reverb and chorus on their own, in percent of the effects level (0 to 200, default 100). */
-void yamaha_fm_set_reverb_level(uint8_t percent);
-void yamaha_fm_set_chorus_level(uint8_t percent);
-uint8_t yamaha_fm_get_reverb_level(void);
-uint8_t yamaha_fm_get_chorus_level(void);
+/** Reverb and chorus in decibels (-40 dB to +10 dB, default 0 dB unity). */
+void yamaha_fm_set_reverb_level(int8_t db);
+void yamaha_fm_set_chorus_level(int8_t db);
+int8_t yamaha_fm_get_reverb_level(void);
+int8_t yamaha_fm_get_chorus_level(void);
 
 /** Bass and treble tone in dB (-6 to +6, default 0) on top of the built-in mastering curve. */
 void yamaha_fm_set_tone(int8_t bass_db, int8_t treble_db);

@@ -622,7 +622,7 @@ void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karao
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_BLACK;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : (changed ? LCD_COLOR_CYAN : LCD_COLOR_WHITE);
         char name[32];
-        char val[12];
+        char val[16];
 
         if (kind == MIX_KIND_CHANNEL) {
             char scratch[12];
@@ -638,8 +638,10 @@ void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karao
                 snprintf(val, sizeof(val), "MUTE");
             } else if (state == 2) {
                 snprintf(val, sizeof(val), "SOLO");
+            } else if (value <= -40) {
+                snprintf(val, sizeof(val), "-inf");
             } else {
-                snprintf(val, sizeof(val), "%d%%", value);
+                snprintf(val, sizeof(val), "%+ddB", value);
             }
         } else if (kind == MIX_KIND_TONE) {
             snprintf(name, sizeof(name), "%s", karaoke_mix_item_name(item, NULL, 0));
@@ -649,7 +651,11 @@ void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karao
             val[0] = '\0';
         } else {
             snprintf(name, sizeof(name), "%s", karaoke_mix_item_name(item, NULL, 0));
-            snprintf(val, sizeof(val), "%d%%", value);
+            if (value <= -40) {
+                snprintf(val, sizeof(val), "-inf");
+            } else {
+                snprintf(val, sizeof(val), "%+ddB", value);
+            }
         }
         if (state == 1) fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_RED;
         if (state == 2) fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN;
@@ -668,7 +674,7 @@ void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karao
             lcd_fill_rect(228, (uint16_t)(y + 4), 235, (uint16_t)(y + 11), lvl ? LCD_COLOR_GREEN : LCD_COLOR_DARKGREY);
         }
 
-        /* bar under the text: percent rows from the left, tone rows from the middle */
+        /* bar under the text: tone rows from the middle (-6 to +6 dB); fader rows from -40 dB to +10 dB */
         lcd_fill_rect(10, (uint16_t)(y + 17), 227, (uint16_t)(y + 19), LCD_COLOR_DARKGREY);
         uint16_t bar_color = sel ? LCD_COLOR_GREEN : (changed ? LCD_COLOR_CYAN : LCD_COLOR_GRAY);
         if (kind == MIX_KIND_TONE) {
@@ -679,11 +685,19 @@ void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karao
             } else if (w < 0) {
                 lcd_fill_rect((uint16_t)(mid + w), (uint16_t)(y + 17), (uint16_t)mid, (uint16_t)(y + 19), bar_color);
             }
-        } else if (state == 0) {
-            int w = (value * 217) / (int)MIX_PERCENT_MAX;
+        } else if (state == 0 && value > -40) {
+            /* -40 dB to +10 dB total span (50 dB). Unity 0 dB tick is at x = 10 + 174 = 184 (80% of width) */
+            int w = ((value + 40) * 217) / 50;
             if (w > 0) {
-                lcd_fill_rect(10, (uint16_t)(y + 17), (uint16_t)(10 + w), (uint16_t)(y + 19), bar_color);
+                int base_w = (w > 174) ? 174 : w;
+                lcd_fill_rect(10, (uint16_t)(y + 17), (uint16_t)(10 + base_w), (uint16_t)(y + 19), bar_color);
+                if (w > 174) {
+                    /* Boost zone (> 0 dB up to +10 dB): highlighted in warm yellow/gold */
+                    lcd_fill_rect(184, (uint16_t)(y + 17), (uint16_t)(10 + w), (uint16_t)(y + 19), LCD_COLOR_YELLOW);
+                }
             }
+            /* Unity 0 dB tick marker */
+            lcd_draw_line(184, (uint16_t)(y + 16), 184, (uint16_t)(y + 20), LCD_COLOR_WHITE);
         }
     }
 

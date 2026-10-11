@@ -15,18 +15,18 @@
 
 /* ---- a stand-in for the synthesizer that records what the mixer sends ---- */
 #define SYNTH_SECT_COUNT 15
-static uint8_t g_sect[SYNTH_SECT_COUNT];
-static uint8_t g_chan[16];
+static int8_t g_sect[SYNTH_SECT_COUNT];
+static int8_t g_chan[16];
 static uint16_t g_mute, g_solo;
-static uint8_t g_rev, g_cho;
+static int8_t g_rev, g_cho;
 static int8_t g_bass, g_treble;
 
-void yamaha_fm_set_section_gain(uint8_t s, uint8_t p) { g_sect[s] = p; }
-void yamaha_fm_set_channel_gain(uint8_t c, uint8_t p) { g_chan[c] = p; }
+void yamaha_fm_set_section_gain(uint8_t s, int8_t p) { g_sect[s] = p; }
+void yamaha_fm_set_channel_gain(uint8_t c, int8_t p) { g_chan[c] = p; }
 void yamaha_fm_set_channel_mute(uint8_t c, bool m) { g_mute = m ? (uint16_t)(g_mute | (1U << c)) : (uint16_t)(g_mute & ~(1U << c)); }
 void yamaha_fm_set_channel_solo(uint8_t c, bool m) { g_solo = m ? (uint16_t)(g_solo | (1U << c)) : (uint16_t)(g_solo & ~(1U << c)); }
-void yamaha_fm_set_reverb_level(uint8_t p) { g_rev = p; }
-void yamaha_fm_set_chorus_level(uint8_t p) { g_cho = p; }
+void yamaha_fm_set_reverb_level(int8_t p) { g_rev = p; }
+void yamaha_fm_set_chorus_level(int8_t p) { g_cho = p; }
 void yamaha_fm_set_tone(int8_t b, int8_t t) { g_bass = b; g_treble = t; }
 
 /* the real header is not used on the host: the controller only needs the declarations above */
@@ -98,9 +98,9 @@ void test_without_any_file_everything_starts_flat(void)
 {
     karaoke_mixer_init();
     karaoke_mixer_song_started(13238);
-    for (int i = 0; i < SYNTH_SECT_COUNT; i++) TEST_ASSERT_EQUAL_UINT8(100, g_sect[i]);
-    for (int i = 0; i < 16; i++) TEST_ASSERT_EQUAL_UINT8(100, g_chan[i]);
-    TEST_ASSERT_EQUAL_UINT8(100, g_rev);
+    for (int i = 0; i < SYNTH_SECT_COUNT; i++) TEST_ASSERT_EQUAL_INT8(0, g_sect[i]);
+    for (int i = 0; i < 16; i++) TEST_ASSERT_EQUAL_INT8(0, g_chan[i]);
+    TEST_ASSERT_EQUAL_INT8(0, g_rev);
     TEST_ASSERT_EQUAL_INT8(0, g_bass);
     TEST_ASSERT_FALSE(karaoke_mixer_song_has_own_mix());
 }
@@ -113,8 +113,8 @@ void test_changes_reach_the_synth_immediately(void)
     karaoke_mixer_adjust(MIX_ITEM_REVERB, -1);
     karaoke_mixer_adjust(MIX_ITEM_TREBLE, +1);
     karaoke_mixer_click(MIX_ITEM_CHANNEL0 + 2);                      /* mute channel 3 */
-    TEST_ASSERT_EQUAL_UINT8(95, g_sect[3]);
-    TEST_ASSERT_EQUAL_UINT8(95, g_rev);
+    TEST_ASSERT_EQUAL_INT8(-1, g_sect[3]);
+    TEST_ASSERT_EQUAL_INT8(-1, g_rev);
     TEST_ASSERT_EQUAL_INT8(1, g_treble);
     TEST_ASSERT_EQUAL_UINT16(0x0004, g_mute);
     karaoke_mixer_click(MIX_ITEM_CHANNEL0 + 2);                      /* solo it */
@@ -133,9 +133,9 @@ void test_a_changed_mix_is_saved_for_its_song_only(void)
     TEST_ASSERT_EQUAL_INT(1, g_writes);
 
     karaoke_mixer_song_started(500);                                  /* another song is flat */
-    TEST_ASSERT_EQUAL_UINT8(100, g_sect[0]);
+    TEST_ASSERT_EQUAL_INT8(0, g_sect[0]);
     karaoke_mixer_song_started(13238);                                /* coming back restores it */
-    TEST_ASSERT_EQUAL_UINT8(105, g_sect[0]);
+    TEST_ASSERT_EQUAL_INT8(1, g_sect[0]);
     TEST_ASSERT_TRUE(karaoke_mixer_song_has_own_mix());
 }
 
@@ -152,7 +152,7 @@ void test_putting_a_song_back_to_the_default_removes_its_file(void)
     karaoke_mixer_leave();
     TEST_ASSERT_EQUAL_INT(-1, find("SD:/mix/000007.cfg"));
     TEST_ASSERT_EQUAL_INT(1, g_deletes);
-    TEST_ASSERT_EQUAL_UINT8(100, g_sect[0]);
+    TEST_ASSERT_EQUAL_INT8(0, g_sect[0]);
 }
 
 void test_leaving_an_untouched_song_writes_and_deletes_nothing(void)
@@ -205,11 +205,11 @@ void test_reset_this_song_returns_to_the_default_not_to_flat(void)
     karaoke_mixer_init();
     karaoke_mixer_song_started(1);
     karaoke_mixer_adjust(0, -1);
-    karaoke_mixer_click(MIX_ITEM_SAVE_ALL);                           /* default piano 95 */
+    karaoke_mixer_click(MIX_ITEM_SAVE_ALL);                           /* default piano -1 */
     karaoke_mixer_adjust(0, -1);
     karaoke_mixer_adjust(0, -1);
     karaoke_mixer_click(MIX_ITEM_RESET);
-    TEST_ASSERT_EQUAL_UINT8(95, g_sect[0]);
+    TEST_ASSERT_EQUAL_INT8(-1, g_sect[0]);
 }
 
 void test_a_missing_card_does_not_break_the_mixer(void)
@@ -220,7 +220,7 @@ void test_a_missing_card_does_not_break_the_mixer(void)
     karaoke_mixer_adjust(0, +1);
     karaoke_mixer_leave();
     karaoke_mixer_click(MIX_ITEM_SAVE_ALL);
-    TEST_ASSERT_EQUAL_UINT8(105, g_sect[0]);                          /* still applied for this session */
+    TEST_ASSERT_EQUAL_INT8(1, g_sect[0]);                             /* still applied for this session */
     TEST_ASSERT_EQUAL_INT(0, g_writes);
 }
 
@@ -229,7 +229,7 @@ void test_a_corrupt_song_file_falls_back_to_the_default(void)
     karaoke_mixer_init();
     mix_store_write("SD:/mix/000042.cfg", "garbage\nmore garbage\n", 21);
     karaoke_mixer_song_started(42);
-    for (int i = 0; i < SYNTH_SECT_COUNT; i++) TEST_ASSERT_EQUAL_UINT8(100, g_sect[i]);
+    for (int i = 0; i < SYNTH_SECT_COUNT; i++) TEST_ASSERT_EQUAL_INT8(0, g_sect[i]);
 }
 
 void test_leaving_twice_writes_only_once(void)
@@ -251,17 +251,17 @@ void test_set_as_default_keeps_per_song_channel_settings_out_of_other_songs(void
     karaoke_mixer_click(MIX_ITEM_CHANNEL0 + 3);                       /* mute channel 4 */
     karaoke_mixer_adjust(MIX_ITEM_CHANNEL0 + 5, -1);                  /* channel 6 at 95 % */
     karaoke_mixer_click(MIX_ITEM_SAVE_ALL);
-    TEST_ASSERT_EQUAL_UINT8(95, karaoke_mixer_get_default()->section[0]);
+    TEST_ASSERT_EQUAL_INT8(-1, karaoke_mixer_get_default()->section[0]);
     TEST_ASSERT_EQUAL_UINT16(0, karaoke_mixer_get_default()->mute);
-    TEST_ASSERT_EQUAL_UINT8(100, karaoke_mixer_get_default()->channel[5]);
+    TEST_ASSERT_EQUAL_INT8(0, karaoke_mixer_get_default()->channel[5]);
     TEST_ASSERT_TRUE(karaoke_mixer_song_has_own_mix());               /* this song keeps its channel settings */
     karaoke_mixer_leave();
     karaoke_mixer_song_started(2);
-    TEST_ASSERT_EQUAL_UINT8(95, g_sect[0]);
+    TEST_ASSERT_EQUAL_INT8(-1, g_sect[0]);
     TEST_ASSERT_EQUAL_UINT16(0, g_mute);
     karaoke_mixer_song_started(1);
     TEST_ASSERT_EQUAL_UINT16(0x0008, g_mute);
-    TEST_ASSERT_EQUAL_UINT8(95, g_chan[5]);
+    TEST_ASSERT_EQUAL_INT8(-1, g_chan[5]);
 }
 
 void test_the_view_shrinks_to_what_the_song_uses(void)

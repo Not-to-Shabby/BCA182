@@ -53,21 +53,37 @@ static uint32_t s_ext_started;
 static uint32_t s_ext_skipped;
 static volatile int8_t s_melody_channel = -1;   /* channel following the lyrics: the prior for the lead tracker */
 static volatile int8_t s_lead_channel = -1;     /* channel the synth treats as the tune right now */
-static volatile uint8_t s_section_gain[SYNTH_SECT_COUNT];
-static volatile uint8_t s_chan_gain[FM_MIDI_CHANNELS];
+static volatile int8_t s_section_db[SYNTH_SECT_COUNT];
+static volatile int8_t s_chan_db[FM_MIDI_CHANNELS];
+static float s_section_gain[SYNTH_SECT_COUNT];
+static float s_chan_gain[FM_MIDI_CHANNELS];
 static volatile uint16_t s_chan_mute;
 static volatile uint16_t s_chan_solo;
 
-void yamaha_fm_set_section_gain(uint8_t section, uint8_t percent)
+static float db_to_linear(int8_t db)
+{
+    if (db <= SYNTH_MIX_DB_MIN) {
+        return 0.0f;
+    }
+    if (db == 0) {
+        return 1.0f;
+    }
+    return exp2f((float)db * (1.0f / 6.0205999f));
+}
+
+void yamaha_fm_set_section_gain(uint8_t section, int8_t db)
 {
     if (section < SYNTH_SECT_COUNT) {
-        s_section_gain[section] = (percent > SYNTH_MIX_MAX_PERCENT) ? SYNTH_MIX_MAX_PERCENT : percent;
+        if (db < SYNTH_MIX_DB_MIN) db = SYNTH_MIX_DB_MIN;
+        if (db > SYNTH_MIX_DB_MAX) db = SYNTH_MIX_DB_MAX;
+        s_section_db[section] = db;
+        s_section_gain[section] = db_to_linear(db);
     }
 }
 
-uint8_t yamaha_fm_get_section_gain(uint8_t section)
+int8_t yamaha_fm_get_section_gain(uint8_t section)
 {
-    return (section < SYNTH_SECT_COUNT) ? s_section_gain[section] : 0U;
+    return (section < SYNTH_SECT_COUNT) ? s_section_db[section] : 0;
 }
 
 uint8_t yamaha_fm_section_of_program(uint8_t program)
@@ -80,16 +96,19 @@ uint8_t yamaha_fm_section_of_drum(uint8_t note)
     return synth_section_of_drum(note);
 }
 
-void yamaha_fm_set_channel_gain(uint8_t channel, uint8_t percent)
+void yamaha_fm_set_channel_gain(uint8_t channel, int8_t db)
 {
     if (channel < FM_MIDI_CHANNELS) {
-        s_chan_gain[channel] = (percent > SYNTH_MIX_MAX_PERCENT) ? SYNTH_MIX_MAX_PERCENT : percent;
+        if (db < SYNTH_MIX_DB_MIN) db = SYNTH_MIX_DB_MIN;
+        if (db > SYNTH_MIX_DB_MAX) db = SYNTH_MIX_DB_MAX;
+        s_chan_db[channel] = db;
+        s_chan_gain[channel] = db_to_linear(db);
     }
 }
 
-uint8_t yamaha_fm_get_channel_gain(uint8_t channel)
+int8_t yamaha_fm_get_channel_gain(uint8_t channel)
 {
-    return (channel < FM_MIDI_CHANNELS) ? s_chan_gain[channel] : 0U;
+    return (channel < FM_MIDI_CHANNELS) ? s_chan_db[channel] : 0;
 }
 
 void yamaha_fm_set_channel_mute(uint8_t channel, bool mute)
@@ -119,7 +138,8 @@ bool yamaha_fm_get_channel_solo(uint8_t channel)
 void yamaha_fm_reset_channel_mix(void)
 {
     for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
-        s_chan_gain[ch] = 100;
+        s_chan_db[ch] = 0;
+        s_chan_gain[ch] = 1.0f;
     }
     s_chan_mute = 0;
     s_chan_solo = 0;
@@ -128,28 +148,29 @@ void yamaha_fm_reset_channel_mix(void)
 static void reset_section_mix(void)
 {
     for (int i = 0; i < SYNTH_SECT_COUNT; i++) {
-        s_section_gain[i] = 100;
+        s_section_db[i] = 0;
+        s_section_gain[i] = 1.0f;
     }
 }
 
-void yamaha_fm_set_reverb_level(uint8_t percent)
+void yamaha_fm_set_reverb_level(int8_t db)
 {
-    dsp_set_reverb_level(percent);
+    dsp_set_reverb_db(db);
 }
 
-void yamaha_fm_set_chorus_level(uint8_t percent)
+void yamaha_fm_set_chorus_level(int8_t db)
 {
-    dsp_set_chorus_level(percent);
+    dsp_set_chorus_db(db);
 }
 
-uint8_t yamaha_fm_get_reverb_level(void)
+int8_t yamaha_fm_get_reverb_level(void)
 {
-    return dsp_get_reverb_level();
+    return dsp_get_reverb_db();
 }
 
-uint8_t yamaha_fm_get_chorus_level(void)
+int8_t yamaha_fm_get_chorus_level(void)
 {
-    return dsp_get_chorus_level();
+    return dsp_get_chorus_db();
 }
 
 void yamaha_fm_set_tone(int8_t bass_db, int8_t treble_db)
@@ -217,6 +238,7 @@ int8_t yamaha_fm_get_lead_channel(void)
 }
 #define GAIN_Q              8               /* extra fractional bits in the per-sample gain ramp */
 #define GAIN_ONE            (32767 << GAIN_Q)
+#define GAIN_MAX            ((int32_t)(32767.0f * 3.5f) << GAIN_Q)
 #define SILENCE             0.0015f         /* about -56 dB */
 #define VIBRATO_HZ          5.5f
 #define SEMITONE_LINEAR     0.05776f        /* 2^(1/12) - 1, small-signal pitch change per semitone */
@@ -1847,8 +1869,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     float amp = v->amp * v->vel_gain * v->level * ch_gain * (float)GAIN_ONE;
     int32_t gl1 = (int32_t)(amp * c->pan_l);
     int32_t gr1 = (int32_t)(amp * c->pan_r);
-    if (gl1 > GAIN_ONE) gl1 = GAIN_ONE;
-    if (gr1 > GAIN_ONE) gr1 = GAIN_ONE;
+    if (gl1 > GAIN_MAX) gl1 = GAIN_MAX;
+    if (gr1 > GAIN_MAX) gr1 = GAIN_MAX;
     int32_t gl = gl1 >> GAIN_Q;
     int32_t gr = gr1 >> GAIN_Q;
     uint32_t pc = v->pc, pm = v->pm;
@@ -1908,8 +1930,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 pc += inc_c;
                 pc2 += inc_2;
                 pc3 += inc_3;
-                bl[i] += (c1 * lg_a + c2 * lg_b + c3 * lg_c) >> 15;
-                br[i] += (c1 * rg_a + c2 * rg_b + c3 * rg_c) >> 15;
+                bl[i] += (int32_t)(((int64_t)c1 * lg_a + (int64_t)c2 * lg_b + (int64_t)c3 * lg_c) >> 15);
+                br[i] += (int32_t)(((int64_t)c1 * rg_a + (int64_t)c2 * rg_b + (int64_t)c3 * rg_c) >> 15);
             }
             v->pc3 = pc3;
             v->pm3 = pm3;
@@ -1930,8 +1952,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 int32_t c2 = s_sine[(pc2 + (uint32_t)m2 * iu2) >> SINE_SHIFT];
                 pc += inc_c;
                 pc2 += inc_2;
-                bl[i] += (c1 * lg_a + c2 * lg_b) >> 15;
-                br[i] += (c1 * rg_a + c2 * rg_b) >> 15;
+                bl[i] += (int32_t)(((int64_t)c1 * lg_a + (int64_t)c2 * lg_b) >> 15);
+                br[i] += (int32_t)(((int64_t)c1 * rg_a + (int64_t)c2 * rg_b) >> 15);
             }
         }
         v->pc2 = pc2;
@@ -1973,8 +1995,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                     svf_lp += ((cs - svf_lp) * svf_f) >> 15;
                     cs = svf_lp;
                 }
-                bl[i] += (cs * gl) >> 15;
-                br[i] += (cs * gr) >> 15;
+                bl[i] += (int32_t)(((int64_t)cs * gl) >> 15);
+                br[i] += (int32_t)(((int64_t)cs * gr) >> 15);
             }
             v->pc3 = pc3;
             v->pm3 = pm3;
@@ -1994,8 +2016,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                     svf_lp += ((cs - svf_lp) * svf_f) >> 15;
                     cs = svf_lp;
                 }
-                bl[i] += (cs * gl) >> 15;
-                br[i] += (cs * gr) >> 15;
+                bl[i] += (int32_t)(((int64_t)cs * gl) >> 15);
+                br[i] += (int32_t)(((int64_t)cs * gr) >> 15);
             }
         }
         v->pm2 = pt;
@@ -2008,8 +2030,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 pm += inc_m;
                 int32_t cs = s_sine[pc >> SINE_SHIFT] + ((m * mix) >> 15);
                 pc += inc_c;
-                bl[i] += (cs * gl) >> 15;
-                br[i] += (cs * gr) >> 15;
+                bl[i] += (int32_t)(((int64_t)cs * gl) >> 15);
+                br[i] += (int32_t)(((int64_t)cs * gr) >> 15);
             }
         } else {
             for (size_t i = 0; i < len; i++) {
@@ -2018,8 +2040,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 pm += inc_m;
                 int32_t cs = s_sine[pc >> SINE_SHIFT] + ((m * mix) >> 15);
                 pc += inc_c;
-                bl[i] += (cs * gl) >> 15;
-                br[i] += (cs * gr) >> 15;
+                bl[i] += (int32_t)(((int64_t)cs * gl) >> 15);
+                br[i] += (int32_t)(((int64_t)cs * gr) >> 15);
             }
         }
     } else {
@@ -2034,8 +2056,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                     svf_lp += ((cs - svf_lp) * svf_f) >> 15;
                     cs = svf_lp;
                 }
-                bl[i] += (cs * gl) >> 15;
-                br[i] += (cs * gr) >> 15;
+                bl[i] += (int32_t)(((int64_t)cs * gl) >> 15);
+                br[i] += (int32_t)(((int64_t)cs * gr) >> 15);
             }
         } else {
             for (size_t i = 0; i < len; i++) {
@@ -2048,8 +2070,8 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                     svf_lp += ((cs - svf_lp) * svf_f) >> 15;
                     cs = svf_lp;
                 }
-                bl[i] += (cs * gl) >> 15;
-                br[i] += (cs * gr) >> 15;
+                bl[i] += (int32_t)(((int64_t)cs * gl) >> 15);
+                br[i] += (int32_t)(((int64_t)cs * gr) >> 15);
             }
         }
     }
@@ -2160,8 +2182,8 @@ static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
                 pcm_pos += pcm_step;
             }
         }
-        bl[i] += (o * pl) >> 15;
-        br[i] += (o * pr) >> 15;
+        bl[i] += (int32_t)(((int64_t)o * pl) >> 15);
+        br[i] += (int32_t)(((int64_t)o * pr) >> 15);
     }
 
     v->pc = pc;
@@ -2201,7 +2223,7 @@ static void render_chunk(int16_t *out, size_t frames)
         if ((s_chan_mute & (1U << ch)) != 0U || (solo != 0U && (solo & (1U << ch)) == 0U)) {
             target = 0.0f;
         } else {
-            target *= (float)s_chan_gain[ch] * 0.01f;
+            target *= s_chan_gain[ch];
         }
 
         if (ch == s_lead_channel) {
@@ -2261,9 +2283,9 @@ static void render_chunk(int16_t *out, size_t frames)
             dirty |= 1U << ch;
         }
         if (v->is_drum) {
-            render_drum_sub(v, frames, ch_gain[ch] * (float)s_section_gain[v->section] * 0.01f, c, s_bus_l[ch], s_bus_r[ch]);
+            render_drum_sub(v, frames, ch_gain[ch] * s_section_gain[v->section], c, s_bus_l[ch], s_bus_r[ch]);
         } else {
-            render_fm_sub(v, frames, ch_gain[ch] * (float)s_section_gain[v->section] * 0.01f, ch_ratio[ch], lfo, c, s_bus_l[ch], s_bus_r[ch], active_poly);
+            render_fm_sub(v, frames, ch_gain[ch] * s_section_gain[v->section], ch_ratio[ch], lfo, c, s_bus_l[ch], s_bus_r[ch], active_poly);
         }
     }
 

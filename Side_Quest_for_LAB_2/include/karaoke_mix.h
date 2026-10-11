@@ -21,7 +21,8 @@ extern "C" {
 
 #define MIX_SECTIONS        15U     /* equals SYNTH_SECT_COUNT (checked in karaoke_mixer.c) */
 #define MIX_CHANNELS        16U
-#define MIX_PERCENT_MAX     200U
+#define MIX_DB_MIN          (-40)
+#define MIX_DB_MAX          10
 #define MIX_TONE_MAX_DB     6
 
 /** Rows of the mixer screen, top to bottom. */
@@ -45,14 +46,14 @@ typedef enum {
 } mix_item_kind_t;
 
 typedef struct {
-    uint8_t section[MIX_SECTIONS];  /* percent, 100 = unchanged */
-    uint8_t channel[MIX_CHANNELS];  /* percent */
+    int8_t section[MIX_SECTIONS];   /* dB (-40 to +10, default 0 = unity) */
+    int8_t channel[MIX_CHANNELS];   /* dB (-40 to +10, default 0 = unity) */
     uint16_t mute;                  /* bit n = channel n muted */
     uint16_t solo;                  /* bit n = channel n soloed */
-    uint8_t reverb;                 /* percent */
-    uint8_t chorus;                 /* percent */
-    int8_t bass;                    /* dB */
-    int8_t treble;                  /* dB */
+    int8_t reverb;                  /* dB (-40 to +10, default 0 = unity) */
+    int8_t chorus;                  /* dB (-40 to +10, default 0 = unity) */
+    int8_t bass;                    /* dB (-6 to +6, default 0 = flat) */
+    int8_t treble;                  /* dB (-6 to +6, default 0 = flat) */
 } karaoke_mix_t;
 
 void karaoke_mix_defaults(karaoke_mix_t *mix);
@@ -63,14 +64,14 @@ mix_item_kind_t karaoke_mix_item_kind(uint8_t item);
 /** Name of a row that does not depend on the song ("Kick", "Reverb", ..., "Ch 3"). */
 const char *karaoke_mix_item_name(uint8_t item, char *scratch, size_t scratch_size);
 
-/** Value of a row: percent for sections, effects and channels, dB for tone. 0 for actions. */
+/** Value of a row in decibels: -40 to +10 dB for sections, channels, reverb and chorus; -6 to +6 dB for tone. 0 for actions. */
 int karaoke_mix_item_value(const karaoke_mix_t *mix, uint8_t item);
 
 /** Largest and smallest value of a row. */
 int karaoke_mix_item_max(uint8_t item);
 int karaoke_mix_item_min(uint8_t item);
 
-/** Moves a row one step: +1 or -1 (5 % for percent rows, 1 dB for tone rows). Clamps at the ends. */
+/** Moves a row one step (+1 dB or -1 dB). Clamps at the ends. */
 void karaoke_mix_item_adjust(karaoke_mix_t *mix, uint8_t item, int direction);
 
 /** Puts one row back to its default (a channel row also clears its mute and solo). */

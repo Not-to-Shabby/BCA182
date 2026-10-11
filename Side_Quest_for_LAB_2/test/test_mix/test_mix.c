@@ -21,7 +21,7 @@ void test_defaults_leave_every_row_unchanged(void)
     for (uint8_t i = 0; i < MIX_ITEM_COUNT; i++) {
         TEST_ASSERT_FALSE(karaoke_mix_item_changed(&m, i));
     }
-    TEST_ASSERT_EQUAL_INT(100, karaoke_mix_item_value(&m, 0));
+    TEST_ASSERT_EQUAL_INT(0, karaoke_mix_item_value(&m, 0));
     TEST_ASSERT_EQUAL_INT(0, karaoke_mix_item_value(&m, MIX_ITEM_BASS));
 }
 
@@ -52,31 +52,19 @@ void test_every_row_has_a_name(void)
     TEST_ASSERT_EQUAL_STRING("Done", karaoke_mix_item_name(MIX_ITEM_DONE, scratch, sizeof(scratch)));
 }
 
-void test_adjusting_steps_by_five_percent_and_clamps(void)
+void test_adjusting_steps_by_one_db_and_clamps(void)
 {
     karaoke_mix_t m;
     karaoke_mix_defaults(&m);
     karaoke_mix_item_adjust(&m, 3, +1);
-    TEST_ASSERT_EQUAL_UINT8(105, m.section[3]);
+    TEST_ASSERT_EQUAL_INT8(1, m.section[3]);
     karaoke_mix_item_adjust(&m, 3, -1);
     karaoke_mix_item_adjust(&m, 3, -1);
-    TEST_ASSERT_EQUAL_UINT8(95, m.section[3]);
+    TEST_ASSERT_EQUAL_INT8(-1, m.section[3]);
     for (int i = 0; i < 100; i++) karaoke_mix_item_adjust(&m, 3, +1);
-    TEST_ASSERT_EQUAL_UINT8(200, m.section[3]);
+    TEST_ASSERT_EQUAL_INT8(MIX_DB_MAX, m.section[3]);
     for (int i = 0; i < 100; i++) karaoke_mix_item_adjust(&m, 3, -1);
-    TEST_ASSERT_EQUAL_UINT8(0, m.section[3]);
-}
-
-void test_adjusting_lands_on_multiples_of_five_even_from_an_odd_value(void)
-{
-    karaoke_mix_t m;
-    karaoke_mix_defaults(&m);
-    m.section[0] = 103;
-    karaoke_mix_item_adjust(&m, 0, +1);
-    TEST_ASSERT_EQUAL_UINT8(105, m.section[0]);
-    m.section[0] = 103;
-    karaoke_mix_item_adjust(&m, 0, -1);
-    TEST_ASSERT_EQUAL_UINT8(100, m.section[0]);
+    TEST_ASSERT_EQUAL_INT8(MIX_DB_MIN, m.section[3]);
 }
 
 void test_tone_rows_move_one_db_and_stop_at_six(void)
@@ -90,7 +78,7 @@ void test_tone_rows_move_one_db_and_stop_at_six(void)
     for (int i = 0; i < 20; i++) karaoke_mix_item_adjust(&m, MIX_ITEM_BASS, +1);
     TEST_ASSERT_EQUAL_INT8(6, m.bass);
     TEST_ASSERT_EQUAL_INT(-6, karaoke_mix_item_min(MIX_ITEM_TREBLE));
-    TEST_ASSERT_EQUAL_INT(200, karaoke_mix_item_max(MIX_ITEM_REVERB));
+    TEST_ASSERT_EQUAL_INT(MIX_DB_MAX, karaoke_mix_item_max(MIX_ITEM_REVERB));
 }
 
 void test_an_action_row_cannot_be_adjusted(void)
@@ -126,15 +114,15 @@ void test_clicking_a_section_or_effect_row_resets_it(void)
 {
     karaoke_mix_t m;
     karaoke_mix_defaults(&m);
-    m.section[2] = 40;
+    m.section[2] = 4;
     karaoke_mix_item_click(&m, 2);
-    TEST_ASSERT_EQUAL_UINT8(100, m.section[2]);
+    TEST_ASSERT_EQUAL_INT8(0, m.section[2]);
     m.bass = 4;
     karaoke_mix_item_click(&m, MIX_ITEM_BASS);
     TEST_ASSERT_EQUAL_INT8(0, m.bass);
-    m.reverb = 0;
+    m.reverb = -10;
     karaoke_mix_item_click(&m, MIX_ITEM_REVERB);
-    TEST_ASSERT_EQUAL_UINT8(100, m.reverb);
+    TEST_ASSERT_EQUAL_INT8(0, m.reverb);
 }
 
 void test_resetting_a_channel_clears_its_gain_mute_and_solo(void)
@@ -142,11 +130,11 @@ void test_resetting_a_channel_clears_its_gain_mute_and_solo(void)
     karaoke_mix_t m;
     uint8_t item = MIX_ITEM_CHANNEL0 + 1;
     karaoke_mix_defaults(&m);
-    m.channel[1] = 30;
+    m.channel[1] = -5;
     m.mute = 0x0002;
     m.solo = 0x0002;
     karaoke_mix_item_reset(&m, item);
-    TEST_ASSERT_EQUAL_UINT8(100, m.channel[1]);
+    TEST_ASSERT_EQUAL_INT8(0, m.channel[1]);
     TEST_ASSERT_EQUAL_UINT16(0, m.mute);
     TEST_ASSERT_EQUAL_UINT16(0, m.solo);
 }
@@ -156,14 +144,14 @@ void test_a_mix_survives_a_save_and_load(void)
     karaoke_mix_t a, b;
     char text[400];
     karaoke_mix_defaults(&a);
-    a.section[0] = 35;
-    a.section[14] = 175;
-    a.channel[3] = 60;
-    a.channel[15] = 200;
+    a.section[0] = -5;
+    a.section[14] = 10;
+    a.channel[3] = -20;
+    a.channel[15] = 8;
     a.mute = 0x0120;
     a.solo = 0x0004;
-    a.reverb = 0;
-    a.chorus = 150;
+    a.reverb = -15;
+    a.chorus = 6;
     a.bass = -3;
     a.treble = 6;
 
@@ -189,14 +177,14 @@ void test_a_damaged_or_hand_edited_file_is_clamped_not_trusted(void)
     karaoke_mix_t m;
     karaoke_mix_defaults(&m);
     TEST_ASSERT_TRUE(karaoke_mix_parse(&m,
-        "# edited\nSEC=999,-4,50,abc\nCHN=300\nREV=400\nCHO=-9\nBASS=99\nTREBLE=-99\nMUTE=70000\nNONSENSE=1\nSEC\n"));
-    TEST_ASSERT_EQUAL_UINT8(200, m.section[0]);
-    TEST_ASSERT_EQUAL_UINT8(0, m.section[1]);            /* -4 is clamped up to 0 */
-    TEST_ASSERT_EQUAL_UINT8(50, m.section[2]);
-    TEST_ASSERT_EQUAL_UINT8(100, m.section[3]);          /* parsing stopped at "abc": later entries untouched */
-    TEST_ASSERT_EQUAL_UINT8(200, m.channel[0]);
-    TEST_ASSERT_EQUAL_UINT8(200, m.reverb);
-    TEST_ASSERT_EQUAL_UINT8(0, m.chorus);
+        "# edited\nSEC=999,-50,-12,abc\nCHN=300\nREV=400\nCHO=-99\nBASS=99\nTREBLE=-99\nMUTE=70000\nNONSENSE=1\nSEC\n"));
+    TEST_ASSERT_EQUAL_INT8(10, m.section[0]);
+    TEST_ASSERT_EQUAL_INT8(-40, m.section[1]);          /* -50 is clamped up to -40 */
+    TEST_ASSERT_EQUAL_INT8(-12, m.section[2]);
+    TEST_ASSERT_EQUAL_INT8(0, m.section[3]);            /* parsing stopped at "abc": later entries untouched */
+    TEST_ASSERT_EQUAL_INT8(10, m.channel[0]);
+    TEST_ASSERT_EQUAL_INT8(10, m.reverb);
+    TEST_ASSERT_EQUAL_INT8(-40, m.chorus);
     TEST_ASSERT_EQUAL_INT8(6, m.bass);
     TEST_ASSERT_EQUAL_INT8(-6, m.treble);
     TEST_ASSERT_EQUAL_UINT16(0xFFFF, m.mute);
@@ -217,8 +205,8 @@ void test_a_partial_file_keeps_the_rest_of_the_mix(void)
     karaoke_mix_t m;
     karaoke_mix_defaults(&m);
     m.bass = 2;
-    TEST_ASSERT_TRUE(karaoke_mix_parse(&m, "REV=30\r\n"));
-    TEST_ASSERT_EQUAL_UINT8(30, m.reverb);
+    TEST_ASSERT_TRUE(karaoke_mix_parse(&m, "REV=-8\r\n"));
+    TEST_ASSERT_EQUAL_INT8(-8, m.reverb);
     TEST_ASSERT_EQUAL_INT8(2, m.bass);
 }
 
@@ -312,8 +300,7 @@ int main(void)
     RUN_TEST(test_defaults_leave_every_row_unchanged);
     RUN_TEST(test_row_numbers_match_the_screen_layout);
     RUN_TEST(test_every_row_has_a_name);
-    RUN_TEST(test_adjusting_steps_by_five_percent_and_clamps);
-    RUN_TEST(test_adjusting_lands_on_multiples_of_five_even_from_an_odd_value);
+    RUN_TEST(test_adjusting_steps_by_one_db_and_clamps);
     RUN_TEST(test_tone_rows_move_one_db_and_stop_at_six);
     RUN_TEST(test_an_action_row_cannot_be_adjusted);
     RUN_TEST(test_clicking_a_channel_cycles_normal_muted_soloed);

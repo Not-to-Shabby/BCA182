@@ -140,6 +140,18 @@ typedef struct {
     uint32_t bytes;             /**< bytes those reads returned */
     uint32_t max_read_us;       /**< slowest single read */
     uint32_t seq_stack_unused;  /**< bytes never touched on the sequencer thread's stack */
+    uint32_t seq_wall_us;       /**< real time the sequencer thread was asked to cover while playing */
+    uint32_t seq_credited_us;   /**< song time it was actually given; below seq_wall_us = slow tempo */
+    uint32_t seq_capped;        /**< wake-ups that were held up beyond the catch-up limit */
+    uint32_t seq_gaps_over_30ms;/**< wake-ups later than 30 ms (nominal 10 ms) */
+    uint32_t seq_max_gap_us;    /**< longest time between two wake-ups */
+    uint32_t seq_max_tick_us;   /**< longest time one tick spent processing events and reading the card */
+    uint32_t seq_max_tick_at_ms;/**< song position of that longest tick */
+    uint32_t reads_over_20ms;   /**< card reads that took longer than 20 ms */
+    uint32_t reads_over_100ms;  /**< card reads that took longer than 100 ms */
+    uint32_t slow_ticks;        /**< ticks that took longer than 50 ms in total */
+    uint32_t slow_tick_us;      /**< time those ticks took */
+    uint32_t slow_tick_read_us; /**< of which spent waiting for the card */
 } midi_stream_stats_t;
 
 void midi_karaoke_get_stream_stats(midi_stream_stats_t *out);

@@ -334,7 +334,7 @@ void test_polyphony_never_clips_or_crashes(void)
 
 void test_stealing_prefers_dying_notes_over_held_ones(void)
 {
-    for (int i = 0; i < FM_MAX_VOICES; i++) {
+    for (int i = 0; i < SYNTH_SOFT_VOICE_CAP; i++) {
         play(0, 16, (uint8_t)(40 + i), 100);
     }
     render_ms(100);
@@ -344,13 +344,23 @@ void test_stealing_prefers_dying_notes_over_held_ones(void)
     render_ms(60);
     TEST_ASSERT_EQUAL_UINT32(1, yamaha_fm_get_steal_count());
     render_ms(300);
-    for (int i = 1; i < FM_MAX_VOICES; i++) {
+    for (int i = 1; i < SYNTH_SOFT_VOICE_CAP; i++) {
         bool alive = false;
         for (int v = 0; v < FM_MAX_VOICES; v++) {
             alive |= s_voices[v].active && s_voices[v].channel == 0 && s_voices[v].note == 40 + i;
         }
         TEST_ASSERT_TRUE_MESSAGE(alive, "a held note was stolen while a released one was available");
     }
+}
+
+void test_held_notes_never_push_the_voice_count_past_the_soft_cap(void)
+{
+    for (int i = 0; i < FM_MAX_VOICES; i++) {
+        play((uint8_t)(i % 8), 16, (uint8_t)(30 + i), 100);
+    }
+    render_ms(200);
+    TEST_ASSERT_TRUE(yamaha_fm_get_active_voice_count() <= SYNTH_SOFT_VOICE_CAP);
+    TEST_ASSERT_TRUE(yamaha_fm_get_steal_count() >= (uint32_t)(FM_MAX_VOICES - SYNTH_SOFT_VOICE_CAP));
 }
 
 void test_all_notes_off_goes_silent_and_frees_the_voices(void)
@@ -1055,6 +1065,7 @@ int main(void)
     RUN_TEST(test_drum_hits_are_noisy_and_tones_are_not);
     RUN_TEST(test_polyphony_never_clips_or_crashes);
     RUN_TEST(test_stealing_prefers_dying_notes_over_held_ones);
+    RUN_TEST(test_held_notes_never_push_the_voice_count_past_the_soft_cap);
     RUN_TEST(test_all_notes_off_goes_silent_and_frees_the_voices);
     RUN_TEST(test_controller_reset_clears_pedal_expression_and_bend);
     RUN_TEST(test_channel_notes_off_only_touches_that_channel);

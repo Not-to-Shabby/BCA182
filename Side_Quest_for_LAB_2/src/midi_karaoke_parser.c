@@ -98,8 +98,16 @@ static struct {
     struct k_mutex lock;
 } s_midi;
 
+/* Time the current sequencer tick has spent waiting for the card. */
+static uint32_t s_tick_read_us;
+
+/* Microseconds not yet added to elapsed_ms. */
+static uint32_t s_elapsed_rem_us;
+
 #define SEQ_PERIOD_MS       10
-#define SEQ_MAX_CATCHUP_US  100000U
+/* Longest stall whose song time is still made up. Anything beyond it is dropped, which slows the
+ * song down, so it must be longer than any stall the audio thread or an SD restart can cause. */
+#define SEQ_MAX_CATCHUP_US  1500000U
 #define SEQ_STACK_BYTES     2560    /* a failed read restarts the SD driver on this thread */
 
 static struct k_timer s_midi_timer;
@@ -131,10 +139,42 @@ static void sequencer_thread(void *p1, void *p2, void *p3)
         int64_t now = k_uptime_ticks();
         uint64_t us = k_ticks_to_us_floor64(now - s_last_tick_ticks);
         s_last_tick_ticks = now;
+
+        bool counting = s_midi.is_playing && !s_midi.is_paused;
+        if (counting) {
+            s_midi.stats.seq_wall_us += (uint32_t)us;
+            if (us > s_midi.stats.seq_max_gap_us) {
+                s_midi.stats.seq_max_gap_us = (uint32_t)us;
+            }
+            if (us > 30000U) {
+                s_midi.stats.seq_gaps_over_30ms++;
+            }
+        }
         if (us > SEQ_MAX_CATCHUP_US) {
             us = SEQ_MAX_CATCHUP_US;
+            if (counting) {
+                s_midi.stats.seq_capped++;
+            }
         }
+        if (counting) {
+            s_midi.stats.seq_credited_us += (uint32_t)us;
+        }
+
+        uint32_t t0 = k_cycle_get_32();
+        s_tick_read_us = 0;
         midi_karaoke_tick((uint32_t)us);
+        if (counting) {
+            uint32_t took = k_cyc_to_us_floor32(k_cycle_get_32() - t0);
+            if (took > 50000U) {
+                s_midi.stats.slow_ticks++;
+                s_midi.stats.slow_tick_us += took;
+                s_midi.stats.slow_tick_read_us += s_tick_read_us;
+            }
+            if (took > s_midi.stats.seq_max_tick_us) {
+                s_midi.stats.seq_max_tick_us = took;
+                s_midi.stats.seq_max_tick_at_ms = s_midi.elapsed_ms;
+            }
+        }
     }
 }
 K_THREAD_DEFINE(midi_seq_task, SEQ_STACK_BYTES, sequencer_thread, NULL, NULL, NULL, 2, 0, 0);
@@ -177,8 +217,15 @@ static bool source_read(uint32_t off, uint8_t *dst, uint32_t len)
 
     s_midi.stats.reads++;
     s_midi.stats.bytes += len;
+    s_tick_read_us += us;
     if (us > s_midi.stats.max_read_us) {
         s_midi.stats.max_read_us = us;
+    }
+    if (us > 20000U) {
+        s_midi.stats.reads_over_20ms++;
+    }
+    if (us > 100000U) {
+        s_midi.stats.reads_over_100ms++;
     }
     return ok;
 }
@@ -809,6 +856,7 @@ bool midi_karaoke_load(const midi_source_t *src)
     s_midi.pend_head = 0;
     s_midi.pend_count = 0;
     s_midi.elapsed_ms = 0;
+    s_elapsed_rem_us = 0;
     s_midi.tempo_us = 500000; /* 120 BPM */
 
     s_midi.lyric_head = 0;
@@ -991,7 +1039,9 @@ void midi_karaoke_tick(uint32_t elapsed_us)
     }
 
     s_midi.elapsed_us_accum += elapsed_us;
-    s_midi.elapsed_ms += elapsed_us / 1000;
+    s_elapsed_rem_us += elapsed_us;         /* keep the sub-millisecond part, or the clock runs slow */
+    s_midi.elapsed_ms += s_elapsed_rem_us / 1000U;
+    s_elapsed_rem_us %= 1000U;
 
     /* Song time now: whole ticks played plus the part of the next one that has passed. */
     if (s_midi.synth.song_clock) {

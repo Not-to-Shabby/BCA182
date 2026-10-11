@@ -667,19 +667,33 @@ static void voice_fast_release(fm_voice_t *v)
     v->pcm_k = (v->pcm_k < s_fast_rel_k) ? v->pcm_k : s_fast_rel_k;
 }
 
+/* Above this many sounding voices a new note takes one over instead of using a free slot. At 63
+ * voices the render already costs 98% of an audio block and at 70 it overruns (105%); the audio
+ * thread outranks the sequencer, so an overrun starves the sequencer and the song slows down. */
+#ifndef SYNTH_SOFT_VOICE_CAP
+#define SYNTH_SOFT_VOICE_CAP    54
+#endif
+
 static fm_voice_t *alloc_voice(void)
 {
     int best = -1;
     float best_amp = 1e9f;
+    int free_slot = -1;
+    int busy = 0;
 
     for (int i = 0; i < FM_MAX_VOICES; i++) {
-        if (!s_voices[i].active) {
-            return &s_voices[i];
+        if (s_voices[i].active) {
+            busy++;
+        } else if (free_slot < 0) {
+            free_slot = i;
         }
+    }
+    if (free_slot >= 0 && busy < SYNTH_SOFT_VOICE_CAP) {
+        return &s_voices[free_slot];
     }
     /* Everything is busy: take the quietest voice that is already dying away, otherwise the oldest. */
     for (int i = 0; i < FM_MAX_VOICES; i++) {
-        if (s_voices[i].state == ST_RELEASE && s_voices[i].amp < best_amp) {
+        if (s_voices[i].active && s_voices[i].state == ST_RELEASE && s_voices[i].amp < best_amp) {
             best_amp = s_voices[i].amp;
             best = i;
         }
@@ -687,7 +701,7 @@ static fm_voice_t *alloc_voice(void)
     if (best < 0) {
         uint32_t oldest = 0xFFFFFFFFU;
         for (int i = 0; i < FM_MAX_VOICES; i++) {
-            if (s_voices[i].age < oldest) {
+            if (s_voices[i].active && s_voices[i].age < oldest) {
                 oldest = s_voices[i].age;
                 best = i;
             }

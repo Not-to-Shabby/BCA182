@@ -302,6 +302,30 @@ void test_a_source_that_fails_during_the_load_scans_is_refused(void)
     TEST_ASSERT_EQUAL_UINT16(0, st.num_tracks);
 }
 
+void test_the_elapsed_clock_keeps_the_sub_millisecond_part_of_every_tick(void)
+{
+    begin_file(1);
+    uint32_t t0 = begin_track();
+    put_vlq(PPQN * 40);
+    put(0x90); put(60); put(90);
+    end_track(t0);
+
+    midi_karaoke_init(&CB);
+    TEST_ASSERT_TRUE(midi_karaoke_load_memory(g_smf, g_len));
+    midi_karaoke_play();
+    for (int i = 0; i < 2000; i++) {
+        midi_karaoke_tick(9800);                 /* 19.6 s in ticks that are not whole milliseconds */
+    }
+    midi_player_status_t st;
+    midi_karaoke_get_status(&st);
+    TEST_ASSERT_UINT32_WITHIN(2, 19600, st.elapsed_ms);
+}
+
+void test_a_long_stall_is_made_up_by_the_catch_up_limit(void)
+{
+    TEST_ASSERT_TRUE(SEQ_MAX_CATCHUP_US >= 1000000U);   /* longer than any stall seen on the board */
+}
+
 void test_loading_a_good_song_after_a_failed_one_plays_normally(void)
 {
     build_busy_song(3, 300);
@@ -488,6 +512,8 @@ int main(void)
     RUN_TEST(test_a_failed_source_ends_the_song_early_not_at_its_natural_end);
     RUN_TEST(test_a_source_that_fails_during_the_load_scans_is_refused);
     RUN_TEST(test_loading_a_good_song_after_a_failed_one_plays_normally);
+    RUN_TEST(test_the_elapsed_clock_keeps_the_sub_millisecond_part_of_every_tick);
+    RUN_TEST(test_a_long_stall_is_made_up_by_the_catch_up_limit);
     RUN_TEST(test_a_source_that_fails_at_once_is_refused_cleanly);
     RUN_TEST(test_truncated_file_plays_what_is_there);
     RUN_TEST(test_lyrics_and_melody_detection_work_when_streamed);

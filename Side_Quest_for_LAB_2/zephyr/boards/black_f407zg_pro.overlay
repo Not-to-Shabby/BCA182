@@ -55,15 +55,15 @@
 	status = "okay";
 };
 
-/* Overclock STM32F407 to 230 MHz:
- * HSE = 8 MHz / M(8) = 1 MHz * N(460) = 460 MHz VCO
- * SYSCLK = 460 MHz / P(2) = 230 MHz
- * PLL48CK = 460 MHz / Q(10) = 46.0 MHz (SDIO & RNG)
- * AHB = 230 MHz, APB1 = 28.75 MHz (<= 42 MHz max), APB2 = 57.5 MHz (<= 84 MHz max)
+/* Overclock STM32F407 to 240 MHz:
+ * HSE = 8 MHz / M(8) = 1 MHz * N(480) = 480 MHz VCO
+ * SYSCLK = 480 MHz / P(2) = 240 MHz
+ * PLL48CK = 480 MHz / Q(10) = 48.0 MHz (SDIO & RNG)
+ * AHB = 240 MHz, APB1 = 30 MHz (<= 42 MHz max), APB2 = 60 MHz (<= 84 MHz max)
  */
 &pll {
 	div-m = <8>;
-	mul-n = <460>;
+	mul-n = <480>;
 	div-p = <2>;
 	div-q = <10>;
 	clocks = <&clk_hse>;
@@ -72,7 +72,7 @@
 
 &rcc {
 	clocks = <&pll>;
-	clock-frequency = <DT_FREQ_M(230)>;
+	clock-frequency = <DT_FREQ_M(240)>;
 	ahb-prescaler = <1>;
 	apb1-prescaler = <8>;
 	apb2-prescaler = <4>;

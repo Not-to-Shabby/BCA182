@@ -365,6 +365,17 @@ static void audio_producer_thread(void *a, void *b, void *c)
                 s_diag.render_cycles_last = spent;
                 if (spent > s_diag.render_cycles_max) s_diag.render_cycles_max = spent;
                 s_diag.render_cycles_avg = (s_diag.render_cycles_avg * 15U + spent) / 16U;
+                s_diag.render_blocks++;
+                s_diag.render_cycles_sum += spent;
+                if (s_diag.render_budget_cycles == 0U) {
+                    s_diag.render_budget_cycles = (uint32_t)(((uint64_t)SystemCoreClock *
+                                                              (AUDIO_HALF_WORDS / 2U)) / AUDIO_SAMPLE_RATE);
+                }
+                if (spent > s_diag.render_budget_cycles) {
+                    s_diag.render_over_100++;
+                } else if (spent > s_diag.render_budget_cycles / 5U * 4U) {
+                    s_diag.render_over_80++;
+                }
             } else {
                 memset(buf, 0, AUDIO_HALF_WORDS * sizeof(int16_t));
             }

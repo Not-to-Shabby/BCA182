@@ -49,6 +49,11 @@ typedef struct {
     uint32_t render_cycles_last;    /* CPU cycles the PCM callback took for one block, interrupts included */
     uint32_t render_cycles_max;
     uint32_t render_cycles_avg;     /* running average */
+    uint32_t render_blocks;         /* blocks rendered since the last reset of the bench counters */
+    uint64_t render_cycles_sum;     /* their total cost, for a true average */
+    uint32_t render_over_80;        /* blocks that took more than 80% of the time they have */
+    uint32_t render_over_100;       /* blocks that took longer than the time they have (a dropout) */
+    uint32_t render_budget_cycles;  /* cycles available per block at the current clock */
 } audio_diagnostics_t;
 
 /**

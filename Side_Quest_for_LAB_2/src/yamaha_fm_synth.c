@@ -1166,11 +1166,11 @@ static void apply_cc(uint8_t channel, uint8_t control, uint8_t value)
  * over from the singer in a break, are handled. Per channel it keeps running averages of how
  * often a note starts alone on its channel (a line, not a chord) and as the highest sounding
  * note, plus the register and the kind of instrument. The channel that follows the lyrics gets
- * a strong bonus so a song with lyrics keeps its singer; the weights come from a fit against 700
- * library songs (89 % agreement without lyrics, 98 % with them). */
+ * a strong bonus so a song with lyrics keeps its singer; the weights come from a fit against 450
+ * library songs (93 % agreement without lyrics, 97 % with them, on songs the fit did not see). */
 #define LEAD_MIN_NOTES      4U
 #define LEAD_ACTIVE_SEC     4U          /* a channel silent for longer is not a candidate */
-#define LEAD_SWITCH_MARGIN  0.30f
+#define LEAD_SWITCH_MARGIN  0.15f
 #define LEAD_DWELL_SEC      1U
 #define LEAD_EMA            0.15f
 
@@ -1227,15 +1227,19 @@ static float lead_score(int ch, bool lyrics)
     float pitch_ok = (p >= 55.0f && p <= 84.0f) ? 1.0f
                    : (((p >= 48.0f && p < 55.0f) || (p > 84.0f && p <= 91.0f)) ? 0.5f : 0.0f);
     uint8_t prog = s_channels[ch].program;
+    /* Most songs here sing the tune on a flute, clarinet, oboe, sax or a voice patch, so those
+     * count for the lead; organs and string sections mostly play chords. */
     float bass = (prog >= 32U && prog < 40U) ? 1.0f : 0.0f;
     float padfx = ((prog >= 88U && prog < 104U) || prog >= 112U || (prog >= 8U && prog < 16U)) ? 1.0f : 0.0f;
-    float comp = ((prog >= 16U && prog < 24U) || (prog >= 48U && prog < 56U)) ? 1.0f : 0.0f;
+    float comp = ((prog >= 16U && prog < 21U) || (prog >= 48U && prog < 52U)) ? 1.0f : 0.0f;
+    float leadlike = ((prog >= 21U && prog < 24U) || (prog >= 52U && prog <= 55U) || (prog >= 64U && prog <= 87U)) ? 1.0f : 0.0f;
 
     if (lyrics) {
-        return s_lead_mono[ch] - 0.23f * s_lead_top[ch] + 0.21f * pitch_ok + 0.16f * bass
-               - 0.14f * padfx - 0.37f * comp + ((ch == s_melody_channel) ? 1.98f : 0.0f);
+        return 0.49f * s_lead_mono[ch] - 0.38f * s_lead_top[ch] + 0.27f * pitch_ok - 1.0f * bass
+               - 0.46f * padfx + 0.20f * comp + 0.16f * leadlike + ((ch == s_melody_channel) ? 1.0f : 0.0f);
     }
-    return s_lead_mono[ch] + 0.34f * pitch_ok - 0.99f * bass - 0.53f * padfx - 0.16f * comp;
+    return 0.50f * s_lead_mono[ch] + 0.13f * s_lead_top[ch] + 0.26f * pitch_ok - 0.23f * bass
+           - 0.03f * padfx - 1.0f * comp + 0.34f * leadlike;
 }
 
 static bool lead_live(int ch, uint32_t active_frames)

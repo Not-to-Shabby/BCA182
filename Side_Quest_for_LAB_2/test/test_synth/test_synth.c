@@ -1163,6 +1163,28 @@ void test_sound_bank_switching_toggles_between_opl4_and_sc55_samples(void)
     TEST_ASSERT_EQUAL(SYNTH_BANK_YAMAHA_OPL4, yamaha_fm_get_sound_bank());
 }
 
+void test_channel_activity_reporting_for_led_matrix(void)
+{
+    setUp();
+    yamaha_fm_program_change(0, 73); /* Flute */
+    yamaha_fm_program_change(1, 29); /* Overdriven Guitar */
+    play(0, 73, 60, 100);
+    play(1, 29, 52, 90);
+    yamaha_fm_note_on(9, 36, 110);   /* Kick Drum */
+    render_ms(20);
+
+    uint8_t progs[16];
+    uint8_t lvls[16];
+    uint8_t drum = 0;
+    yamaha_fm_get_channel_activity(progs, lvls, &drum);
+
+    TEST_ASSERT_EQUAL_UINT8(73, progs[0]);
+    TEST_ASSERT_EQUAL_UINT8(29, progs[1]);
+    TEST_ASSERT_TRUE(lvls[0] > 20);
+    TEST_ASSERT_TRUE(lvls[1] > 20);
+    TEST_ASSERT_EQUAL_UINT8(36, drum);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1226,5 +1248,6 @@ int main(void)
     RUN_TEST(test_hybrid_pcm_attack_attaches_to_piano_and_acoustic_guitar);
     RUN_TEST(test_hybrid_attack_toggle_disables_pcm_transients);
     RUN_TEST(test_sound_bank_switching_toggles_between_opl4_and_sc55_samples);
+    RUN_TEST(test_channel_activity_reporting_for_led_matrix);
     return UNITY_END();
 }

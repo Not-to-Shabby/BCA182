@@ -2021,6 +2021,44 @@ const midi_synth_callbacks_t *yamaha_fm_get_callbacks(void)
     return &s_synth_callbacks;
 }
 
+void yamaha_fm_get_channel_activity(uint8_t out_programs[16], uint8_t out_levels[16], uint8_t *out_drum_note)
+{
+    float ch_max[16] = {0.0f};
+    float drum_max = 0.0f;
+    uint8_t top_drum = 36;
+
+    for (int ch = 0; ch < 16; ch++) {
+        out_programs[ch] = s_channels[ch].program;
+    }
+
+    for (int i = 0; i < FM_MAX_VOICES; i++) {
+        const fm_voice_t *v = &s_voices[i];
+        if (!v->active) {
+            continue;
+        }
+        uint8_t ch = v->channel & 15U;
+        float lvl = v->amp * v->vel_gain;
+        if (lvl > ch_max[ch]) {
+            ch_max[ch] = lvl;
+        }
+        if (v->is_drum && lvl > drum_max) {
+            drum_max = lvl;
+            top_drum = v->note;
+        }
+    }
+
+    for (int ch = 0; ch < 16; ch++) {
+        int val = (int)(ch_max[ch] * 255.0f);
+        if (val > 255) val = 255;
+        if (val < 0)   val = 0;
+        out_levels[ch] = (uint8_t)val;
+    }
+
+    if (out_drum_note != NULL) {
+        *out_drum_note = top_drum;
+    }
+}
+
 #ifdef SYNTH_COST_BENCH
 #include "synth_cost_bench.inc"
 #endif

@@ -237,6 +237,12 @@ uint32_t yamaha_fm_get_audible_steal_count(void);
  */
 uint32_t yamaha_fm_get_dropped_events(void);
 
+/**
+ * @brief Retrieve active GM program (0-127) and envelope level (0-255) for all 16 MIDI channels,
+ *        plus the loudest active drum note on Channel 10 (for RGB LED Matrix visualization).
+ */
+void yamaha_fm_get_channel_activity(uint8_t out_programs[16], uint8_t out_levels[16], uint8_t *out_drum_note);
+
 #ifdef __cplusplus
 }
 #endif

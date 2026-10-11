@@ -15,6 +15,7 @@
 #include "karaoke_settings.h"
 #include "sd_card_reader.h"
 #include "random_play.h"
+#include "led_matrix.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
@@ -234,12 +235,20 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
             midi_karaoke_get_status(&status);
 
             const audio_diagnostics_t *diag = audio_get_diagnostics();
+            int16_t pk_l = diag->peak_left;
+            int16_t pk_r = diag->peak_right;
             uint8_t voices = yamaha_fm_get_active_voice_count();
             uint8_t vol = audio_get_volume();
 
-            karaoke_ui_update_player(&status, diag->peak_left, diag->peak_right, voices, vol);
+            karaoke_ui_update_player(&status, pk_l, pk_r, voices, vol);
+            led_matrix_update_instruments(midi_karaoke_get_melody_channel(), pk_l, pk_r);
             audio_reset_peak_meters();
             update_status_led(status.is_playing && !status.is_paused);
+        }
+
+        if (mode != UI_VIEW_PLAYING) {
+            const audio_diagnostics_t *diag = audio_get_diagnostics();
+            led_matrix_update_instruments(midi_karaoke_get_melody_channel(), diag->peak_left, diag->peak_right);
         }
 
         k_msleep(UI_THREAD_PERIOD_MS);
@@ -582,6 +591,7 @@ int main(void)
     memset(s_app.num_digits, 0, sizeof(s_app.num_digits));
 
     init_board_peripherals();
+    led_matrix_init();
 
     /* 1. Initialize ST7789 IPS LCD (FSMC parallel bus) */
     karaoke_ui_init();

@@ -15,6 +15,11 @@ An embedded, standalone **MIDI Karaoke Player** with real-time **Yamaha FM Synth
 - **Karaoke Library:** Compatible with the 47,998 song database extracted from SongHub (`D:\idx\shub_extracted`).
 - **Synchronized Lyrics:** Multi-track SMF sequencer parses Meta Event `0x05` (Lyric) and `0x01` (Text) with syllabic delta-time synchronization. `[Music / Intro]` displays only before the first sung verse, with smooth verse transitions thereafter.
 - **Audio Output:** Everest Semiconductor ES8388 Stereo Codec on I2C2 and I2S3 driving the 3.5mm Headphone Jack (CN3) via circular DMA1 Stream 5 double-buffering, plus simultaneous 12-bit analog DAC output on pin `PA4`.
+- **Onboard 19-LED SK6805 RGB LED Matrix Instrument Visualizer:** Features real-time visual feedback on the board's 19 addressable RGB LEDs driven via `PA7` (serial data) with active-low power enable on `PF2`:
+  - **LEDs 0..15 (16 MIDI Channels):** Color dynamically reflects the General MIDI instrument family assigned to that channel (Gold for Pianos, Cyan for Chromatic, Amber for Organs, Green for Guitars, Crimson Fire for Overdriven/Distortion Guitars, Royal Blue for Basses, Violet for Strings, Brass Yellow for Brass, Mint for Woodwinds, Magenta for Synths). Brightness tracks active note amplitude and velocity in real time.
+  - **Channel 10 (Drums):** Flashes **Red** on Kick, **Warm White** on Snare/Clap, **Electric Cyan** on Hi-Hats, **Gold** on Cymbals, and **Magenta** on Toms.
+  - **LED 16 (Lead Melody Indicator):** Pulses in glowing Hot White/Magenta in sync with the detected singing melody track.
+  - **LEDs 17 & 18 (Stereo VU Peak Meters):** Dual Left and Right peak level meters smoothly shifting from Green $\rightarrow$ Yellow $\rightarrow$ Red.
 - **Visual Display:** 240x240 ST7789 IPS LCD driven via STM32F407 FSMC (8080 8-bit parallel bus) featuring:
   - Real-time rolling lyric window (Previous line, Active singing line with yellow box, and verse transitions).
   - Dual stereo peak VU meters (Green $\rightarrow$ Yellow $\rightarrow$ Red).

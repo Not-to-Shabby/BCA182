@@ -56,6 +56,7 @@ const char *karaoke_mix_item_name(uint8_t item, char *scratch, size_t scratch_si
     case MIX_ITEM_TREBLE: return "Treble tone";
     case MIX_ITEM_RESET: return "Reset this song";
     case MIX_ITEM_SAVE_ALL: return "Set as default";
+    case MIX_ITEM_DONE: return "Done";
     default: break;
     }
     if (karaoke_mix_item_kind(item) == MIX_KIND_CHANNEL && scratch != NULL && scratch_size > 0U) {

@@ -454,7 +454,11 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 k_mutex_lock(&s_app.lock, K_FOREVER);
                 if (s_app.ui_mode == UI_VIEW_MIXER) {
                     /* Mute > Solo > Normal on a channel, reset on a value row, or the action rows */
-                    karaoke_mixer_click(s_app.mixer_cursor);
+                    if (s_app.mixer_cursor == MIX_ITEM_DONE) {
+                        close_mixer();
+                    } else {
+                        karaoke_mixer_click(s_app.mixer_cursor);
+                    }
                 } else if (s_app.ui_mode != UI_VIEW_SETTINGS) {
                     s_app.ui_mode = UI_VIEW_SETTINGS;
                     s_app.settings_cursor = 0;
@@ -508,7 +512,11 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                             karaoke_ui_set_view(UI_VIEW_PLAYING);
                         }
                     } else if (s_app.ui_mode == UI_VIEW_MIXER) {
-                        karaoke_mixer_click(s_app.mixer_cursor);
+                        if (s_app.mixer_cursor == MIX_ITEM_DONE) {
+                            close_mixer();
+                        } else {
+                            karaoke_mixer_click(s_app.mixer_cursor);
+                        }
                     } else if (s_app.ui_mode == UI_VIEW_BROWSER) {
                         uint32_t total = karaoke_catalog_get_total_songs();
                         uint32_t sel = s_app.browser_page * 5 + s_app.browser_cursor;
@@ -582,10 +590,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 uint8_t cur_mel  = cfg->melody_gain;
 
                 if (up && !last_up) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 5) % 6;
+                    s_app.settings_cursor = (s_app.settings_cursor + 6) % 7;
                 }
                 if (dn && !last_dn) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 6;
+                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 7;
                 }
 
                 if (lt && !last_lt) {
@@ -615,6 +623,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                         karaoke_settings_set_sound_bank(cfg->sound_bank ? 0 : 1);
                     } else if (s_app.settings_cursor == 5) {
                         open_mixer();
+                    } else if (s_app.settings_cursor == 6) {
+                        karaoke_settings_save();
+                        s_app.ui_mode = UI_VIEW_PLAYING;
+                        karaoke_ui_set_view(UI_VIEW_PLAYING);
                     }
                 }
             } else if (mode == UI_VIEW_MIXER) {
@@ -641,7 +653,11 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     karaoke_mixer_adjust(s_app.mixer_cursor, -1);
                 }
                 if (rt_go) {
-                    karaoke_mixer_adjust(s_app.mixer_cursor, +1);
+                    if (s_app.mixer_cursor == MIX_ITEM_DONE) {
+                        close_mixer();
+                    } else {
+                        karaoke_mixer_adjust(s_app.mixer_cursor, +1);
+                    }
                 }
             } else if (mode == UI_VIEW_BROWSER) {
                 /* Browser Mode */

@@ -33,7 +33,8 @@ extern "C" {
 #define MIX_ITEM_CHANNEL0   (MIX_SECTIONS + 4U)         /* 16 MIDI channels */
 #define MIX_ITEM_RESET      (MIX_ITEM_CHANNEL0 + MIX_CHANNELS)
 #define MIX_ITEM_SAVE_ALL   (MIX_ITEM_RESET + 1U)
-#define MIX_ITEM_COUNT      (MIX_ITEM_SAVE_ALL + 1U)
+#define MIX_ITEM_DONE       (MIX_ITEM_SAVE_ALL + 1U)    /* saves and closes the mixer */
+#define MIX_ITEM_COUNT      (MIX_ITEM_DONE + 1U)
 
 typedef enum {
     MIX_KIND_SECTION,

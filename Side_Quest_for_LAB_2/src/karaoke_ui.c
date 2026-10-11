@@ -451,7 +451,7 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
     lcd_fill_rect(0, 26, 239, 40, LCD_COLOR_BLACK);
     lcd_show_string(14, 26, "UP/DN: Select  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
 
-    /* 3. Setting rows (y: 42 to 190), 25 px apart */
+    /* 3. Setting rows (y: 42 to 208), 24 px apart */
     static const char *labels[] = {
         "Master Volume",
         "Instrument Vol",
@@ -485,11 +485,11 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
             lcd_fill_rect(15 + gw + 1, y + 18, 195, y + 20, LCD_COLOR_BLACK);
         }
 
-        y += 25;
+        y += 24;
     }
 
-    /* 4. Row 5: sound card bank selector, row 6: opens the mixer */
-    for (uint8_t r = 4; r < 6; r++) {
+    /* 4. Row 5: sound card bank, row 6: opens the mixer, row 7: Done */
+    for (uint8_t r = 4; r < 7; r++) {
         bool sel = (cursor == r);
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
@@ -499,21 +499,22 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
         lcd_draw_rect(8, y, 231, y + 22, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
         if (r == 4) {
             snprintf(buf, sizeof(buf), "Sound Card: <%s>", (bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
+        } else if (r == 5) {
+            snprintf(buf, sizeof(buf), "Mixer: sections/channels >");
         } else {
-            snprintf(buf, sizeof(buf), "Mixer: sections & channels >");
+            snprintf(buf, sizeof(buf), "Done  (save & return) >");
+            fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN;
         }
         lcd_show_string(14, y + 3, buf, fg, bg);
-        y += 25;
+        y += 24;
     }
 
-    /* 5. Status line */
-    lcd_fill_rect(8, 194, 231, 206, LCD_COLOR_BLACK);
-    lcd_show_string(14, 192, "* Auto-saved to SD & NV-RAM", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
-
-    /* 6. Footer */
-    lcd_fill_rect(0, 208, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 208, (cursor == 5) ? "RIGHT: Open the mixer" : "UP+DN together: Save & Exit", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 224, "Survives Reset & Shutdown", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+    /* 5. Footer: what RIGHT does on the selected row */
+    const char *hint = "UP+DN together: Save & Exit";
+    if (cursor == 5) hint = "RIGHT: Open the mixer";
+    if (cursor == 6) hint = "RIGHT: Save & return";
+    lcd_fill_rect(0, 214, 239, 239, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 220, hint, LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
@@ -632,6 +633,9 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
         lcd_fill_rect(0, y, 239, (uint16_t)(y + MIX_ROW_H - 1U), bg);
         if (kind == MIX_KIND_ACTION) {
             lcd_show_string(10, y + 2, name, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN, bg);
+            if (item == MIX_ITEM_DONE) {
+                lcd_show_string(214, y + 2, ">", sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN, bg);
+            }
             continue;
         }
         lcd_show_string(10, y, name, fg, bg);
@@ -663,11 +667,13 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
     uint8_t foot = (uint8_t)(karaoke_mix_item_kind(cursor));
     if (cursor == MIX_ITEM_RESET) foot = 10;
     if (cursor == MIX_ITEM_SAVE_ALL) foot = 11;
+    if (cursor == MIX_ITEM_DONE) foot = 12;
     if (s_mix_last_foot != foot) {
         const char *line1 = "L+R together: Reset row";
         if (foot == MIX_KIND_CHANNEL) line1 = "L+R together: Mute / Solo";
         if (foot == 10) line1 = "L+R together: Default mix";
         if (foot == 11) line1 = "L+R together: Use for all";
+        if (foot == 12) line1 = "RIGHT: Save & close";
         lcd_fill_rect(0, 210, 239, 239, LCD_COLOR_DARKGREY);
         lcd_show_string(8, 210, line1, LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
         lcd_show_string(8, 225, "UP+DN together: Save & Exit", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);

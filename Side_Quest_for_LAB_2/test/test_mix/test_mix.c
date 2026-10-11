@@ -30,13 +30,15 @@ void test_row_numbers_match_the_screen_layout(void)
     TEST_ASSERT_EQUAL_UINT(15, MIX_ITEM_REVERB);
     TEST_ASSERT_EQUAL_UINT(19, MIX_ITEM_CHANNEL0);
     TEST_ASSERT_EQUAL_UINT(35, MIX_ITEM_RESET);
-    TEST_ASSERT_EQUAL_UINT(37, MIX_ITEM_COUNT);
+    TEST_ASSERT_EQUAL_UINT(37, MIX_ITEM_DONE);
+    TEST_ASSERT_EQUAL_UINT(38, MIX_ITEM_COUNT);
     TEST_ASSERT_EQUAL(MIX_KIND_SECTION, karaoke_mix_item_kind(14));
     TEST_ASSERT_EQUAL(MIX_KIND_EFFECT, karaoke_mix_item_kind(MIX_ITEM_CHORUS));
     TEST_ASSERT_EQUAL(MIX_KIND_TONE, karaoke_mix_item_kind(MIX_ITEM_TREBLE));
     TEST_ASSERT_EQUAL(MIX_KIND_CHANNEL, karaoke_mix_item_kind(MIX_ITEM_CHANNEL0 + 15));
     TEST_ASSERT_EQUAL(MIX_KIND_ACTION, karaoke_mix_item_kind(MIX_ITEM_RESET));
     TEST_ASSERT_EQUAL(MIX_KIND_ACTION, karaoke_mix_item_kind(MIX_ITEM_SAVE_ALL));
+    TEST_ASSERT_EQUAL(MIX_KIND_ACTION, karaoke_mix_item_kind(MIX_ITEM_DONE));
 }
 
 void test_every_row_has_a_name(void)
@@ -47,6 +49,7 @@ void test_every_row_has_a_name(void)
     }
     TEST_ASSERT_EQUAL_STRING("Ch 1", karaoke_mix_item_name(MIX_ITEM_CHANNEL0, scratch, sizeof(scratch)));
     TEST_ASSERT_EQUAL_STRING("Ch 16", karaoke_mix_item_name(MIX_ITEM_CHANNEL0 + 15, scratch, sizeof(scratch)));
+    TEST_ASSERT_EQUAL_STRING("Done", karaoke_mix_item_name(MIX_ITEM_DONE, scratch, sizeof(scratch)));
 }
 
 void test_adjusting_steps_by_five_percent_and_clamps(void)
@@ -97,6 +100,8 @@ void test_an_action_row_cannot_be_adjusted(void)
     karaoke_mix_defaults(&d);
     karaoke_mix_item_adjust(&m, MIX_ITEM_RESET, +1);
     karaoke_mix_item_adjust(&m, MIX_ITEM_SAVE_ALL, -1);
+    karaoke_mix_item_adjust(&m, MIX_ITEM_DONE, +1);
+    karaoke_mix_item_click(&m, MIX_ITEM_DONE);
     TEST_ASSERT_TRUE(karaoke_mix_equal(&m, &d));
 }
 

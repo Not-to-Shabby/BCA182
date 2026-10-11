@@ -150,6 +150,12 @@ void yamaha_fm_set_opl4_drums(bool on);
 bool yamaha_fm_get_opl4_drums(void);
 
 /**
+ * @brief Enable or disable hybrid sampled attack transients (Yamaha SY77 / OPL4 RCM style).
+ */
+void yamaha_fm_set_hybrid_attack(bool on);
+bool yamaha_fm_get_hybrid_attack(void);
+
+/**
  * @brief Enable or disable per-voice dynamic resonant low-pass filter (VCF).
  */
 void yamaha_fm_set_vcf(bool on);

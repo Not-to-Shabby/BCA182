@@ -508,6 +508,19 @@ void test_eight_line_fdn_reverb_is_dense_and_decorrelated(void)
     TEST_ASSERT_TRUE(mid < early);
 }
 
+void test_reverb_and_chorus_wake_from_silent_sleep_on_new_impulse(void)
+{
+    /* 1. Fire first impulse and wait for tail to decay into sleep state */
+    impulse_response(30000);
+    double first_early = rms_i32(g_l + 1000, 3000);
+
+    /* 2. Fire second impulse after sleep state entered */
+    impulse_response(30000);
+    double wake_early = rms_i32(g_l + 1000, 3000);
+
+    TEST_ASSERT_FLOAT_WITHIN((float)first_early * 0.05f, (float)first_early, (float)wake_early);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -536,5 +549,6 @@ int main(void)
     RUN_TEST(test_downward_expander_gates_faint_tail_below_minus_68db);
     RUN_TEST(test_master_eq_boosts_sub_bass_and_treble_air);
     RUN_TEST(test_eight_line_fdn_reverb_is_dense_and_decorrelated);
+    RUN_TEST(test_reverb_and_chorus_wake_from_silent_sleep_on_new_impulse);
     return UNITY_END();
 }

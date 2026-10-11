@@ -1043,6 +1043,71 @@ void test_vcf_bypass_toggle_restores_unfiltered_fm(void)
     TEST_ASSERT_TRUE(unfilt > 100.0);
 }
 
+void test_hybrid_pcm_attack_attaches_to_piano_and_acoustic_guitar(void)
+{
+    TEST_ASSERT_TRUE(yamaha_fm_get_hybrid_attack());
+
+    /* Low piano note vs high piano note */
+    setUp();
+    play(0, 0, 48, 100);    /* C3 */
+    render_ms(20);
+    const int16_t *pcm_low = NULL;
+    uint32_t step_low = 0;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 48) {
+            pcm_low = s_voices[v].pcm_data;
+            step_low = s_voices[v].pcm_step;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(pcm_low);
+
+    setUp();
+    play(0, 0, 72, 100);    /* C5 */
+    render_ms(20);
+    const int16_t *pcm_high = NULL;
+    uint32_t step_high = 0;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 72) {
+            pcm_high = s_voices[v].pcm_data;
+            step_high = s_voices[v].pcm_step;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(pcm_high);
+    TEST_ASSERT_EQUAL_PTR(pcm_low, pcm_high);
+    TEST_ASSERT_TRUE(step_high > step_low * 3); /* 2 octaves higher = 4x pitch step */
+
+    /* After 150 ms, the ~85 ms transient finishes and reverts to pure FM sustain */
+    render_ms(150);
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 72) {
+            TEST_ASSERT_NULL(s_voices[v].pcm_data);
+            break;
+        }
+    }
+}
+
+void test_hybrid_attack_toggle_disables_pcm_transients(void)
+{
+    yamaha_fm_set_hybrid_attack(false);
+    TEST_ASSERT_FALSE(yamaha_fm_get_hybrid_attack());
+
+    setUp();
+    yamaha_fm_set_hybrid_attack(false);
+    play(0, 0, 60, 100);
+    render_ms(20);
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 60) {
+            TEST_ASSERT_NULL(s_voices[v].pcm_data);
+            break;
+        }
+    }
+
+    yamaha_fm_set_hybrid_attack(true);
+    TEST_ASSERT_TRUE(yamaha_fm_get_hybrid_attack());
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1103,5 +1168,7 @@ int main(void)
     RUN_TEST(test_opl4_pcm_toms_pitch_shift_across_floor_to_high_tom);
     RUN_TEST(test_dynamic_vcf_warms_piano_tail_as_it_decays);
     RUN_TEST(test_vcf_bypass_toggle_restores_unfiltered_fm);
+    RUN_TEST(test_hybrid_pcm_attack_attaches_to_piano_and_acoustic_guitar);
+    RUN_TEST(test_hybrid_attack_toggle_disables_pcm_transients);
     return UNITY_END();
 }

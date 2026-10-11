@@ -16,6 +16,7 @@
 #include "dtcm.h"
 #include "synth_dsp.h"
 #include "opl4_drum_samples.h"
+#include "opl4_melodic_samples.h"
 #include "opl3_wave_tables.h"
 #include <math.h>
 #include <stdbool.h>
@@ -44,6 +45,7 @@ static volatile uint8_t s_melody_percent = 100;
 #endif
 static volatile bool s_third_op = THIRD_OP_DEFAULT;
 static volatile bool s_opl4_drums = true;
+static volatile bool s_hybrid_pcm = true;
 static volatile bool s_vcf_on = true;
 static uint32_t s_ext_started;
 static uint32_t s_ext_skipped;
@@ -849,6 +851,46 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         v->rel_k = expf(-s_sub_sec / rel);
         v->sus = p->sustain;
     }
+
+    if (s_hybrid_pcm) {
+        const int16_t *pcm = NULL;
+        uint32_t plen = 0;
+        float root_hz = 261.6256f;
+        float p_amp = 0.0f;
+        float p_tau = 0.050f;
+
+        if (pid == P_PIANO || pid == P_BRIGHT) {
+            pcm = OPL4_PCM_PIANO;
+            plen = OPL4_PCM_PIANO_LEN;
+            root_hz = OPL4_PCM_PIANO_ROOT_HZ;
+            p_amp = 0.22f;
+            p_tau = 0.055f;
+        } else if (pid == P_STEEL || pid == P_NYLON) {
+            pcm = OPL4_PCM_GUITAR;
+            plen = OPL4_PCM_GUITAR_LEN;
+            root_hz = OPL4_PCM_GUITAR_ROOT_HZ;
+            p_amp = 0.25f;
+            p_tau = 0.045f;
+        } else if (pid == P_FINGER_BASS || pid == P_PICK_BASS || pid == P_SLAP || pid == P_ACO_BASS) {
+            pcm = OPL4_PCM_BASS;
+            plen = OPL4_PCM_BASS_LEN;
+            root_hz = OPL4_PCM_BASS_ROOT_HZ;
+            p_amp = 0.26f;
+            p_tau = 0.038f;
+        }
+
+        if (pcm != NULL) {
+            float ratio_p = f0 / root_hz;
+            if (ratio_p < 0.25f) ratio_p = 0.25f;
+            if (ratio_p > 3.5f)  ratio_p = 3.5f;
+            v->pcm_data = pcm;
+            v->pcm_len = plen;
+            v->pcm_pos = 0;
+            v->pcm_step = (uint32_t)(((float)OPL4_MELODIC_SAMPLE_RATE * 65536.0f * ratio_p) / s_sample_rate);
+            v->pcm_amp = p_amp;
+            v->pcm_k = expf(-s_sub_sec / p_tau);
+        }
+    }
 }
 
 static void drum_note_on(uint8_t note, uint8_t vel)
@@ -1301,6 +1343,16 @@ bool yamaha_fm_get_opl4_drums(void)
     return s_opl4_drums;
 }
 
+void yamaha_fm_set_hybrid_attack(bool on)
+{
+    s_hybrid_pcm = on;
+}
+
+bool yamaha_fm_get_hybrid_attack(void)
+{
+    return s_hybrid_pcm;
+}
+
 void yamaha_fm_set_vcf(bool on)
 {
     s_vcf_on = on;
@@ -1648,6 +1700,36 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
                 bl[i] += (cs * gl) >> 15;
                 br[i] += (cs * gr) >> 15;
             }
+        }
+    }
+
+    if (v->pcm_data != NULL) {
+        uint32_t p_pos = v->pcm_pos;
+        uint32_t p_len = v->pcm_len;
+        if ((p_pos >> 16) + 1U < p_len && v->pcm_amp >= SILENCE) {
+            const int16_t *pcm = v->pcm_data;
+            uint32_t p_step = v->pcm_step;
+            float p_scale = v->pcm_amp * v->vel_gain * ch_gain * (float)GAIN_ONE;
+            int32_t p_gl = ((int32_t)(p_scale * c->pan_l)) >> GAIN_Q;
+            int32_t p_gr = ((int32_t)(p_scale * c->pan_r)) >> GAIN_Q;
+
+            for (size_t i = 0; i < len; i++) {
+                uint32_t idx = p_pos >> 16;
+                if (idx + 1U >= p_len) {
+                    break;
+                }
+                int32_t frac = (int32_t)((p_pos >> 8) & 0xFFU);
+                int32_t s0 = pcm[idx];
+                int32_t s1 = pcm[idx + 1U];
+                int32_t pval = (s0 * (256 - frac) + s1 * frac) >> 8;
+                bl[i] += (pval * p_gl) >> 15;
+                br[i] += (pval * p_gr) >> 15;
+                p_pos += p_step;
+            }
+            v->pcm_pos = p_pos;
+            v->pcm_amp *= v->pcm_k;
+        } else {
+            v->pcm_data = NULL;
         }
     }
 

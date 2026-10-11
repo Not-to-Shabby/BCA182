@@ -67,25 +67,25 @@ static inline int32_t sat16(int32_t x)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Reverb                                                                     */
+/* Reverb: 8-line coprime FDN running at half-rate (22.05 kHz) with linear     */
+/* upsampling interpolation to 44.1 kHz. Saves ~10 KB of Main SRAM and cuts   */
+/* FDN computation cycles in half.                                            */
 /* -------------------------------------------------------------------------- */
 #define RV_LINES        8
-#define RV_AP1_LEN      113U
-#define RV_AP2_LEN      337U
+#define RV_AP1_LEN      59U
+#define RV_AP2_LEN      167U
 #define RV_AP_GAIN      0.6f
 #define RV_NOISE        1e-15f          /* keeps the tail out of the denormal range */
 
-/* 8 coprime delay lines for rich flutter-free concert hall / studio plate reverb */
+/* 8 coprime delay lines at 22,050 Hz: 11.4 ms to 30.0 ms delay spread */
 static const uint16_t RV_LEN[RV_LINES]  = {
-    431U, 523U, 617U, 709U, 809U, 907U, 997U, 1103U
+    251U, 307U, 367U, 421U, 479U, 541U, 601U, 661U
 };
 static const uint16_t RV_BASE[RV_LINES] = {
-    0U, 431U, 954U, 1571U, 2280U, 3089U, 3996U, 4993U
+    0U, 251U, 558U, 925U, 1346U, 1825U, 2366U, 2967U
 };
-#define RV_MEM_SAMPLES  6096U
+#define RV_MEM_SAMPLES  3628U
 
-/* About 24 KB, read and written only by the CPU: main RAM, because the core-coupled RAM that
- * holds the voices has no room left for it. */
 static float s_rv_mem[RV_MEM_SAMPLES];
 static float s_rv_ap1[RV_AP1_LEN];
 static float s_rv_ap2[RV_AP2_LEN];
@@ -96,6 +96,10 @@ static uint16_t s_rv_pos[RV_LINES];
 static uint16_t s_rv_ap1_pos;
 static uint16_t s_rv_ap2_pos;
 static float s_rv_noise = RV_NOISE;
+static float s_rv_prev_l = 0.0f;
+static float s_rv_prev_r = 0.0f;
+static bool s_rv_active = false;
+static uint32_t s_rv_silent_count = 0;
 
 static void reverb_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size_t n)
 {
@@ -103,9 +107,30 @@ static void reverb_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size
     const float damp = s_rv_damp;
     const float ret = s_rv_ret;
 
+    /* Check if input has energy */
+    bool has_input = false;
     for (size_t i = 0; i < n; i++) {
+        if (in[i] != 0) {
+            has_input = true;
+            break;
+        }
+    }
+    if (has_input) {
+        s_rv_active = true;
+        s_rv_silent_count = 0;
+    } else if (!s_rv_active) {
+        return; /* Reverb tail is in complete digital silence: sleep inner FDN loop */
+    }
+
+    float max_tail = 0.0f;
+
+    /* Process 2 stereo frames per FDN step (22.05 kHz downsampled execution) */
+    for (size_t i = 0; i < n; i += 2U) {
         s_rv_noise = -s_rv_noise;
-        float x = (float)in[i] * 0.25f + s_rv_noise;
+        /* Average continuous input sample pairs (0.125 = 0.25 * 0.5); preserve single-sample impulses */
+        float scale = (in[i] != 0 && in[i + 1U] != 0) ? 0.125f : 0.25f;
+        float in_pair = ((float)in[i] + (float)in[i + 1U]) * scale;
+        float x = in_pair + s_rv_noise;
 
         float d = s_rv_ap1[s_rv_ap1_pos];
         float y = d - g * x;
@@ -130,6 +155,8 @@ static void reverb_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size
             s_rv_lp[j] = f[j];
             v[j] = f[j] * s_rv_gain[j];
             sum_v += v[j];
+            float af = (f[j] < 0.0f) ? -f[j] : f[j];
+            if (af > max_tail) max_tail = af;
         }
         sum_v *= 0.25f;
         float inj = z * 0.45f;
@@ -150,16 +177,40 @@ static void reverb_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size
             }
         }
 
-        /* Orthogonal stereo output taps: left and right decorrelated */
-        float l = (f[0] - f[1] + f[2] - f[3] + f[4] - f[5] + f[6] - f[7]) * 0.35f;
-        float r = (f[0] + f[1] - f[2] - f[3] + f[4] + f[5] - f[6] - f[7]) * 0.35f;
-        out_l[i] += (int32_t)(l * ret);
-        out_r[i] += (int32_t)(r * ret);
+        /* Mutually orthogonal Walsh-Hadamard stereo output taps (orthogonal to inj and to each other) */
+        float cur_l = (f[0] - f[1] - f[2] + f[3] + f[4] - f[5] - f[6] + f[7]) * 0.35f;
+        float cur_r = (f[0] + f[1] - f[2] - f[3] + f[4] + f[5] - f[6] - f[7]) * 0.35f;
+
+        /* Anti-imaging linear interpolation back to 44.1 kHz */
+        float mid_l = (s_rv_prev_l + cur_l) * 0.5f;
+        float mid_r = (s_rv_prev_r + cur_r) * 0.5f;
+
+        out_l[i]      += (int32_t)(mid_l * ret);
+        out_r[i]      += (int32_t)(mid_r * ret);
+        out_l[i + 1U] += (int32_t)(cur_l * ret);
+        out_r[i + 1U] += (int32_t)(cur_r * ret);
+
+        s_rv_prev_l = cur_l;
+        s_rv_prev_r = cur_r;
+    }
+
+    if (!has_input && max_tail < 0.05f) {
+        if (++s_rv_silent_count > 64U) {
+            /* Tail has completely decayed into silence: clear state and enter sleep */
+            memset(s_rv_mem, 0, sizeof(s_rv_mem));
+            memset(s_rv_ap1, 0, sizeof(s_rv_ap1));
+            memset(s_rv_ap2, 0, sizeof(s_rv_ap2));
+            memset(s_rv_lp, 0, sizeof(s_rv_lp));
+            s_rv_prev_l = 0.0f;
+            s_rv_prev_r = 0.0f;
+            s_rv_active = false;
+            s_rv_silent_count = 0;
+        }
     }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Chorus: one delay line, two taps swept by triangle LFOs a quarter turn apart */
+/* Chorus: Roland Juno / CE-2 True Stereo Quadrature (2 opposite-phase taps)  */
 /* -------------------------------------------------------------------------- */
 #define CH_LEN              1024U
 #define CH_MASK             (CH_LEN - 1U)
@@ -173,6 +224,8 @@ static uint32_t s_ch_phase;
 static uint32_t s_ch_inc;
 static int32_t s_ch_center_q8;
 static int32_t s_ch_depth_q8;
+static bool s_ch_active = false;
+static uint32_t s_ch_silent_count = 0;
 
 /* Delay of a tap, in 1/256 samples, for an LFO phase. */
 static inline int32_t chorus_delay_q8(uint32_t phase)
@@ -183,44 +236,55 @@ static inline int32_t chorus_delay_q8(uint32_t phase)
     return s_ch_center_q8 + (((tri - 32767) * s_ch_depth_q8) >> 15);
 }
 
-/* The delay is worked out at the ends of the block and stepped linearly in between; it moves
- * by far less than a sample over 32 frames. */
 static void chorus_block(const int32_t *in, int32_t *out_l, int32_t *out_r, size_t n)
 {
+    bool has_input = false;
+    for (size_t i = 0; i < n; i++) {
+        if (in[i] != 0) {
+            has_input = true;
+            break;
+        }
+    }
+    if (has_input) {
+        s_ch_active = true;
+        s_ch_silent_count = 0;
+    } else if (!s_ch_active) {
+        return; /* Delay buffer is completely silent */
+    }
+
     uint32_t end = s_ch_phase + s_ch_inc * (uint32_t)n;
-    /* 4 quadrature delay taps: 0, 90, 180, 270 degrees for thick Dimension D chorus */
+    /* 2 opposite-phase taps (0 deg Left, 180 deg Right) for classic lush Roland stereo chorus */
     int32_t d0 = chorus_delay_q8(s_ch_phase) * 256;
-    int32_t d1 = chorus_delay_q8(s_ch_phase + 0x40000000U) * 256;
-    int32_t d2 = chorus_delay_q8(s_ch_phase + 0x80000000U) * 256;
-    int32_t d3 = chorus_delay_q8(s_ch_phase + 0xC0000000U) * 256;
+    int32_t d1 = chorus_delay_q8(s_ch_phase + 0x80000000U) * 256;
     int32_t s0 = (chorus_delay_q8(end) * 256 - d0) / (int32_t)n;
-    int32_t s1 = (chorus_delay_q8(end + 0x40000000U) * 256 - d1) / (int32_t)n;
-    int32_t s2 = (chorus_delay_q8(end + 0x80000000U) * 256 - d2) / (int32_t)n;
-    int32_t s3 = (chorus_delay_q8(end + 0xC0000000U) * 256 - d3) / (int32_t)n;
+    int32_t s1 = (chorus_delay_q8(end + 0x80000000U) * 256 - d1) / (int32_t)n;
     uint32_t wr = s_ch_wr;
 
     for (size_t i = 0; i < n; i++) {
         s_ch_buf[wr & CH_MASK] = (int16_t)sat16(in[i] >> 1);
 
         uint32_t w0 = (uint32_t)d0 >> 16; int32_t f0 = (d0 >> 8) & 255;
-        int32_t tap0 = (s_ch_buf[(wr - w0) & CH_MASK] * (256 - f0) + s_ch_buf[(wr - w0 - 1U) & CH_MASK] * f0) >> 8;
+        int32_t tap_l = (s_ch_buf[(wr - w0) & CH_MASK] * (256 - f0) + s_ch_buf[(wr - w0 - 1U) & CH_MASK] * f0) >> 8;
+
         uint32_t w1 = (uint32_t)d1 >> 16; int32_t f1 = (d1 >> 8) & 255;
-        int32_t tap1 = (s_ch_buf[(wr - w1) & CH_MASK] * (256 - f1) + s_ch_buf[(wr - w1 - 1U) & CH_MASK] * f1) >> 8;
-        uint32_t w2 = (uint32_t)d2 >> 16; int32_t f2 = (d2 >> 8) & 255;
-        int32_t tap2 = (s_ch_buf[(wr - w2) & CH_MASK] * (256 - f2) + s_ch_buf[(wr - w2 - 1U) & CH_MASK] * f2) >> 8;
-        uint32_t w3 = (uint32_t)d3 >> 16; int32_t f3 = (d3 >> 8) & 255;
-        int32_t tap3 = (s_ch_buf[(wr - w3) & CH_MASK] * (256 - f3) + s_ch_buf[(wr - w3 - 1U) & CH_MASK] * f3) >> 8;
+        int32_t tap_r = (s_ch_buf[(wr - w1) & CH_MASK] * (256 - f1) + s_ch_buf[(wr - w1 - 1U) & CH_MASK] * f1) >> 8;
 
-        int32_t l = (tap0 + tap2) >> 1;
-        int32_t r = (tap1 + tap3) >> 1;
-
-        out_l[i] += (l * s_ch_ret) >> 15;
-        out_r[i] += (r * s_ch_ret) >> 15;
-        d0 += s0; d1 += s1; d2 += s2; d3 += s3;
+        out_l[i] += (tap_l * s_ch_ret) >> 15;
+        out_r[i] += (tap_r * s_ch_ret) >> 15;
+        d0 += s0;
+        d1 += s1;
         wr++;
     }
     s_ch_wr = wr;
     s_ch_phase = end;
+
+    if (!has_input) {
+        if (++s_ch_silent_count > (CH_LEN / DSP_BLOCK_FRAMES + 2U)) {
+            memset(s_ch_buf, 0, sizeof(s_ch_buf));
+            s_ch_active = false;
+            s_ch_silent_count = 0;
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -573,17 +637,24 @@ void dsp_clear(void)
     memset(s_rv_pos, 0, sizeof(s_rv_pos));
     s_rv_ap1_pos = 0;
     s_rv_ap2_pos = 0;
+    s_rv_prev_l = 0.0f;
+    s_rv_prev_r = 0.0f;
+    s_rv_active = false;
+    s_rv_silent_count = 0;
     memset(s_ch_buf, 0, sizeof(s_ch_buf));
     s_ch_wr = 0;
+    s_ch_active = false;
+    s_ch_silent_count = 0;
     master_clear();
 }
 
 void dsp_init(float sample_rate)
 {
     s_rate = (sample_rate > 0.0f) ? sample_rate : 44100.0f;
+    float rv_rate = s_rate * 0.5f;
 
     for (int j = 0; j < RV_LINES; j++) {
-        s_rv_gain[j] = expf(-6.9078f * (float)RV_LEN[j] / (DSP_REVERB_T60_S * s_rate));
+        s_rv_gain[j] = expf(-6.9078f * (float)RV_LEN[j] / (DSP_REVERB_T60_S * rv_rate));
     }
     s_rv_damp = (float)DSP_REVERB_DAMP_Q15 * (1.0f / 32768.0f);
     s_ch_inc = (uint32_t)(CH_RATE_HZ * 4294967296.0f / s_rate);

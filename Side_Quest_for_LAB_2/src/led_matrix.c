@@ -24,6 +24,11 @@
 static led_color_t s_pixels[LED_MATRIX_NUM_LEDS];
 static uint8_t s_smooth_levels[16];
 
+/* Read over ST-Link: how often led_matrix_show() ran and how many cycles one call took. */
+volatile uint32_t g_led_show_calls;
+volatile uint32_t g_led_show_last;
+volatile uint32_t g_led_show_max;
+
 void led_matrix_init(void)
 {
 #if defined(__arm__)
@@ -65,13 +70,15 @@ void led_matrix_set_pixel(uint8_t index, uint8_t r, uint8_t g, uint8_t b)
 
 void led_matrix_show(void)
 {
-#if defined(__arm__)
+#if defined(__arm__) && !defined(LED_MATRIX_OFF)
     uint32_t clk = SystemCoreClock;
-    /* SK6805 / WS2812B 800 kHz timing (1.25 us bit period) */
-    uint32_t t_total = (uint32_t)(((uint64_t)clk * 1250ULL) / 1000000ULL);
-    uint32_t t0h     = (uint32_t)(((uint64_t)clk * 350ULL)  / 1000000ULL);
-    uint32_t t1h     = (uint32_t)(((uint64_t)clk * 800ULL)  / 1000000ULL);
+    /* SK6805 / WS2812B 800 kHz timing: 1250 ns bit period, 350 ns high for a 0, 800 ns for a 1.
+     * Cycles = clock * ns / 1e9. */
+    uint32_t t_total = (uint32_t)(((uint64_t)clk * 1250ULL) / 1000000000ULL);
+    uint32_t t0h     = (uint32_t)(((uint64_t)clk * 350ULL)  / 1000000000ULL);
+    uint32_t t1h     = (uint32_t)(((uint64_t)clk * 800ULL)  / 1000000000ULL);
 
+    uint32_t show_t0 = DWT->CYCCNT;
     unsigned int key = irq_lock();
 
     for (uint32_t i = 0; i < LED_MATRIX_NUM_LEDS; i++) {
@@ -98,6 +105,11 @@ void led_matrix_show(void)
     }
 
     irq_unlock(key);
+    g_led_show_calls++;
+    g_led_show_last = DWT->CYCCNT - show_t0;
+    if (g_led_show_last > g_led_show_max) {
+        g_led_show_max = g_led_show_last;
+    }
 #endif
 }
 

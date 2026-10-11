@@ -603,7 +603,7 @@ static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
         w.pitch = (note == 67) ? 1.35f : 1.10f;
         break;
     default:
-        w.data = OPL4_PCM_HAT_C;
+        w.data = p_hat_c;
         w.len = OPL4_PCM_HAT_C_LEN;
         w.pitch = 1.15f;
         break;

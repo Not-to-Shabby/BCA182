@@ -13,21 +13,53 @@ import urllib.request
 URL = "https://archive.org/download/sc-55/SC-55.sf2"
 SMPL_OFFSET = 108  # Byte offset of sample 0 in SC-55.sf2
 
-def fetch_sf2_resampled(start_sample, src_rate, out_len, apply_tail_fade=True):
+def lowpass_taps(n=31, cutoff=0.22):
+    """Windowed-sinc low-pass (cutoff in cycles/sample of the source rate) used before 2:1 decimation."""
+    import math
+    mid = (n - 1) / 2.0
+    taps = []
+    for i in range(n):
+        x = i - mid
+        h = 2 * cutoff if x == 0 else math.sin(2 * math.pi * cutoff * x) / (math.pi * x)
+        w = 0.5 - 0.5 * math.cos(2 * math.pi * i / (n - 1))
+        taps.append(h * w)
+    g = sum(taps)
+    return [t / g for t in taps]
+
+def fetch_sf2_resampled(start_sample, src_rate, out_len, apply_tail_fade=True, src_len=None, peak=None):
+    """Resample to 22.05 kHz with an anti-alias filter. Never reads past the sample's own end
+    (src_len); anything after the natural end is faded and zero padded."""
     step = float(src_rate) / 22050.0
     needed_src = int(out_len * step) + 8
-    b_start = SMPL_OFFSET + start_sample * 2
-    b_end = b_start + needed_src * 2 - 1
+    if src_len is not None:
+        needed_src = min(needed_src, src_len)
+    pad = 16
+    b_start = SMPL_OFFSET + max(0, start_sample - pad) * 2
+    lead = start_sample - max(0, start_sample - pad)
+    b_end = SMPL_OFFSET + (start_sample + needed_src + pad) * 2 - 1
 
     req = urllib.request.Request(
         URL,
         headers={"User-Agent": "Mozilla/5.0", "Range": f"bytes={b_start}-{b_end}"}
     )
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=30) as r:
         raw_bytes = r.read()
-
     cnt = len(raw_bytes) // 2
-    raw = struct.unpack(f"<{cnt}h", raw_bytes[: cnt * 2])
+    full = struct.unpack(f"<{cnt}h", raw_bytes[: cnt * 2])
+    raw = list(full[lead: lead + needed_src])
+
+    if step > 1.0:
+        taps = lowpass_taps()
+        half = len(taps) // 2
+        filt = []
+        for i in range(len(raw)):
+            acc = 0.0
+            for k, t in enumerate(taps):
+                j = i + k - half
+                if 0 <= j < len(raw):
+                    acc += raw[j] * t
+            filt.append(acc)
+        raw = filt
 
     out = []
     pos = 0.0
@@ -38,43 +70,45 @@ def fetch_sf2_resampled(start_sample, src_rate, out_len, apply_tail_fade=True):
         frac = pos - idx
         val = raw[idx] * (1.0 - frac) + raw[idx + 1] * frac
         if not apply_tail_fade and k > out_len // 2:
-            # Melodic transient smooth envelope fade over second half
             rem = (out_len - 1 - k) / float(out_len - (out_len // 2))
             val *= rem
-        out.append(max(-32767, min(32767, int(round(val)))))
+        out.append(val)
         pos += step
 
-    while len(out) < out_len:
-        out.append(0)
-
+    valid = len(out)
+    fade_len = min(128 if valid < out_len else 64, valid)
     if apply_tail_fade:
-        fade_len = min(64, len(out))
         for k in range(fade_len):
-            idx = len(out) - fade_len + k
-            fade = (fade_len - 1 - k) / float(fade_len)
-            out[idx] = int(round(out[idx] * fade))
+            idx = valid - fade_len + k
+            out[idx] *= (fade_len - 1 - k) / float(fade_len)
+    while len(out) < out_len:
+        out.append(0.0)
 
-    return out
+    mx = max(1.0, max(abs(v) for v in out))
+    scale = (peak / mx) if peak else 1.0
+    if mx * scale > 32767:
+        scale = 32767.0 / mx
+    return [max(-32767, min(32767, int(round(v * scale)))) for v in out]
 
 def main():
     print("Fetching genuine Roland Sound Canvas SC-55 waveforms...")
     # Drum Kit
-    kick    = fetch_sf2_resampled(21860616, 44100, 3969, True)  # Kick1 [657]
-    snare   = fetch_sf2_resampled(21844809, 44100, 3969, True)  # Tight Snare [655]
-    stick   = fetch_sf2_resampled(594148,   44100, 1433, True)  # RimShot [47]
-    clap    = fetch_sf2_resampled(6875540,  44100, 3087, True)  # Clap [243]
-    hat_c   = fetch_sf2_resampled(22026842, 44100, 1212, True)  # Close Hi Hat [660]
-    hat_o   = fetch_sf2_resampled(22035260, 44100, 6174, True)  # Open Hi Hat [662]
-    crash   = fetch_sf2_resampled(21864633, 44100, 9922, True)  # Crash Cymbal [658]
-    ride    = fetch_sf2_resampled(22146653, 44100, 7717, True)  # Ride Cymbal1 [663]
-    tom     = fetch_sf2_resampled(21628954, 44100, 3969, True)  # Tom Mid 1 [Stan1] [649]
-    cowbell = fetch_sf2_resampled(8315813,  44100, 2205, True)  # CowbellG#3 [307]
+    kick    = fetch_sf2_resampled(21860616, 44100, 3969, True, src_len=3994)  # Kick1 [657]
+    snare   = fetch_sf2_resampled(21844809, 44100, 3969, True, src_len=11118)  # Tight Snare [655]
+    stick   = fetch_sf2_resampled(594148,   44100, 1433, True, src_len=3024)  # RimShot [47]
+    clap    = fetch_sf2_resampled(6875540,  44100, 3087, True, src_len=21696)  # Clap [243]
+    hat_c   = fetch_sf2_resampled(22026842, 44100, 1212, True, src_len=5048)  # Close Hi Hat [660]
+    hat_o   = fetch_sf2_resampled(22035260, 44100, 6174, True, src_len=111370)  # Open Hi Hat [662]
+    crash   = fetch_sf2_resampled(21864633, 44100, 9922, True, src_len=78150)  # Crash Cymbal [658]
+    ride    = fetch_sf2_resampled(22146653, 44100, 7717, True, src_len=80796)  # Ride Cymbal1 [663]
+    tom     = fetch_sf2_resampled(21628954, 44100, 3969, True, src_len=25340)  # Tom Mid 1 [Stan1] [649]
+    cowbell = fetch_sf2_resampled(8315813,  44100, 2205, True, src_len=5184)  # CowbellG#3 [307]
 
     # Melodic Attack Transients
-    piano    = fetch_sf2_resampled(652425,   44100, 1874, False) # SC55 Piano C4m [50]
-    guitar   = fetch_sf2_resampled(10376166, 44100, 1433, False) # SC88SteelstrGt C4 [375]
-    bass     = fetch_sf2_resampled(17570961, 44100, 1212, False) # Pick Bass B [551]
-    dist_gtr = fetch_sf2_resampled(8038884,  44100, 1433, False) # SC55 Overdrive C4 [300]
+    piano    = fetch_sf2_resampled(652425,   44100, 1874, False, src_len=25604) # SC55 Piano C4m [50]
+    guitar   = fetch_sf2_resampled(10376166, 44100, 1433, False, src_len=83456) # SC88SteelstrGt C4 [375]
+    bass     = fetch_sf2_resampled(17570961, 44100, 1212, False, src_len=12144) # Pick Bass B [551]
+    dist_gtr = fetch_sf2_resampled(8038884,  44100, 1433, False, src_len=7558) # SC55 Overdrive C4 [300]
 
     all_tables = [
         ("KICK", kick),

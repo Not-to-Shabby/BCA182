@@ -577,6 +577,12 @@ int main(void)
 
     /* 2. Initialize Yamaha FM Synthesizer & MIDI Sequencer */
     yamaha_fm_synth_init(AUDIO_SAMPLE_RATE);
+#ifdef SYNTH_COST_BENCH
+    {
+        extern void yamaha_fm_cost_bench(void);
+        yamaha_fm_cost_bench();
+    }
+#endif
     midi_karaoke_init(yamaha_fm_get_callbacks());
 
     /* 3. Initialize ES8388 Audio Codec & Hook FM Synthesizer Callback */

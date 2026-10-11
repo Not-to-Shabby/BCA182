@@ -1906,3 +1906,7 @@ const midi_synth_callbacks_t *yamaha_fm_get_callbacks(void)
 {
     return &s_synth_callbacks;
 }
+
+#ifdef SYNTH_COST_BENCH
+#include "synth_cost_bench.inc"
+#endif

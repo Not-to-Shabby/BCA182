@@ -776,6 +776,8 @@ static fm_voice_t *alloc_voice(void)
     return &s_voices[best];
 }
 
+#define MELODIC_VEL_TRIM    1.13f
+
 static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
 {
     const uint8_t pid = PROGRAM_PATCH[prog & 127U];
@@ -816,8 +818,10 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
     v->svf_q = ((pid >= P_SYN_BASS1 && pid <= P_SYN_BASS2) || pid == P_SYN_BRASS || pid == P_SQ_LEAD || pid == P_SAW_LEAD || pid == P_CLAV || pid == P_SLAP) ? 15000 : 25500;
     v->vib = p->vib;
     {
+        /* The SC-55 SoundFont's note level follows velocity squared (-12 dB at 64, -25 dB at 30);
+         * the factor keeps velocity 100 at the level the old v^1.5 curve gave it. */
         float vg = (float)vel / 127.0f;
-        v->vel_gain = vg * sqrtf(vg);
+        v->vel_gain = vg * vg * MELODIC_VEL_TRIM;
     }
 
     v->base_c = s_note_inc[note] * p->ratio_c;

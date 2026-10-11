@@ -496,6 +496,87 @@ void test_master_eq_boosts_sub_bass_and_treble_air(void)
     TEST_ASSERT_TRUE(treble_eq > treble_flat * 1.05);
 }
 
+void test_reverb_and_chorus_levels_are_independent(void)
+{
+    dsp_init((float)RATE);
+    dsp_set_reverb_level(0);
+    impulse_response(30000);
+    for (size_t i = 0; i < 10000; i++) {
+        TEST_ASSERT_EQUAL_INT32(0, g_l[i]);          /* only the reverb was fed: nothing comes back */
+    }
+    TEST_ASSERT_TRUE(dsp_effects_active());          /* the chorus is still on */
+
+    dsp_init((float)RATE);
+    impulse_response(30000);
+    double full = rms_i32(g_l + 2000, 6000);
+    dsp_init((float)RATE);
+    dsp_set_reverb_level(50);
+    impulse_response(30000);
+    TEST_ASSERT_FLOAT_WITHIN((float)full * 0.05f, (float)full * 0.5f, (float)rms_i32(g_l + 2000, 6000));
+
+    dsp_set_reverb_level(0);
+    dsp_set_chorus_level(0);
+    TEST_ASSERT_FALSE(dsp_effects_active());
+    dsp_set_reverb_level(250);
+    TEST_ASSERT_EQUAL_UINT8(200, dsp_get_reverb_level());
+}
+
+static double tone_gain_db(double hz, int8_t bass, int8_t treble)
+{
+    static int32_t in[20000];
+    static int16_t ol[20000], orr[20000];
+
+    dsp_init((float)RATE);
+    dsp_set_compressor(false);
+    dsp_set_eq(false);
+    fill_sine(in, 20000, hz, 4000.0);
+    master_run(in, ol, orr, 20000, 256);
+    double flat = rms_i16(ol + 5000, 10000);
+
+    dsp_init((float)RATE);
+    dsp_set_compressor(false);
+    dsp_set_eq(true);
+    dsp_set_tone(bass, treble);
+    master_run(in, ol, orr, 20000, 256);
+    return db(rms_i16(ol + 5000, 10000) / flat);
+}
+
+void test_tone_control_moves_the_bass_and_treble_shelves(void)
+{
+    double base_bass = tone_gain_db(60.0, 0, 0);
+    double base_treble = tone_gain_db(10000.0, 0, 0);
+    TEST_ASSERT_FLOAT_WITHIN(0.6f, 2.5f, (float)base_bass);       /* the default curve is unchanged */
+    TEST_ASSERT_FLOAT_WITHIN(0.8f, 2.0f, (float)base_treble);
+
+    /* 60 Hz sits on the slope of the 95 Hz shelf, so +6 dB at the shelf is about +5 dB there */
+    TEST_ASSERT_FLOAT_WITHIN(0.8f, 5.0f, (float)(tone_gain_db(60.0, 6, 0) - base_bass));
+    TEST_ASSERT_TRUE(tone_gain_db(60.0, -6, 0) < base_bass - 4.0);
+    TEST_ASSERT_TRUE(tone_gain_db(10000.0, 0, 6) > base_treble + 3.0);
+    TEST_ASSERT_TRUE(tone_gain_db(10000.0, 0, -6) < base_treble - 3.0);
+    /* each shelf leaves the other end of the spectrum alone */
+    TEST_ASSERT_FLOAT_WITHIN(0.7f, (float)base_treble, (float)tone_gain_db(10000.0, 6, 0));
+    TEST_ASSERT_FLOAT_WITHIN(0.7f, (float)base_bass, (float)tone_gain_db(60.0, 0, 6));
+
+    dsp_set_tone(100, -100);
+    TEST_ASSERT_EQUAL_INT8(DSP_TONE_MAX_DB, dsp_get_tone_bass());
+    TEST_ASSERT_EQUAL_INT8(-DSP_TONE_MAX_DB, dsp_get_tone_treble());
+}
+
+void test_a_full_boost_tone_setting_still_stays_under_the_ceiling(void)
+{
+    static int32_t in[20000];
+    static int16_t ol[20000], orr[20000];
+
+    dsp_init((float)RATE);
+    dsp_set_tone(6, 6);
+    fill_sine(in, 20000, 60.0, 30000.0);
+    master_run(in, ol, orr, 20000, 256);
+    for (size_t i = 0; i < 20000; i++) {
+        TEST_ASSERT_TRUE(abs(ol[i]) <= 32767);
+    }
+    TEST_ASSERT_TRUE(dsp_get_limiter_samples() > 0U);
+}
+
 void test_eight_line_fdn_reverb_is_dense_and_decorrelated(void)
 {
     impulse_response(30000);
@@ -548,6 +629,9 @@ int main(void)
     RUN_TEST(test_chorus_without_input_stays_silent);
     RUN_TEST(test_downward_expander_gates_faint_tail_below_minus_68db);
     RUN_TEST(test_master_eq_boosts_sub_bass_and_treble_air);
+    RUN_TEST(test_reverb_and_chorus_levels_are_independent);
+    RUN_TEST(test_tone_control_moves_the_bass_and_treble_shelves);
+    RUN_TEST(test_a_full_boost_tone_setting_still_stays_under_the_ceiling);
     RUN_TEST(test_eight_line_fdn_reverb_is_dense_and_decorrelated);
     RUN_TEST(test_reverb_and_chorus_wake_from_silent_sleep_on_new_impulse);
     return UNITY_END();

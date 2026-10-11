@@ -45,6 +45,24 @@ void dsp_set_effects_level(uint8_t percent);
 uint8_t dsp_get_effects_level(void);
 bool dsp_effects_active(void);
 
+/** Reverb and chorus returns on their own, in percent of the effects level (0 to 200, default 100). */
+void dsp_set_reverb_level(uint8_t percent);
+void dsp_set_chorus_level(uint8_t percent);
+uint8_t dsp_get_reverb_level(void);
+uint8_t dsp_get_chorus_level(void);
+
+/** Largest tone offset in either direction, in dB. */
+#define DSP_TONE_MAX_DB        6
+
+/**
+ * @brief Moves the master low shelf (95 Hz) and high shelf (6 kHz) by @p bass_db / @p treble_db
+ *        from their default +2.5 / +2.0 dB. 0 and 0 gives the default sound. Takes effect at the
+ *        start of the next block.
+ */
+void dsp_set_tone(int8_t bass_db, int8_t treble_db);
+int8_t dsp_get_tone_bass(void);
+int8_t dsp_get_tone_treble(void);
+
 /**
  * @brief Runs the reverb on @p rev_in and the chorus on @p cho_in and adds their stereo
  *        returns to @p acc_l / @p acc_r.

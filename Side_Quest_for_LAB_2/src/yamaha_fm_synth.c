@@ -53,6 +53,140 @@ static uint32_t s_ext_started;
 static uint32_t s_ext_skipped;
 static volatile int8_t s_melody_channel = -1;   /* channel following the lyrics: the prior for the lead tracker */
 static volatile int8_t s_lead_channel = -1;     /* channel the synth treats as the tune right now */
+static volatile uint8_t s_section_gain[SYNTH_SECT_COUNT];
+static volatile uint8_t s_chan_gain[FM_MIDI_CHANNELS];
+static volatile uint16_t s_chan_mute;
+static volatile uint16_t s_chan_solo;
+
+void yamaha_fm_set_section_gain(uint8_t section, uint8_t percent)
+{
+    if (section < SYNTH_SECT_COUNT) {
+        s_section_gain[section] = (percent > SYNTH_MIX_MAX_PERCENT) ? SYNTH_MIX_MAX_PERCENT : percent;
+    }
+}
+
+uint8_t yamaha_fm_get_section_gain(uint8_t section)
+{
+    return (section < SYNTH_SECT_COUNT) ? s_section_gain[section] : 0U;
+}
+
+uint8_t yamaha_fm_section_of_program(uint8_t program)
+{
+    program &= 127U;
+    if (program < 16U) return SYNTH_SECT_PIANO;
+    if (program < 24U) return SYNTH_SECT_ORGAN;
+    if (program < 32U) return SYNTH_SECT_GUITAR;
+    if (program < 40U) return SYNTH_SECT_BASS;
+    if (program < 56U) return SYNTH_SECT_STRINGS;
+    if (program < 64U) return SYNTH_SECT_BRASS;
+    if (program < 80U) return SYNTH_SECT_REEDS;
+    if (program < 88U) return SYNTH_SECT_LEAD;
+    if (program < 104U) return SYNTH_SECT_PADS;
+    return SYNTH_SECT_OTHER;
+}
+
+uint8_t yamaha_fm_section_of_drum(uint8_t note)
+{
+    switch (note) {
+    case 35: case 36:
+        return SYNTH_SECT_KICK;
+    case 37: case 38: case 39: case 40:
+        return SYNTH_SECT_SNARE;
+    case 42: case 44: case 46:
+        return SYNTH_SECT_HATS;
+    case 49: case 51: case 52: case 53: case 55: case 57: case 59:
+        return SYNTH_SECT_CYMBALS;
+    default:
+        return SYNTH_SECT_TOMS;
+    }
+}
+
+void yamaha_fm_set_channel_gain(uint8_t channel, uint8_t percent)
+{
+    if (channel < FM_MIDI_CHANNELS) {
+        s_chan_gain[channel] = (percent > SYNTH_MIX_MAX_PERCENT) ? SYNTH_MIX_MAX_PERCENT : percent;
+    }
+}
+
+uint8_t yamaha_fm_get_channel_gain(uint8_t channel)
+{
+    return (channel < FM_MIDI_CHANNELS) ? s_chan_gain[channel] : 0U;
+}
+
+void yamaha_fm_set_channel_mute(uint8_t channel, bool mute)
+{
+    if (channel < FM_MIDI_CHANNELS) {
+        s_chan_mute = mute ? (uint16_t)(s_chan_mute | (1U << channel)) : (uint16_t)(s_chan_mute & ~(1U << channel));
+    }
+}
+
+bool yamaha_fm_get_channel_mute(uint8_t channel)
+{
+    return channel < FM_MIDI_CHANNELS && (s_chan_mute & (1U << channel)) != 0U;
+}
+
+void yamaha_fm_set_channel_solo(uint8_t channel, bool solo)
+{
+    if (channel < FM_MIDI_CHANNELS) {
+        s_chan_solo = solo ? (uint16_t)(s_chan_solo | (1U << channel)) : (uint16_t)(s_chan_solo & ~(1U << channel));
+    }
+}
+
+bool yamaha_fm_get_channel_solo(uint8_t channel)
+{
+    return channel < FM_MIDI_CHANNELS && (s_chan_solo & (1U << channel)) != 0U;
+}
+
+void yamaha_fm_reset_channel_mix(void)
+{
+    for (int ch = 0; ch < FM_MIDI_CHANNELS; ch++) {
+        s_chan_gain[ch] = 100;
+    }
+    s_chan_mute = 0;
+    s_chan_solo = 0;
+}
+
+static void reset_section_mix(void)
+{
+    for (int i = 0; i < SYNTH_SECT_COUNT; i++) {
+        s_section_gain[i] = 100;
+    }
+}
+
+void yamaha_fm_set_reverb_level(uint8_t percent)
+{
+    dsp_set_reverb_level(percent);
+}
+
+void yamaha_fm_set_chorus_level(uint8_t percent)
+{
+    dsp_set_chorus_level(percent);
+}
+
+uint8_t yamaha_fm_get_reverb_level(void)
+{
+    return dsp_get_reverb_level();
+}
+
+uint8_t yamaha_fm_get_chorus_level(void)
+{
+    return dsp_get_chorus_level();
+}
+
+void yamaha_fm_set_tone(int8_t bass_db, int8_t treble_db)
+{
+    dsp_set_tone(bass_db, treble_db);
+}
+
+int8_t yamaha_fm_get_tone_bass(void)
+{
+    return dsp_get_tone_bass();
+}
+
+int8_t yamaha_fm_get_tone_treble(void)
+{
+    return dsp_get_tone_treble();
+}
 
 void yamaha_fm_set_instrument_gain(uint8_t percent)
 {
@@ -161,6 +295,7 @@ typedef struct {
 typedef struct {
     bool active;
     bool is_drum;
+    uint8_t section;                /* mixer section, see synth_section_t */
     bool key_down;
     bool pedal_held;
     bool open_hat;
@@ -812,6 +947,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
 
     memset(v, 0, sizeof(*v));
     v->active = true;
+    v->section = yamaha_fm_section_of_program(prog);
     v->channel = ch;
     v->note = note;
     v->key_down = true;
@@ -992,6 +1128,7 @@ static void drum_note_on(uint8_t ch, uint8_t note, uint8_t vel)
     memset(v, 0, sizeof(*v));
     v->active = true;
     v->is_drum = true;
+    v->section = yamaha_fm_section_of_drum(note);
     v->channel = ch;
     v->note = note;
     v->open_hat = r.open_hat;
@@ -1367,6 +1504,8 @@ void yamaha_fm_synth_init(uint32_t sample_rate)
     s_lead_frames = s_rate_u * EVENT_LEAD_MS / 1000U;
 
     memcpy(s_waves, FLASH_OPL3_WAVES, sizeof(s_waves));
+    reset_section_mix();
+    yamaha_fm_reset_channel_mix();
     for (int n = 0; n < 128; n++) {
         float freq = 440.0f * exp2f(((float)n - 69.0f) / 12.0f);
         s_note_inc[n] = freq * 4294967296.0f / s_sample_rate;
@@ -2073,6 +2212,12 @@ static void render_chunk(int16_t *out, size_t frames)
         float v = (float)c->volume / 127.0f;
         float e = (float)c->expression / 127.0f;
         float target = v * v * e * e;
+        const uint16_t solo = s_chan_solo;
+        if ((s_chan_mute & (1U << ch)) != 0U || (solo != 0U && (solo & (1U << ch)) == 0U)) {
+            target = 0.0f;
+        } else {
+            target *= (float)s_chan_gain[ch] * 0.01f;
+        }
 
         if (ch == s_lead_channel) {
             target *= (float)s_melody_percent * 0.01f;
@@ -2131,9 +2276,9 @@ static void render_chunk(int16_t *out, size_t frames)
             dirty |= 1U << ch;
         }
         if (v->is_drum) {
-            render_drum_sub(v, frames, ch_gain[ch], c, s_bus_l[ch], s_bus_r[ch]);
+            render_drum_sub(v, frames, ch_gain[ch] * (float)s_section_gain[v->section] * 0.01f, c, s_bus_l[ch], s_bus_r[ch]);
         } else {
-            render_fm_sub(v, frames, ch_gain[ch], ch_ratio[ch], lfo, c, s_bus_l[ch], s_bus_r[ch], active_poly);
+            render_fm_sub(v, frames, ch_gain[ch] * (float)s_section_gain[v->section] * 0.01f, ch_ratio[ch], lfo, c, s_bus_l[ch], s_bus_r[ch], active_poly);
         }
     }
 

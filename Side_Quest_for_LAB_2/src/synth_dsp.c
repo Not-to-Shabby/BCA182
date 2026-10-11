@@ -58,6 +58,8 @@
 
 static float s_rate = 44100.0f;
 static uint8_t s_fx_level = 100;
+static uint8_t s_rv_level = 100;        /* reverb return, percent of the effects level */
+static uint8_t s_ch_level = 100;        /* chorus return, percent of the effects level */
 static float s_rv_ret;                  /* reverb return gain */
 static int32_t s_ch_ret;                /* chorus return gain, Q15 */
 
@@ -297,18 +299,26 @@ static bool s_comp_on = true;
 static bool s_eq_on = true;
 static float s_env_db;              /* smoothed input level */
 
-/* Master Low Shelf (95 Hz, +2.5 dB) and High Shelf (6000 Hz, +2.0 dB) */
-#define LS_B0  1.0013795f
-#define LS_B1 -1.9821613f
-#define LS_B2  0.9809916f
-#define LS_A1 -1.9821876f
-#define LS_A2  0.9823448f
+/* Master Low Shelf (95 Hz, +2.5 dB) and High Shelf (6000 Hz, +2.0 dB). dsp_set_tone() moves the
+ * two gains; at 0 dB offset the coefficients below are used exactly. */
+static const float TONE_FLAT[10] = {
+    1.0013795f, -1.9821613f, 0.9809916f, -1.9821876f, 0.9823448f,
+    1.1982029f, -1.0955769f, 0.3875449f, -0.7955999f, 0.2857707f
+};
+#define EQ_BASE_LOW_DB     2.5f
+#define EQ_BASE_HIGH_DB    2.0f
+#define EQ_HEADROOM_FLAT   1.40f
 
-#define HS_B0  1.1982029f
-#define HS_B1 -1.0955769f
-#define HS_B2  0.3875449f
-#define HS_A1 -0.7955999f
-#define HS_A2  0.2857707f
+static float s_eq_coef[10] = {
+    1.0013795f, -1.9821613f, 0.9809916f, -1.9821876f, 0.9823448f,
+    1.1982029f, -1.0955769f, 0.3875449f, -0.7955999f, 0.2857707f
+};
+static float s_eq_headroom = EQ_HEADROOM_FLAT;
+static float s_eq_pending[10];
+static float s_eq_pending_headroom;
+static volatile bool s_eq_dirty;
+static int8_t s_tone_bass;
+static int8_t s_tone_treble;
 
 static DTCM_BSS float s_eq_ls_s1[2], s_eq_ls_s2[2];
 static DTCM_BSS float s_eq_hs_s1[2], s_eq_hs_s2[2];
@@ -430,6 +440,14 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
     const float ceil_abs = DSP_CEILING * 32767.0f;
     int32_t pk_i = 0;
 
+    if (s_eq_dirty) {
+        memcpy(s_eq_coef, s_eq_pending, sizeof(s_eq_coef));
+        s_eq_headroom = s_eq_pending_headroom;
+        s_eq_dirty = false;
+    }
+    const float ls_b0 = s_eq_coef[0], ls_b1 = s_eq_coef[1], ls_b2 = s_eq_coef[2], ls_a1 = s_eq_coef[3], ls_a2 = s_eq_coef[4];
+    const float hs_b0 = s_eq_coef[5], hs_b1 = s_eq_coef[6], hs_b2 = s_eq_coef[7], hs_a1 = s_eq_coef[8], hs_a2 = s_eq_coef[9];
+
     for (size_t i = 0; i < n; i++) {
         int32_t a = (acc_l[i] < 0) ? -acc_l[i] : acc_l[i];
         int32_t b = (acc_r[i] < 0) ? -acc_r[i] : acc_r[i];
@@ -444,7 +462,7 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
 
     /* Fast path: the loudest sample this block can produce is under the ceiling and the limiter
      * has nothing in memory, so every needed gain is 1 and the output is the delayed input. */
-    if (s_clean && (float)pk_i * mg * top * (s_eq_on ? 1.40f : 1.0f) <= ceil_abs) {
+    if (s_clean && (float)pk_i * mg * top * (s_eq_on ? s_eq_headroom : 1.0f) <= ceil_abs) {
         uint32_t cur = s_lim_n;
 
         for (size_t i = 0; i < n; i++) {
@@ -452,20 +470,20 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
             float xl = (float)acc_l[i] * mg * g;
             float xr = (float)acc_r[i] * mg * g;
             if (s_eq_on) {
-                float yl = LS_B0 * xl + s_eq_ls_s1[0];
-                s_eq_ls_s1[0] = LS_B1 * xl - LS_A1 * yl + s_eq_ls_s2[0];
-                s_eq_ls_s2[0] = LS_B2 * xl - LS_A2 * yl;
-                float yl2 = HS_B0 * yl + s_eq_hs_s1[0];
-                s_eq_hs_s1[0] = HS_B1 * yl - HS_A1 * yl2 + s_eq_hs_s2[0];
-                s_eq_hs_s2[0] = HS_B2 * yl - HS_A2 * yl2;
+                float yl = ls_b0 * xl + s_eq_ls_s1[0];
+                s_eq_ls_s1[0] = ls_b1 * xl - ls_a1 * yl + s_eq_ls_s2[0];
+                s_eq_ls_s2[0] = ls_b2 * xl - ls_a2 * yl;
+                float yl2 = hs_b0 * yl + s_eq_hs_s1[0];
+                s_eq_hs_s1[0] = hs_b1 * yl - hs_a1 * yl2 + s_eq_hs_s2[0];
+                s_eq_hs_s2[0] = hs_b2 * yl - hs_a2 * yl2;
                 xl = yl2;
 
-                float yr = LS_B0 * xr + s_eq_ls_s1[1];
-                s_eq_ls_s1[1] = LS_B1 * xr - LS_A1 * yr + s_eq_ls_s2[1];
-                s_eq_ls_s2[1] = LS_B2 * xr - LS_A2 * yr;
-                float yr2 = HS_B0 * yr + s_eq_hs_s1[1];
-                s_eq_hs_s1[1] = HS_B1 * yr - HS_A1 * yr2 + s_eq_hs_s2[1];
-                s_eq_hs_s2[1] = HS_B2 * yr - HS_A2 * yr2;
+                float yr = ls_b0 * xr + s_eq_ls_s1[1];
+                s_eq_ls_s1[1] = ls_b1 * xr - ls_a1 * yr + s_eq_ls_s2[1];
+                s_eq_ls_s2[1] = ls_b2 * xr - ls_a2 * yr;
+                float yr2 = hs_b0 * yr + s_eq_hs_s1[1];
+                s_eq_hs_s1[1] = hs_b1 * yr - hs_a1 * yr2 + s_eq_hs_s2[1];
+                s_eq_hs_s2[1] = hs_b2 * yr - hs_a2 * yr2;
                 xr = yr2;
             }
             uint32_t at = cur & LIM_MASK;
@@ -488,20 +506,20 @@ void dsp_master_process(const int32_t *acc_l, const int32_t *acc_r, int16_t *out
         float xl = (float)acc_l[i] * mg * g;
         float xr = (float)acc_r[i] * mg * g;
         if (s_eq_on) {
-            float yl = LS_B0 * xl + s_eq_ls_s1[0];
-            s_eq_ls_s1[0] = LS_B1 * xl - LS_A1 * yl + s_eq_ls_s2[0];
-            s_eq_ls_s2[0] = LS_B2 * xl - LS_A2 * yl;
-            float yl2 = HS_B0 * yl + s_eq_hs_s1[0];
-            s_eq_hs_s1[0] = HS_B1 * yl - HS_A1 * yl2 + s_eq_hs_s2[0];
-            s_eq_hs_s2[0] = HS_B2 * yl - HS_A2 * yl2;
+            float yl = ls_b0 * xl + s_eq_ls_s1[0];
+            s_eq_ls_s1[0] = ls_b1 * xl - ls_a1 * yl + s_eq_ls_s2[0];
+            s_eq_ls_s2[0] = ls_b2 * xl - ls_a2 * yl;
+            float yl2 = hs_b0 * yl + s_eq_hs_s1[0];
+            s_eq_hs_s1[0] = hs_b1 * yl - hs_a1 * yl2 + s_eq_hs_s2[0];
+            s_eq_hs_s2[0] = hs_b2 * yl - hs_a2 * yl2;
             xl = yl2;
 
-            float yr = LS_B0 * xr + s_eq_ls_s1[1];
-            s_eq_ls_s1[1] = LS_B1 * xr - LS_A1 * yr + s_eq_ls_s2[1];
-            s_eq_ls_s2[1] = LS_B2 * xr - LS_A2 * yr;
-            float yr2 = HS_B0 * yr + s_eq_hs_s1[1];
-            s_eq_hs_s1[1] = HS_B1 * yr - HS_A1 * yr2 + s_eq_hs_s2[1];
-            s_eq_hs_s2[1] = HS_B2 * yr - HS_A2 * yr2;
+            float yr = ls_b0 * xr + s_eq_ls_s1[1];
+            s_eq_ls_s1[1] = ls_b1 * xr - ls_a1 * yr + s_eq_ls_s2[1];
+            s_eq_ls_s2[1] = ls_b2 * xr - ls_a2 * yr;
+            float yr2 = hs_b0 * yr + s_eq_hs_s1[1];
+            s_eq_hs_s1[1] = hs_b1 * yr - hs_a1 * yr2 + s_eq_hs_s2[1];
+            s_eq_hs_s2[1] = hs_b2 * yr - hs_a2 * yr2;
             xr = yr2;
         }
         float ax = (xl < 0.0f) ? -xl : xl;
@@ -598,14 +616,109 @@ bool dsp_get_compressor(void)
     return s_comp_on;
 }
 
+static void update_returns(void)
+{
+    float all = (float)s_fx_level / 100.0f;
+
+    s_rv_ret = ((float)DSP_REVERB_RETURN_Q15 * all * ((float)s_rv_level / 100.0f)) * (1.0f / 32768.0f);
+    s_ch_ret = (int32_t)((float)DSP_CHORUS_RETURN_Q15 * all * ((float)s_ch_level / 100.0f));
+}
+
 void dsp_set_effects_level(uint8_t percent)
 {
     if (percent > 200U) {
         percent = 200U;
     }
     s_fx_level = percent;
-    s_rv_ret = ((float)DSP_REVERB_RETURN_Q15 * (float)percent / 100.0f) * (1.0f / 32768.0f);
-    s_ch_ret = (DSP_CHORUS_RETURN_Q15 * (int32_t)percent) / 100;
+    update_returns();
+}
+
+void dsp_set_reverb_level(uint8_t percent)
+{
+    s_rv_level = (percent > 200U) ? 200U : percent;
+    update_returns();
+}
+
+void dsp_set_chorus_level(uint8_t percent)
+{
+    s_ch_level = (percent > 200U) ? 200U : percent;
+    update_returns();
+}
+
+uint8_t dsp_get_reverb_level(void)
+{
+    return s_rv_level;
+}
+
+uint8_t dsp_get_chorus_level(void)
+{
+    return s_ch_level;
+}
+
+/* RBJ shelf: gain in dB, shelf slope S. Writes b0 b1 b2 a1 a2 (a0 divided out). */
+static void shelf_coef(bool high, float f0, float gain_db, float slope, float rate, float *out)
+{
+    float a = powf(10.0f, gain_db / 40.0f);
+    float w = 6.2831853f * f0 / rate;
+    float cw = cosf(w);
+    float al = sinf(w) / 2.0f * sqrtf((a + 1.0f / a) * (1.0f / slope - 1.0f) + 2.0f);
+    float tsa = 2.0f * sqrtf(a) * al;
+    float b0, b1, b2, a0, a1, a2;
+
+    if (!high) {
+        b0 = a * ((a + 1.0f) - (a - 1.0f) * cw + tsa);
+        b1 = 2.0f * a * ((a - 1.0f) - (a + 1.0f) * cw);
+        b2 = a * ((a + 1.0f) - (a - 1.0f) * cw - tsa);
+        a0 = (a + 1.0f) + (a - 1.0f) * cw + tsa;
+        a1 = -2.0f * ((a - 1.0f) + (a + 1.0f) * cw);
+        a2 = (a + 1.0f) + (a - 1.0f) * cw - tsa;
+    } else {
+        b0 = a * ((a + 1.0f) + (a - 1.0f) * cw + tsa);
+        b1 = -2.0f * a * ((a - 1.0f) + (a + 1.0f) * cw);
+        b2 = a * ((a + 1.0f) + (a - 1.0f) * cw - tsa);
+        a0 = (a + 1.0f) - (a - 1.0f) * cw + tsa;
+        a1 = 2.0f * ((a - 1.0f) - (a + 1.0f) * cw);
+        a2 = (a + 1.0f) - (a - 1.0f) * cw - tsa;
+    }
+    out[0] = b0 / a0;
+    out[1] = b1 / a0;
+    out[2] = b2 / a0;
+    out[3] = a1 / a0;
+    out[4] = a2 / a0;
+}
+
+void dsp_set_tone(int8_t bass_db, int8_t treble_db)
+{
+    if (bass_db < -DSP_TONE_MAX_DB) bass_db = -DSP_TONE_MAX_DB;
+    if (bass_db > DSP_TONE_MAX_DB) bass_db = DSP_TONE_MAX_DB;
+    if (treble_db < -DSP_TONE_MAX_DB) treble_db = -DSP_TONE_MAX_DB;
+    if (treble_db > DSP_TONE_MAX_DB) treble_db = DSP_TONE_MAX_DB;
+    s_tone_bass = bass_db;
+    s_tone_treble = treble_db;
+
+    float lo = EQ_BASE_LOW_DB + (float)bass_db;
+    float hi = EQ_BASE_HIGH_DB + (float)treble_db;
+    float top = (lo > hi) ? lo : hi;
+
+    if (bass_db == 0 && treble_db == 0) {
+        memcpy(s_eq_pending, TONE_FLAT, sizeof(s_eq_pending));
+        s_eq_pending_headroom = EQ_HEADROOM_FLAT;
+    } else {
+        shelf_coef(false, 95.0f, lo, 1.0f, s_rate, &s_eq_pending[0]);
+        shelf_coef(true, 6000.0f, hi, 1.035f, s_rate, &s_eq_pending[5]);
+        s_eq_pending_headroom = 1.05f * powf(10.0f, ((top > 0.0f) ? top : 0.0f) / 20.0f);
+    }
+    s_eq_dirty = true;
+}
+
+int8_t dsp_get_tone_bass(void)
+{
+    return s_tone_bass;
+}
+
+int8_t dsp_get_tone_treble(void)
+{
+    return s_tone_treble;
 }
 
 uint8_t dsp_get_effects_level(void)
@@ -615,7 +728,7 @@ uint8_t dsp_get_effects_level(void)
 
 bool dsp_effects_active(void)
 {
-    return s_fx_level > 0U;
+    return s_fx_level > 0U && (s_rv_level > 0U || s_ch_level > 0U);
 }
 
 void dsp_effects_process(const int32_t *rev_in, const int32_t *cho_in,
@@ -624,8 +737,12 @@ void dsp_effects_process(const int32_t *rev_in, const int32_t *cho_in,
     if (s_fx_level == 0U) {
         return;
     }
-    reverb_block(rev_in, acc_l, acc_r, n);
-    chorus_block(cho_in, acc_l, acc_r, n);
+    if (s_rv_ret > 0.0f) {
+        reverb_block(rev_in, acc_l, acc_r, n);
+    }
+    if (s_ch_ret > 0) {
+        chorus_block(cho_in, acc_l, acc_r, n);
+    }
 }
 
 void dsp_clear(void)
@@ -672,5 +789,12 @@ void dsp_init(float sample_rate)
     s_gr_max = 0.0f;
     s_lim_samples = 0;
     dsp_set_effects_level(100);
+    s_rv_level = 100;
+    s_ch_level = 100;
+    update_returns();
+    dsp_set_tone(0, 0);
+    memcpy(s_eq_coef, s_eq_pending, sizeof(s_eq_coef));
+    s_eq_headroom = s_eq_pending_headroom;
+    s_eq_dirty = false;
     dsp_clear();
 }

@@ -1140,7 +1140,7 @@ void test_sound_bank_switching_toggles_between_opl4_and_sc55_samples(void)
         }
     }
     TEST_ASSERT_NOT_NULL(snare_sc55);
-    TEST_ASSERT_EQUAL_PTR(SC55_PCM_SNARE, snare_sc55);
+    TEST_ASSERT_EQUAL_PTR(SC55_PCM_SNARE_FAT, snare_sc55);
     TEST_ASSERT_NOT_EQUAL(snare_opl4, snare_sc55);
 
     /* Test DOOM Distortion Guitar gets SC-55 bite in SC-55 mode */

@@ -72,33 +72,12 @@ uint8_t yamaha_fm_get_section_gain(uint8_t section)
 
 uint8_t yamaha_fm_section_of_program(uint8_t program)
 {
-    program &= 127U;
-    if (program < 16U) return SYNTH_SECT_PIANO;
-    if (program < 24U) return SYNTH_SECT_ORGAN;
-    if (program < 32U) return SYNTH_SECT_GUITAR;
-    if (program < 40U) return SYNTH_SECT_BASS;
-    if (program < 56U) return SYNTH_SECT_STRINGS;
-    if (program < 64U) return SYNTH_SECT_BRASS;
-    if (program < 80U) return SYNTH_SECT_REEDS;
-    if (program < 88U) return SYNTH_SECT_LEAD;
-    if (program < 104U) return SYNTH_SECT_PADS;
-    return SYNTH_SECT_OTHER;
+    return synth_section_of_program(program);
 }
 
 uint8_t yamaha_fm_section_of_drum(uint8_t note)
 {
-    switch (note) {
-    case 35: case 36:
-        return SYNTH_SECT_KICK;
-    case 37: case 38: case 39: case 40:
-        return SYNTH_SECT_SNARE;
-    case 42: case 44: case 46:
-        return SYNTH_SECT_HATS;
-    case 49: case 51: case 52: case 53: case 55: case 57: case 59:
-        return SYNTH_SECT_CYMBALS;
-    default:
-        return SYNTH_SECT_TOMS;
-    }
+    return synth_section_of_drum(note);
 }
 
 void yamaha_fm_set_channel_gain(uint8_t channel, uint8_t percent)

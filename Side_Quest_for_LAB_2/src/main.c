@@ -141,6 +141,12 @@ static bool play_song(uint32_t index)
     }
     yamaha_fm_set_melody_channel(midi_karaoke_get_melody_channel());
     karaoke_mixer_song_started(s.song_code);
+    {
+        midi_usage_t usage;
+
+        midi_karaoke_get_usage(&usage);
+        karaoke_mixer_set_usage(usage.valid, usage.sections, usage.channels);
+    }
     midi_karaoke_play();
     random_play_note(&s_app.random, index);
     printk("[App] Started playing: #%u - %s (%s)\n", (unsigned)s.song_code, s.title, s.singer);
@@ -207,6 +213,7 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
         uint8_t num_cursor = s_app.num_cursor;
         uint8_t set_cursor = s_app.settings_cursor;
         uint8_t mix_cursor = s_app.mixer_cursor;
+        mix_view_t mix_view = *karaoke_mixer_view();
         k_mutex_unlock(&s_app.lock);
 
         if (mode == UI_VIEW_MIXER) {
@@ -215,7 +222,7 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
             uint8_t drum_note = 0;
 
             yamaha_fm_get_channel_activity(programs, levels, &drum_note);
-            karaoke_ui_render_mixer(mix_cursor, karaoke_mixer_get(), programs, levels,
+            karaoke_ui_render_mixer(mix_cursor, &mix_view, karaoke_mixer_get(), programs, levels,
                                     yamaha_fm_get_drum_parts(), karaoke_mixer_song_has_own_mix());
         } else if (mode == UI_VIEW_SETTINGS) {
             const karaoke_settings_t *cfg = karaoke_settings_get();
@@ -274,6 +281,18 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
 
 /* Set when the mixer opens or a button pair was pressed, cleared once all four directions are up. */
 static bool s_mixer_latch;
+
+/* The mixer row under the cursor (the cursor counts rows of this song's list, not MIX_ITEM_* numbers). */
+static uint8_t mixer_item(void)
+{
+    const mix_view_t *v = karaoke_mixer_view();
+    uint8_t pos = s_app.mixer_cursor;
+
+    if (pos >= v->count) {
+        pos = (uint8_t)(v->count - 1U);
+    }
+    return v->item[pos];
+}
 
 /* Both are called with s_app.lock held. */
 static void open_mixer(void)
@@ -459,10 +478,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 k_mutex_lock(&s_app.lock, K_FOREVER);
                 if (s_app.ui_mode == UI_VIEW_MIXER) {
                     /* Mute > Solo > Normal on a channel, reset on a value row, or the action rows */
-                    if (s_app.mixer_cursor == MIX_ITEM_DONE) {
+                    if (mixer_item() == MIX_ITEM_DONE) {
                         close_mixer();
                     } else {
-                        karaoke_mixer_click(s_app.mixer_cursor);
+                        karaoke_mixer_click(mixer_item());
                     }
                 } else if (s_app.ui_mode != UI_VIEW_SETTINGS) {
                     s_app.ui_mode = UI_VIEW_SETTINGS;
@@ -517,10 +536,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                             karaoke_ui_set_view(UI_VIEW_PLAYING);
                         }
                     } else if (s_app.ui_mode == UI_VIEW_MIXER) {
-                        if (s_app.mixer_cursor == MIX_ITEM_DONE) {
+                        if (mixer_item() == MIX_ITEM_DONE) {
                             close_mixer();
                         } else {
-                            karaoke_mixer_click(s_app.mixer_cursor);
+                            karaoke_mixer_click(mixer_item());
                         }
                     } else if (s_app.ui_mode == UI_VIEW_BROWSER) {
                         uint32_t total = karaoke_catalog_get_total_songs();
@@ -649,19 +668,19 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 bool rt_go = free_lr && rt && (rt_rep == MIXER_FIRST_TICKS || (rt_rep > MIXER_REPEAT_TICKS && (rt_rep % 3U) == 0U));
 
                 if (up_go) {
-                    s_app.mixer_cursor = (uint8_t)((s_app.mixer_cursor + MIX_ITEM_COUNT - 1U) % MIX_ITEM_COUNT);
+                    s_app.mixer_cursor = (uint8_t)((s_app.mixer_cursor + karaoke_mixer_view()->count - 1U) % karaoke_mixer_view()->count);
                 }
                 if (dn_go) {
-                    s_app.mixer_cursor = (uint8_t)((s_app.mixer_cursor + 1U) % MIX_ITEM_COUNT);
+                    s_app.mixer_cursor = (uint8_t)((s_app.mixer_cursor + 1U) % karaoke_mixer_view()->count);
                 }
                 if (lt_go) {
-                    karaoke_mixer_adjust(s_app.mixer_cursor, -1);
+                    karaoke_mixer_adjust(mixer_item(), -1);
                 }
                 if (rt_go) {
-                    if (s_app.mixer_cursor == MIX_ITEM_DONE) {
+                    if (mixer_item() == MIX_ITEM_DONE) {
                         close_mixer();
                     } else {
-                        karaoke_mixer_adjust(s_app.mixer_cursor, +1);
+                        karaoke_mixer_adjust(mixer_item(), +1);
                     }
                 }
             } else if (mode == UI_VIEW_BROWSER) {

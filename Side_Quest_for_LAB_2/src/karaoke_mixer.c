@@ -25,6 +25,7 @@ static uint32_t s_song_code;
 static bool s_song_known;               /* a song has been started */
 static bool s_file_exists;              /* the current song has a file on the card */
 static bool s_dirty;                    /* the mix changed since it was loaded or last saved */
+static mix_view_t s_view;               /* the rows the mixer shows for this song */
 
 void karaoke_mixer_apply(const karaoke_mix_t *mix)
 {
@@ -69,6 +70,7 @@ void karaoke_mixer_init(void)
     s_song_known = false;
     s_file_exists = false;
     s_dirty = false;
+    karaoke_mix_build_view(&s_view, false, 0, 0);
     karaoke_mixer_apply(&s_mix);
 }
 
@@ -84,7 +86,23 @@ void karaoke_mixer_song_started(uint32_t song_code)
     if (karaoke_mix_song_path(path, sizeof(path), song_code) && load_file(path, &s_mix)) {
         s_file_exists = true;
     }
+    karaoke_mix_build_view(&s_view, false, 0, 0);       /* everything, until the song's usage arrives */
     karaoke_mixer_apply(&s_mix);
+}
+
+void karaoke_mixer_set_usage(bool valid, uint16_t sections, uint16_t channels)
+{
+    karaoke_mix_build_view(&s_view, valid, sections, channels);
+    if (valid) {
+        s_mix.mute &= channels;
+        s_mix.solo &= channels;
+        karaoke_mixer_apply(&s_mix);
+    }
+}
+
+const mix_view_t *karaoke_mixer_view(void)
+{
+    return &s_view;
 }
 
 const karaoke_mix_t *karaoke_mixer_get(void)

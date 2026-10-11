@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "midi_karaoke_parser.h"
+#include "synth_sections.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -153,30 +154,7 @@ void yamaha_fm_song_time_event(uint32_t song_us);
 void yamaha_fm_set_effects_level(uint8_t percent);
 uint8_t yamaha_fm_get_effects_level(void);
 
-/**
- * Mixer sections. Every melodic note belongs to one by its General MIDI program and every drum
- * hit by its key, so a section can be turned up or down whatever channel plays it.
- */
-typedef enum {
-    SYNTH_SECT_PIANO = 0,   /* programs 0-15: pianos, chromatic percussion */
-    SYNTH_SECT_ORGAN,       /* 16-23 */
-    SYNTH_SECT_GUITAR,      /* 24-31 */
-    SYNTH_SECT_BASS,        /* 32-39 */
-    SYNTH_SECT_STRINGS,     /* 40-55: strings, ensembles, choir */
-    SYNTH_SECT_BRASS,       /* 56-63 */
-    SYNTH_SECT_REEDS,       /* 64-79: reeds and pipes */
-    SYNTH_SECT_LEAD,        /* 80-87 */
-    SYNTH_SECT_PADS,        /* 88-103: pads and synth effects */
-    SYNTH_SECT_OTHER,       /* 104-127: ethnic, percussive, sound effects */
-    SYNTH_SECT_KICK,        /* drum keys 35, 36 */
-    SYNTH_SECT_SNARE,       /* 37-40: stick, snare, clap */
-    SYNTH_SECT_HATS,        /* 42, 44, 46 */
-    SYNTH_SECT_CYMBALS,     /* 49, 51-53, 55, 57, 59 */
-    SYNTH_SECT_TOMS,        /* toms and all other percussion */
-    SYNTH_SECT_COUNT
-} synth_section_t;
-
-#define SYNTH_SECT_DRUMS_FIRST  SYNTH_SECT_KICK
+/* The mixer sections (synth_sections.h) and the percent limit that every mixer level shares. */
 
 #define SYNTH_MIX_MAX_PERCENT   200
 

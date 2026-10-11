@@ -232,6 +232,80 @@ void test_song_mix_path(void)
     TEST_ASSERT_FALSE(karaoke_mix_song_path(path, 8, 13238));
 }
 
+void test_the_view_lists_only_used_sections_and_channels(void)
+{
+    mix_view_t v;
+    karaoke_mix_build_view(&v, true, (1U << 0) | (1U << 6) | (1U << 10), (1U << 0) | (1U << 2) | (1U << 9));
+    /* piano, reeds, kick | reverb chorus bass treble | ch1 ch3 ch10 | reset save done */
+    TEST_ASSERT_EQUAL_UINT8(3 + 4 + 3 + 3, v.count);
+    TEST_ASSERT_EQUAL_UINT8(0, v.item[0]);
+    TEST_ASSERT_EQUAL_UINT8(6, v.item[1]);
+    TEST_ASSERT_EQUAL_UINT8(10, v.item[2]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_REVERB, v.item[3]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_TREBLE, v.item[6]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_CHANNEL0 + 0, v.item[7]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_CHANNEL0 + 2, v.item[8]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_CHANNEL0 + 9, v.item[9]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_RESET, v.item[10]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_SAVE_ALL, v.item[11]);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_DONE, v.item[12]);
+}
+
+void test_the_view_lists_everything_when_the_song_was_not_scanned(void)
+{
+    mix_view_t v;
+    karaoke_mix_build_view(&v, false, 0, 0);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_COUNT, v.count);
+    for (uint8_t i = 0; i < v.count; i++) TEST_ASSERT_EQUAL_UINT8(i, v.item[i]);
+}
+
+void test_a_song_that_plays_nothing_still_has_the_effect_and_action_rows(void)
+{
+    mix_view_t v;
+    karaoke_mix_build_view(&v, true, 0, 0);
+    TEST_ASSERT_EQUAL_UINT8(4 + 3, v.count);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_DONE, v.item[v.count - 1]);
+}
+
+void test_the_view_never_repeats_or_overflows(void)
+{
+    mix_view_t v;
+    karaoke_mix_build_view(&v, true, 0xFFFF, 0xFFFF);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_COUNT, v.count);
+    uint8_t seen[MIX_ITEM_COUNT] = {0};
+    for (uint8_t i = 0; i < v.count; i++) {
+        TEST_ASSERT_TRUE(v.item[i] < MIX_ITEM_COUNT);
+        TEST_ASSERT_EQUAL_UINT8(0, seen[v.item[i]]);
+        seen[v.item[i]] = 1;
+    }
+}
+
+void test_general_midi_names_fit_the_row_and_are_all_present(void)
+{
+    for (int p = 0; p < 128; p++) {
+        const char *n = karaoke_mix_program_name((uint8_t)p);
+        TEST_ASSERT_NOT_NULL(n);
+        TEST_ASSERT_TRUE(strlen(n) > 2U);
+        TEST_ASSERT_TRUE(strlen(n) <= 15U);
+    }
+    TEST_ASSERT_EQUAL_STRING("Grand Piano", karaoke_mix_program_name(0));
+    TEST_ASSERT_EQUAL_STRING("Finger Bass", karaoke_mix_program_name(33));
+    TEST_ASSERT_EQUAL_STRING("Clarinet", karaoke_mix_program_name(71));
+    TEST_ASSERT_EQUAL_STRING("Flute", karaoke_mix_program_name(73));
+    TEST_ASSERT_EQUAL_STRING("Gunshot", karaoke_mix_program_name(127));
+    TEST_ASSERT_EQUAL_STRING("Flute", karaoke_mix_program_name(73 + 128));          /* top bit ignored */
+}
+
+void test_drum_kit_names(void)
+{
+    TEST_ASSERT_EQUAL_STRING("Standard", karaoke_mix_kit_name(0));
+    TEST_ASSERT_EQUAL_STRING("Standard", karaoke_mix_kit_name(3));
+    TEST_ASSERT_EQUAL_STRING("Power", karaoke_mix_kit_name(16));
+    TEST_ASSERT_EQUAL_STRING("TR-808", karaoke_mix_kit_name(25));
+    TEST_ASSERT_EQUAL_STRING("Electronic", karaoke_mix_kit_name(24));
+    TEST_ASSERT_EQUAL_STRING("Orchestra", karaoke_mix_kit_name(48));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -251,5 +325,11 @@ int main(void)
     RUN_TEST(test_text_with_nothing_understood_is_reported_and_changes_nothing);
     RUN_TEST(test_a_partial_file_keeps_the_rest_of_the_mix);
     RUN_TEST(test_song_mix_path);
+    RUN_TEST(test_the_view_lists_only_used_sections_and_channels);
+    RUN_TEST(test_the_view_lists_everything_when_the_song_was_not_scanned);
+    RUN_TEST(test_a_song_that_plays_nothing_still_has_the_effect_and_action_rows);
+    RUN_TEST(test_the_view_never_repeats_or_overflows);
+    RUN_TEST(test_general_midi_names_fit_the_row_and_are_all_present);
+    RUN_TEST(test_drum_kit_names);
     return UNITY_END();
 }

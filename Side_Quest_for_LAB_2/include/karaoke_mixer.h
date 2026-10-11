@@ -36,6 +36,16 @@ void karaoke_mixer_init(void);
 /** A new song starts: its own mix if it has one, otherwise the default. Applied at once. */
 void karaoke_mixer_song_started(uint32_t song_code);
 
+/**
+ * What the song that just started really plays (see midi_usage_t). The mixer then lists only those
+ * channels and sections. Mute and solo on a channel the song never uses are dropped, so a hidden
+ * "solo" can never silence the song. Call right after karaoke_mixer_song_started().
+ */
+void karaoke_mixer_set_usage(bool valid, uint16_t sections, uint16_t channels);
+
+/** The rows to show, in order. Valid until the next song starts. */
+const mix_view_t *karaoke_mixer_view(void);
+
 const karaoke_mix_t *karaoke_mixer_get(void);
 const karaoke_mix_t *karaoke_mixer_get_default(void);
 

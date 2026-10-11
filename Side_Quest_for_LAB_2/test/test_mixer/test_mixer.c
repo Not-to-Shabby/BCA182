@@ -264,6 +264,36 @@ void test_set_as_default_keeps_per_song_channel_settings_out_of_other_songs(void
     TEST_ASSERT_EQUAL_UINT8(95, g_chan[5]);
 }
 
+void test_the_view_shrinks_to_what_the_song_uses(void)
+{
+    karaoke_mixer_init();
+    karaoke_mixer_song_started(1);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_COUNT, karaoke_mixer_view()->count);
+    karaoke_mixer_set_usage(true, (1U << 0) | (1U << 4), (1U << 1) | (1U << 9));
+    TEST_ASSERT_EQUAL_UINT8(2 + 4 + 2 + 3, karaoke_mixer_view()->count);
+    karaoke_mixer_song_started(2);                                    /* the next song starts with everything */
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_COUNT, karaoke_mixer_view()->count);
+}
+
+void test_an_unscanned_song_keeps_every_row(void)
+{
+    karaoke_mixer_init();
+    karaoke_mixer_song_started(1);
+    karaoke_mixer_set_usage(false, 0, 0);
+    TEST_ASSERT_EQUAL_UINT8(MIX_ITEM_COUNT, karaoke_mixer_view()->count);
+}
+
+void test_solo_and_mute_on_a_channel_the_song_never_plays_are_dropped(void)
+{
+    karaoke_mixer_init();
+    mix_store_write("SD:/mix/000010.cfg", "SOLO=64\nMUTE=65\n", 16);   /* channels 7 and 1 */
+    karaoke_mixer_song_started(10);
+    TEST_ASSERT_EQUAL_UINT16(0x0040, g_solo);
+    karaoke_mixer_set_usage(true, 1U << 0, 1U << 0);                  /* the song only plays channel 1 */
+    TEST_ASSERT_EQUAL_UINT16(0, g_solo);                              /* a hidden solo cannot silence it */
+    TEST_ASSERT_EQUAL_UINT16(0x0001, g_mute);                         /* a mute on a used channel stays */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -279,5 +309,8 @@ int main(void)
     RUN_TEST(test_a_corrupt_song_file_falls_back_to_the_default);
     RUN_TEST(test_leaving_twice_writes_only_once);
     RUN_TEST(test_set_as_default_keeps_per_song_channel_settings_out_of_other_songs);
+    RUN_TEST(test_the_view_shrinks_to_what_the_song_uses);
+    RUN_TEST(test_an_unscanned_song_keeps_every_row);
+    RUN_TEST(test_solo_and_mute_on_a_channel_the_song_never_plays_are_dropped);
     return UNITY_END();
 }

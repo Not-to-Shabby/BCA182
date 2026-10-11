@@ -99,6 +99,27 @@ size_t karaoke_mix_format(const karaoke_mix_t *mix, char *out, size_t out_size);
  */
 bool karaoke_mix_parse(karaoke_mix_t *mix, const char *text);
 
+/**
+ * The rows the mixer shows for the song that is playing: only the instrument sections and the
+ * channels the song actually uses, plus the effect and tone rows and the three action rows.
+ * Entries are MIX_ITEM_* numbers, in screen order.
+ */
+typedef struct {
+    uint8_t count;
+    uint8_t item[MIX_ITEM_COUNT];
+} mix_view_t;
+
+/**
+ * @param usage_valid false if the song could not be scanned: then every section and channel is listed.
+ * @param sections    bit s = section s (synth_section_t) has a note.
+ * @param channels    bit n = channel n plays at least one note.
+ */
+void karaoke_mix_build_view(mix_view_t *view, bool usage_valid, uint16_t sections, uint16_t channels);
+
+/** General MIDI instrument name (at most 15 characters) and the name of a drum kit by its program. */
+const char *karaoke_mix_program_name(uint8_t program);
+const char *karaoke_mix_kit_name(uint8_t program);
+
 /** SD path of a song's mix file: SD:/mix/<code>.cfg. */
 bool karaoke_mix_song_path(char *out, size_t out_size, uint32_t song_code);
 

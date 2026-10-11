@@ -106,18 +106,20 @@ void karaoke_ui_render_number_select(const uint8_t *digits, uint8_t cursor,
 void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8_t drum, uint8_t melody, uint8_t bank);
 
 /**
- * @brief Draw the mixer: a scrolling list of MIX_ITEM_COUNT rows with the selected row kept in view.
- *        Only rows whose content changed are redrawn.
+ * @brief Draw the mixer: a scrolling list of the rows in @p view with the selected row kept in
+ *        view. Only rows whose content changed are redrawn.
  *
- * @param cursor Selected row (0 .. MIX_ITEM_COUNT - 1).
+ * @param cursor Position of the selected row in @p view.
+ * @param view The rows to show (see karaoke_mix_build_view()).
  * @param mix Values to show.
- * @param programs General MIDI program of each channel (names the instrument group).
+ * @param programs General MIDI program of each channel (names the instrument, or the drum kit).
  * @param levels Current loudness of each channel (0-255), shown as an activity dot.
  * @param drum_mask Bit n set = channel n is a drum part.
  * @param song_mix True if this song has a mix of its own, false if it plays the default.
  */
-void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uint8_t programs[16],
-                             const uint8_t levels[16], uint16_t drum_mask, bool song_mix);
+void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karaoke_mix_t *mix,
+                             const uint8_t programs[16], const uint8_t levels[16],
+                             uint16_t drum_mask, bool song_mix);
 
 #ifdef __cplusplus
 }

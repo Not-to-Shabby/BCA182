@@ -11,6 +11,7 @@
  */
 
 #include "midi_karaoke_parser.h"
+#include "synth_sections.h"
 #include "dtcm.h"
 #include <string.h>
 #include <stdio.h>
@@ -790,6 +791,89 @@ static void detect_melody_channel(void)
     }
 }
 
+/* ---- what the song plays: channels, drum parts, instrument sections ---- */
+static midi_usage_t s_usage;
+static DTCM_BSS uint32_t s_use_prog[16][4];     /* programs that sounded a note, per channel (bit per program) */
+static DTCM_BSS uint32_t s_use_key[16][4];      /* note numbers played, per channel (matters if it is a drum part) */
+
+/*
+ * Walks every event of every track once. A note counts for the program that is in effect on its
+ * channel when it starts. Whether a channel is a drum part is only known once the whole file has
+ * been read (a Roland GS message may sit in any track), so the programs and keys are kept per
+ * channel and sorted into sections at the end.
+ */
+static void scan_usage(void)
+{
+    uint8_t prog[16] = {0};
+    midi_event_t ev;
+    track_cursor_t c;
+
+    memset(&s_usage, 0, sizeof(s_usage));
+    memset(s_use_prog, 0, sizeof(s_use_prog));
+    memset(s_use_key, 0, sizeof(s_use_key));
+    s_usage.drum_parts = (uint16_t)(1U << 9);
+
+    for (uint16_t t = 0; t < s_midi.num_tracks; t++) {
+        scan_cursor_init(&c, t);
+        for (;;) {
+            (void)cursor_vlq(&c);
+            ev_kind_t k = read_event(&c, &ev);
+            if (k == MEV_END || k == MEV_END_OF_TRACK) {
+                break;
+            }
+            if (k == MEV_PROGRAM) {
+                prog[ev.chan & 15U] = (uint8_t)(ev.d1 & 127U);
+            } else if (k == MEV_RHYTHM_PART) {
+                if (ev.d1 != 0U) {
+                    s_usage.drum_parts |= (uint16_t)(1U << (ev.chan & 15U));
+                } else if (ev.chan != 9U) {
+                    s_usage.drum_parts &= (uint16_t)~(1U << (ev.chan & 15U));
+                }
+            } else if (k == MEV_NOTE_ON && ev.d2 != 0U) {
+                uint8_t ch = ev.chan & 15U;
+                uint8_t pg = prog[ch];
+
+                if ((s_usage.channels & (1U << ch)) == 0U) {
+                    s_usage.channels |= (uint16_t)(1U << ch);
+                    s_usage.program[ch] = pg;
+                }
+                if (s_usage.notes[ch] < 0xFFFFU) {
+                    s_usage.notes[ch]++;
+                }
+                s_use_prog[ch][pg >> 5] |= 1U << (pg & 31U);
+                s_use_key[ch][(ev.d1 & 127U) >> 5] |= 1U << (ev.d1 & 31U);
+            }
+        }
+    }
+
+    for (uint8_t ch = 0; ch < 16U; ch++) {
+        if ((s_usage.channels & (1U << ch)) == 0U) {
+            continue;
+        }
+        if ((s_usage.drum_parts & (1U << ch)) != 0U) {
+            for (uint8_t key = 0; key < 128U; key++) {
+                if ((s_use_key[ch][key >> 5] & (1U << (key & 31U))) != 0U) {
+                    s_usage.sections |= (uint16_t)(1U << synth_section_of_drum(key));
+                }
+            }
+        } else {
+            for (uint8_t pg = 0; pg < 128U; pg++) {
+                if ((s_use_prog[ch][pg >> 5] & (1U << (pg & 31U))) != 0U) {
+                    s_usage.sections |= (uint16_t)(1U << synth_section_of_program(pg));
+                }
+            }
+        }
+    }
+    s_usage.valid = !s_source_failed;
+}
+
+void midi_karaoke_get_usage(midi_usage_t *out)
+{
+    if (out != NULL) {
+        *out = s_usage;
+    }
+}
+
 int8_t midi_karaoke_get_melody_channel(void)
 {
     return s_detected_melody;
@@ -824,6 +908,7 @@ bool midi_karaoke_load(const midi_source_t *src)
     s_midi.is_playing = false;
     s_midi.is_paused = false;
     s_source_failed = false;
+    memset(&s_usage, 0, sizeof(s_usage));
     memset(&s_midi.stats, 0, sizeof(s_midi.stats));
 
     uint8_t hdr[14];
@@ -903,6 +988,14 @@ bool midi_karaoke_load(const midi_source_t *src)
     /* The scans read the whole file from the card; keep the display responsive meanwhile. */
     pre_parse_karaoke_lyrics();
     detect_melody_channel();
+    {
+        int64_t t0 = k_uptime_ticks();
+
+        scan_usage();
+        printk("[MIDI] Usage scan %u us: %u channels, sections 0x%04x\n",
+               (unsigned)k_ticks_to_us_floor64(k_uptime_ticks() - t0),
+               (unsigned)__builtin_popcount(s_usage.channels), (unsigned)s_usage.sections);
+    }
 
     if (s_source_failed) {
         printk("[MIDI] The song could not be read completely; not playing it\n");

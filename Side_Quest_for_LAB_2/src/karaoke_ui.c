@@ -527,6 +527,7 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
 #define MIX_VISIBLE_ROWS    8U
 #define MIX_ROW_H           21U
 #define MIX_LIST_Y          40U
+#define MIX_EMPTY_HASH      1U
 
 static uint32_t s_mix_row_hash[MIX_VISIBLE_ROWS];
 static uint8_t s_mix_last_top = 0xFFU;
@@ -538,11 +539,12 @@ static uint32_t mix_hash(uint32_t h, uint32_t v)
     return (h ^ v) * 16777619U;
 }
 
-void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uint8_t programs[16],
-                             const uint8_t levels[16], uint16_t drum_mask, bool song_mix)
+void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karaoke_mix_t *mix,
+                             const uint8_t programs[16], const uint8_t levels[16],
+                             uint16_t drum_mask, bool song_mix)
 {
-    if (s_view_mode != UI_VIEW_MIXER) return;
-    if (cursor >= MIX_ITEM_COUNT) cursor = MIX_ITEM_COUNT - 1U;
+    if (s_view_mode != UI_VIEW_MIXER || view->count == 0U) return;
+    if (cursor >= view->count) cursor = (uint8_t)(view->count - 1U);
 
     if (k_mutex_lock(&s_ui_lcd_mutex, K_MSEC(50)) != 0) {
         return;
@@ -550,7 +552,11 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
 
     uint8_t top = 0;
     if (cursor >= 4U) top = (uint8_t)(cursor - 3U);
-    if (top > MIX_ITEM_COUNT - MIX_VISIBLE_ROWS) top = (uint8_t)(MIX_ITEM_COUNT - MIX_VISIBLE_ROWS);
+    if (view->count <= MIX_VISIBLE_ROWS) {
+        top = 0;
+    } else if (top > view->count - MIX_VISIBLE_ROWS) {
+        top = (uint8_t)(view->count - MIX_VISIBLE_ROWS);
+    }
 
     if (s_mixer_redraw) {
         s_mix_last_top = 0xFFU;
@@ -574,9 +580,20 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
     }
 
     for (uint8_t slot = 0; slot < MIX_VISIBLE_ROWS; slot++) {
-        uint8_t item = (uint8_t)(top + slot);
+        uint8_t pos = (uint8_t)(top + slot);
+
+        if (pos >= view->count) {                       /* a short list: clear what the longer one left */
+            if (s_mix_row_hash[slot] != MIX_EMPTY_HASH) {
+                uint16_t ey = (uint16_t)(MIX_LIST_Y + slot * MIX_ROW_H);
+
+                lcd_fill_rect(0, ey, 239, (uint16_t)(ey + MIX_ROW_H - 1U), LCD_COLOR_BLACK);
+                s_mix_row_hash[slot] = MIX_EMPTY_HASH;
+            }
+            continue;
+        }
+        uint8_t item = view->item[pos];
         mix_item_kind_t kind = karaoke_mix_item_kind(item);
-        bool sel = (item == cursor);
+        bool sel = (pos == cursor);
         int value = karaoke_mix_item_value(mix, item);
         int state = 0;
         uint8_t ch = 0;
@@ -595,7 +612,7 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
         h = mix_hash(h, (uint32_t)(value + 1000));
         h = mix_hash(h, (uint32_t)state + (sel ? 16U : 0U) + (changed ? 64U : 0U) + (uint32_t)lvl * 256U);
         h = mix_hash(h, drum ? 1U : 0U);
-        h = mix_hash(h, kind == MIX_KIND_CHANNEL ? yamaha_fm_section_of_program(programs[ch]) : 0U);
+        h = mix_hash(h, kind == MIX_KIND_CHANNEL ? programs[ch] : 0U);
         if (h == s_mix_row_hash[slot] && h != 0U) {
             continue;
         }
@@ -610,8 +627,13 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
         if (kind == MIX_KIND_CHANNEL) {
             char scratch[12];
 
-            snprintf(name, sizeof(name), "%s %s", karaoke_mix_item_name(item, scratch, sizeof(scratch)),
-                     drum ? "Drums" : karaoke_mix_item_name((uint8_t)yamaha_fm_section_of_program(programs[ch]), NULL, 0));
+            const char *chname = karaoke_mix_item_name(item, scratch, sizeof(scratch));
+
+            if (drum) {
+                snprintf(name, sizeof(name), "%s %s kit", chname, karaoke_mix_kit_name(programs[ch]));
+            } else {
+                snprintf(name, sizeof(name), "%s %s", chname, karaoke_mix_program_name(programs[ch]));
+            }
             if (state == 1) {
                 snprintf(val, sizeof(val), "MUTE");
             } else if (state == 2) {
@@ -666,10 +688,11 @@ void karaoke_ui_render_mixer(uint8_t cursor, const karaoke_mix_t *mix, const uin
     }
 
     /* footer: what OK does on the selected row */
-    uint8_t foot = (uint8_t)(karaoke_mix_item_kind(cursor));
-    if (cursor == MIX_ITEM_RESET) foot = 10;
-    if (cursor == MIX_ITEM_SAVE_ALL) foot = 11;
-    if (cursor == MIX_ITEM_DONE) foot = 12;
+    uint8_t cur_item = view->item[cursor];
+    uint8_t foot = (uint8_t)(karaoke_mix_item_kind(cur_item));
+    if (cur_item == MIX_ITEM_RESET) foot = 10;
+    if (cur_item == MIX_ITEM_SAVE_ALL) foot = 11;
+    if (cur_item == MIX_ITEM_DONE) foot = 12;
     if (s_mix_last_foot != foot) {
         const char *line1 = "L+R together: Reset row";
         if (foot == MIX_KIND_CHANNEL) line1 = "L+R together: Mute / Solo";

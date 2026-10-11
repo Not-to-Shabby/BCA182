@@ -135,6 +135,21 @@ void midi_karaoke_tick(uint32_t elapsed_us);
 int8_t midi_karaoke_get_melody_channel(void);
 
 /**
+ * @brief What the loaded song actually plays, found by reading every track once at load time.
+ *        The mixer uses it to list only the channels and instrument sections the song has.
+ */
+typedef struct {
+    bool valid;                 /**< false if the scan could not finish (then show everything) */
+    uint16_t channels;          /**< bit n = MIDI channel n plays at least one note */
+    uint16_t drum_parts;        /**< bit n = channel n is a drum part (channel 10, or set by a GS message) */
+    uint16_t sections;          /**< bit s = mixer section s (synth_section_t) has a note */
+    uint8_t program[16];        /**< program in effect at each channel's first note */
+    uint16_t notes[16];         /**< notes per channel (stops counting at 65535) */
+} midi_usage_t;
+
+void midi_karaoke_get_usage(midi_usage_t *out);
+
+/**
  * @brief Counters for the streaming reads of the song loaded last.
  */
 typedef struct {

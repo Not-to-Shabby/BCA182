@@ -84,6 +84,8 @@ def fetch_sf2_resampled(start_sample, src_rate, out_len, apply_tail_fade=True, s
     while len(out) < out_len:
         out.append(0.0)
 
+    if peak is None and apply_tail_fade:
+        peak = 30000   # drum hits are stored at full scale; the synth applies a per-key gain
     mx = max(1.0, max(abs(v) for v in out))
     scale = (peak / mx) if peak else 1.0
     if mx * scale > 32767:

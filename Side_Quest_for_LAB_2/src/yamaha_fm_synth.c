@@ -552,6 +552,7 @@ typedef struct {
     const int16_t *data;
     uint32_t len;
     float pitch;
+    float gain;
 } opl4_drum_wave_t;
 
 /* Key map of the SC-55 Standard drum preset: every key has its own recording. The preset tunes
@@ -559,37 +560,37 @@ typedef struct {
 static bool make_sc55_wave(uint8_t note, opl4_drum_wave_t *w)
 {
     switch (note) {
-    case 35: w->data = SC55_PCM_KICK2;     w->len = SC55_PCM_KICK2_LEN;     w->pitch = 1.00f; return true;
-    case 36: w->data = SC55_PCM_KICK;      w->len = SC55_PCM_KICK_LEN;      w->pitch = 1.00f; return true;
-    case 37: w->data = SC55_PCM_STICK;     w->len = SC55_PCM_STICK_LEN;     w->pitch = 1.00f; return true;
-    case 38: w->data = SC55_PCM_SNARE_FAT; w->len = SC55_PCM_SNARE_FAT_LEN; w->pitch = 1.00f; return true;
-    case 39: w->data = SC55_PCM_CLAP;      w->len = SC55_PCM_CLAP_LEN;      w->pitch = 1.00f; return true;
-    case 40: w->data = SC55_PCM_SNARE;     w->len = SC55_PCM_SNARE_LEN;     w->pitch = 1.00f; return true;
-    case 41: w->data = SC55_PCM_TOM41;     w->len = SC55_PCM_TOM41_LEN;     w->pitch = 1.00f; return true;
-    case 42: w->data = SC55_PCM_HAT_C;     w->len = SC55_PCM_HAT_C_LEN;     w->pitch = 1.00f; return true;
-    case 43: w->data = SC55_PCM_TOM43;     w->len = SC55_PCM_TOM43_LEN;     w->pitch = 1.00f; return true;
-    case 44: w->data = SC55_PCM_HAT_P;     w->len = SC55_PCM_HAT_P_LEN;     w->pitch = 1.00f; return true;
-    case 45: w->data = SC55_PCM_TOM45;     w->len = SC55_PCM_TOM45_LEN;     w->pitch = 1.00f; return true;
-    case 46: w->data = SC55_PCM_HAT_O;     w->len = SC55_PCM_HAT_O_LEN;     w->pitch = 1.00f; return true;
-    case 47: w->data = SC55_PCM_TOM47;     w->len = SC55_PCM_TOM47_LEN;     w->pitch = 1.00f; return true;
-    case 48: w->data = SC55_PCM_TOM48;     w->len = SC55_PCM_TOM48_LEN;     w->pitch = 1.00f; return true;
-    case 49: w->data = SC55_PCM_CRASH;     w->len = SC55_PCM_CRASH_LEN;     w->pitch = 0.595f; return true;
-    case 50: w->data = SC55_PCM_TOM50;     w->len = SC55_PCM_TOM50_LEN;     w->pitch = 1.00f; return true;
-    case 51: w->data = SC55_PCM_RIDE;      w->len = SC55_PCM_RIDE_LEN;      w->pitch = 0.63f; return true;
-    case 52: w->data = SC55_PCM_CHINA;     w->len = SC55_PCM_CHINA_LEN;     w->pitch = 1.00f; return true;
-    case 53: w->data = SC55_PCM_RIDE_BELL; w->len = SC55_PCM_RIDE_BELL_LEN; w->pitch = 0.63f; return true;
-    case 54: w->data = SC55_PCM_TAMB;      w->len = SC55_PCM_TAMB_LEN;      w->pitch = 1.00f; return true;
-    case 55: w->data = SC55_PCM_SPLASH;    w->len = SC55_PCM_SPLASH_LEN;    w->pitch = 1.00f; return true;
-    case 56: w->data = SC55_PCM_COWBELL;   w->len = SC55_PCM_COWBELL_LEN;   w->pitch = 1.00f; return true;
-    case 57: w->data = SC55_PCM_CRASH;     w->len = SC55_PCM_CRASH_LEN;     w->pitch = 0.63f; return true;
-    case 59: w->data = SC55_PCM_RIDE2;     w->len = SC55_PCM_RIDE2_LEN;     w->pitch = 0.63f; return true;
+    case 35: w->data = SC55_PCM_KICK2;     w->len = SC55_PCM_KICK2_LEN;     w->pitch = 1.00f; w->gain = 0.90f; return true;
+    case 36: w->data = SC55_PCM_KICK;      w->len = SC55_PCM_KICK_LEN;      w->pitch = 1.00f; w->gain = 0.92f; return true;
+    case 37: w->data = SC55_PCM_STICK;     w->len = SC55_PCM_STICK_LEN;     w->pitch = 1.00f; w->gain = 0.36f; return true;
+    case 38: w->data = SC55_PCM_SNARE_FAT; w->len = SC55_PCM_SNARE_FAT_LEN; w->pitch = 1.00f; w->gain = 1.48f; return true;
+    case 39: w->data = SC55_PCM_CLAP;      w->len = SC55_PCM_CLAP_LEN;      w->pitch = 1.00f; w->gain = 1.17f; return true;
+    case 40: w->data = SC55_PCM_SNARE;     w->len = SC55_PCM_SNARE_LEN;     w->pitch = 1.00f; w->gain = 1.55f; return true;
+    case 41: w->data = SC55_PCM_TOM41;     w->len = SC55_PCM_TOM41_LEN;     w->pitch = 1.00f; w->gain = 2.75f; return true;
+    case 42: w->data = SC55_PCM_HAT_C;     w->len = SC55_PCM_HAT_C_LEN;     w->pitch = 1.00f; w->gain = 1.06f; return true;
+    case 43: w->data = SC55_PCM_TOM43;     w->len = SC55_PCM_TOM43_LEN;     w->pitch = 1.00f; w->gain = 2.82f; return true;
+    case 44: w->data = SC55_PCM_HAT_P;     w->len = SC55_PCM_HAT_P_LEN;     w->pitch = 1.00f; w->gain = 0.65f; return true;
+    case 45: w->data = SC55_PCM_TOM45;     w->len = SC55_PCM_TOM45_LEN;     w->pitch = 1.00f; w->gain = 2.82f; return true;
+    case 46: w->data = SC55_PCM_HAT_O;     w->len = SC55_PCM_HAT_O_LEN;     w->pitch = 1.00f; w->gain = 2.04f; return true;
+    case 47: w->data = SC55_PCM_TOM47;     w->len = SC55_PCM_TOM47_LEN;     w->pitch = 1.00f; w->gain = 2.57f; return true;
+    case 48: w->data = SC55_PCM_TOM48;     w->len = SC55_PCM_TOM48_LEN;     w->pitch = 1.00f; w->gain = 2.14f; return true;
+    case 49: w->data = SC55_PCM_CRASH;     w->len = SC55_PCM_CRASH_LEN;     w->pitch = 0.595f; w->gain = 2.60f; return true;
+    case 50: w->data = SC55_PCM_TOM50;     w->len = SC55_PCM_TOM50_LEN;     w->pitch = 1.00f; w->gain = 1.66f; return true;
+    case 51: w->data = SC55_PCM_RIDE;      w->len = SC55_PCM_RIDE_LEN;      w->pitch = 0.63f; w->gain = 0.75f; return true;
+    case 52: w->data = SC55_PCM_CHINA;     w->len = SC55_PCM_CHINA_LEN;     w->pitch = 1.00f; w->gain = 2.09f; return true;
+    case 53: w->data = SC55_PCM_RIDE_BELL; w->len = SC55_PCM_RIDE_BELL_LEN; w->pitch = 0.63f; w->gain = 0.98f; return true;
+    case 54: w->data = SC55_PCM_TAMB;      w->len = SC55_PCM_TAMB_LEN;      w->pitch = 1.00f; w->gain = 1.41f; return true;
+    case 55: w->data = SC55_PCM_SPLASH;    w->len = SC55_PCM_SPLASH_LEN;    w->pitch = 1.00f; w->gain = 2.82f; return true;
+    case 56: w->data = SC55_PCM_COWBELL;   w->len = SC55_PCM_COWBELL_LEN;   w->pitch = 1.00f; w->gain = 1.01f; return true;
+    case 57: w->data = SC55_PCM_CRASH;     w->len = SC55_PCM_CRASH_LEN;     w->pitch = 0.63f; w->gain = 2.60f; return true;
+    case 59: w->data = SC55_PCM_RIDE2;     w->len = SC55_PCM_RIDE2_LEN;     w->pitch = 0.63f; w->gain = 0.93f; return true;
     default: return false;
     }
 }
 
 static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
 {
-    opl4_drum_wave_t w = { NULL, 0, 1.0f };
+    opl4_drum_wave_t w = { NULL, 0, 1.0f, 1.0f };
     bool sc55 = (s_sound_bank == SYNTH_BANK_ROLAND_SC55);
     if (sc55 && make_sc55_wave(note, &w)) {
         return w;
@@ -1005,7 +1006,7 @@ static void drum_note_on(uint8_t ch, uint8_t note, uint8_t vel)
         v->pcm_len = w.len;
         v->pcm_pos = 0;
         v->pcm_step = (uint32_t)(((float)OPL4_PCM_SAMPLE_RATE * 65536.0f * w.pitch) / s_sample_rate);
-        v->pcm_amp = 1.0f;
+        v->pcm_amp = w.gain;
         v->pcm_k = 1.0f;
     }
 }
@@ -1896,7 +1897,7 @@ static void render_drum_sub(fm_voice_t *v, size_t len, float ch_gain,
                 int32_t s0 = pcm[idx];
                 int32_t s1 = pcm[idx + 1U];
                 int32_t pval = (s0 * (256 - frac) + s1 * frac) >> 8;
-                o += (pval * pq) >> 15;
+                o += (int32_t)(((int64_t)pval * pq) >> 15);
                 pcm_pos += pcm_step;
             }
         }

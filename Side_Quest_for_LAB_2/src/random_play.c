@@ -42,7 +42,7 @@ static bool is_recent(const random_play_t *st, uint8_t window, uint32_t index)
     return false;
 }
 
-uint32_t random_play_pick(const random_play_t *st, uint32_t total, uint32_t r)
+uint32_t random_play_pick_filtered(const random_play_t *st, uint32_t total, uint32_t r, random_play_filter_fn filter)
 {
     if (total == 0U) {
         return 0U;
@@ -53,13 +53,29 @@ uint32_t random_play_pick(const random_play_t *st, uint32_t total, uint32_t r)
         window = total - 1U;
     }
 
-    /* Walk forward from the random start to the first song that was not played lately.
-     * At most `window` songs are skipped, and fewer than `total` exist, so this ends. */
     uint32_t candidate = r % total;
+    uint32_t attempts = 0;
+    while (attempts < total) {
+        if (!is_recent(st, (uint8_t)window, candidate)) {
+            if (filter == NULL || filter(candidate)) {
+                return candidate;
+            }
+        }
+        candidate = (candidate + 1U) % total;
+        attempts++;
+    }
+
+    /* Fallback if no song matched filter: pick first non-recent song */
+    candidate = r % total;
     while (is_recent(st, (uint8_t)window, candidate)) {
         candidate = (candidate + 1U) % total;
     }
     return candidate;
+}
+
+uint32_t random_play_pick(const random_play_t *st, uint32_t total, uint32_t r)
+{
+    return random_play_pick_filtered(st, total, r, NULL);
 }
 
 bool random_play_idle_due(uint32_t now_ms, uint32_t last_input_ms, bool song_finished)

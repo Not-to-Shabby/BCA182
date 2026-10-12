@@ -173,10 +173,19 @@ def build_karaoke_sd(json_path, midi_dir, out_dir, limit=None, lang_filter=None,
         print(f"\nFinished in {elapsed:.1f} seconds, but {failures:,} songs were NOT copied: the card is incomplete.")
         sys.exit(1)
 
+    # Copy sensme.bin for 8MB W25Q64 SPI NOR Flash mood database sync
+    sensme_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sd_card", "sensme.bin")
+    if os.path.exists(sensme_src):
+        sensme_dst = os.path.join(out_dir, "sensme.bin")
+        shutil.copy2(sensme_src, sensme_dst)
+        print(f"   [OK] Copied {sensme_dst} for 8MB W25Q64 NOR Flash sync")
+
     print(f"\nDone in {elapsed:.1f} seconds!")
     print(f"MicroSD Card is ready for RT-Spark!")
     print(f"Contents:")
     print(f"  - {os.path.join(out_dir, 'songs.idx')}")
+    if os.path.exists(sensme_src):
+        print(f"  - {os.path.join(out_dir, 'sensme.bin')} (Sony SensMe 12-channel mood database)")
     if per_shard:
         print(f"  - {out_midi_dir}/<NNN>/*.mid ({len(per_shard)} folders, largest {max(per_shard.values()):,} files)")
 

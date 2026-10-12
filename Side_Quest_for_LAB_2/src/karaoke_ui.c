@@ -10,6 +10,7 @@
 #include "karaoke_ui.h"
 #include "lcd_st7789.h"
 #include "yamaha_fm_synth.h"
+#include "sensme.h"
 #include <stdio.h>
 #include <string.h>
 #include <zephyr/kernel.h>
@@ -19,6 +20,7 @@ K_MUTEX_DEFINE(s_ui_lcd_mutex);
 static ui_view_mode_t s_view_mode = UI_VIEW_PLAYING;
 static song_entry_t s_current_song;
 static uint32_t s_song_id;
+static uint32_t s_current_catalog_index = 0;
 
 /* Differential rendering trackers to eliminate flicker */
 static char s_last_cur_lyric[KARAOKE_MAX_LINE_CHARS + 1] = "";
@@ -120,6 +122,11 @@ void karaoke_ui_set_view(ui_view_mode_t mode)
 ui_view_mode_t karaoke_ui_get_view(void)
 {
     return s_view_mode;
+}
+
+void karaoke_ui_set_current_song_index(uint32_t index)
+{
+    s_current_catalog_index = index;
 }
 
 void karaoke_ui_set_current_song(const song_entry_t *song)
@@ -257,8 +264,14 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
 
         snprintf(line_buf, sizeof(line_buf), "Time: %02u:%02u  BPM:%u", (unsigned)min, (unsigned)s, status->bpm);
         char padded_time[28];
-        pad_string(padded_time, line_buf, 26);
+        pad_string(padded_time, line_buf, 20);
         lcd_show_string(8, 148, padded_time, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+        sensme_data_t sd;
+        if (sensme_get_song_data(s_current_catalog_index, &sd)) {
+            char m_buf[14];
+            snprintf(m_buf, sizeof(m_buf), "[%s]", sensme_channel_name(sd.channel));
+            lcd_show_string(172, 148, m_buf, sensme_channel_color(sd.channel), LCD_COLOR_BLACK);
+        }
 
         /* Progress Bar: width = 220 pixels (x=9 to x=229) */
         uint16_t fill_w = 0;
@@ -312,8 +325,17 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
     if (active_voices != s_last_voices) {
         s_last_voices = active_voices;
         bool sc55 = (yamaha_fm_get_sound_bank() == SYNTH_BANK_ROLAND_SC55);
-        snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  [%s] ", active_voices, sc55 ? "SC55" : "OPL4");
-        lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+        sensme_data_t sd_hud;
+        if (sensme_get_song_data(s_current_catalog_index, &sd_hud)) {
+            snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70 [%s]", active_voices, sc55 ? "SC55" : "OPL4");
+            lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+            char sm_coords[16];
+            snprintf(sm_coords, sizeof(sm_coords), "V:%3u E:%3u", sd_hud.valence, sd_hud.energy);
+            lcd_show_string(156, 218, sm_coords, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+        } else {
+            snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  [%s] ", active_voices, sc55 ? "SC55" : "OPL4");
+            lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+        }
     }
 
     k_mutex_unlock(&s_ui_lcd_mutex);
@@ -446,14 +468,14 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
     }
 
     /* 1. Header */
-    lcd_fill_rect(0, 0, 239, 24, LCD_COLOR_NAVY);
-    lcd_show_string(32, 4, "=== AUDIO SETTINGS ===", LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+    lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
+    lcd_show_string(32, 3, "=== AUDIO SETTINGS ===", LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
 
-    /* 2. Instructions (y: 26 to 40) */
-    lcd_fill_rect(0, 26, 239, 40, LCD_COLOR_BLACK);
-    lcd_show_string(14, 26, "UP/DN: Select  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+    /* 2. Instructions */
+    lcd_fill_rect(0, 23, 239, 34, LCD_COLOR_BLACK);
+    lcd_show_string(14, 23, "UP/DN: Select  L/R: Adjust", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
 
-    /* 3. Setting rows (y: 42 to 208), 24 px apart */
+    /* 3. Setting rows (y: 35 to 202), 21 px apart */
     static const char *labels[] = {
         "Master Volume",
         "Instrument Vol",
@@ -463,60 +485,65 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
     uint8_t vals[] = { vol, inst, drum, melody };
     static const uint8_t maxs[] = { 100, 200, 200, 250 };
 
-    uint16_t y = 42;
+    uint16_t y = 35;
     for (uint8_t i = 0; i < 4; i++) {
         bool sel = (i == cursor);
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
 
-        lcd_fill_rect(8, y, 231, y + 22, bg);
-        lcd_draw_rect(8, y, 231, y + 22, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+        lcd_fill_rect(8, y, 231, y + 19, bg);
+        lcd_draw_rect(8, y, 231, y + 19, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
 
         char buf[32];
         snprintf(buf, sizeof(buf), "%s: %u%%", labels[i], vals[i]);
-        lcd_show_string(14, y + 1, buf, fg, bg);
+        lcd_show_string(14, y, buf, fg, bg);
 
-        /* Gauge bar: width up to 180 pixels */
+        /* Gauge bar */
         uint16_t gw = (uint16_t)(((uint32_t)vals[i] * 180U) / maxs[i]);
         if (gw > 180) gw = 180;
-        lcd_draw_rect(14, y + 17, 196, y + 21, LCD_COLOR_BLACK);
+        lcd_draw_rect(14, y + 15, 196, y + 18, LCD_COLOR_BLACK);
         if (gw > 0) {
-            lcd_fill_rect(15, y + 18, 15 + gw, y + 20, sel ? LCD_COLOR_GREEN : LCD_COLOR_CYAN);
+            lcd_fill_rect(15, y + 16, 15 + gw, y + 17, sel ? LCD_COLOR_GREEN : LCD_COLOR_CYAN);
         }
         if (gw < 180) {
-            lcd_fill_rect(15 + gw + 1, y + 18, 195, y + 20, LCD_COLOR_BLACK);
+            lcd_fill_rect(15 + gw + 1, y + 16, 195, y + 17, LCD_COLOR_BLACK);
         }
 
-        y += 24;
+        y += 21;
     }
 
-    /* 4. Row 5: sound card bank, row 6: opens the mixer, row 7: Done */
-    for (uint8_t r = 4; r < 7; r++) {
+    /* 4. Rows 4..7: Sound Bank, SensMe, Mixer, Done */
+    for (uint8_t r = 4; r < 8; r++) {
         bool sel = (cursor == r);
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
-        char buf[32];
+        char buf[36];
 
-        lcd_fill_rect(8, y, 231, y + 22, bg);
-        lcd_draw_rect(8, y, 231, y + 22, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+        lcd_fill_rect(8, y, 231, y + 19, bg);
+        lcd_draw_rect(8, y, 231, y + 19, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
         if (r == 4) {
             snprintf(buf, sizeof(buf), "Sound Card: <%s>", (bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
         } else if (r == 5) {
+            uint8_t ach = sensme_get_active_channel();
+            snprintf(buf, sizeof(buf), "SensMe Mood: <%s> >", sensme_channel_name(ach));
+            if (!sel) fg = sensme_channel_color(ach);
+        } else if (r == 6) {
             snprintf(buf, sizeof(buf), "Mixer: sections/channels >");
         } else {
             snprintf(buf, sizeof(buf), "Done  (save & return) >");
             fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN;
         }
-        lcd_show_string(14, y + 3, buf, fg, bg);
-        y += 24;
+        lcd_show_string(14, y + 2, buf, fg, bg);
+        y += 21;
     }
 
-    /* 5. Footer: what RIGHT does on the selected row */
+    /* 5. Footer */
     const char *hint = "UP+DN together: Save & Exit";
-    if (cursor == 5) hint = "RIGHT: Open the mixer";
-    if (cursor == 6) hint = "RIGHT: Save & return";
-    lcd_fill_rect(0, 214, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 220, hint, LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    if (cursor == 5) hint = "RIGHT: SensMe Mood Radar";
+    if (cursor == 6) hint = "RIGHT: Open the mixer";
+    if (cursor == 7) hint = "RIGHT: Save & return";
+    lcd_fill_rect(0, 206, 239, 239, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 214, hint, LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
@@ -718,6 +745,107 @@ void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karao
         lcd_show_string(8, 225, "UP+DN together: Save & Exit", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
         s_mix_last_foot = foot;
     }
+
+    k_mutex_unlock(&s_ui_lcd_mutex);
+}
+
+/* -------------------------------------------------------------------------- */
+/* SensMe Mood Channels & 2D Circular Radar Scope                             */
+/* -------------------------------------------------------------------------- */
+void karaoke_ui_render_sensme(uint8_t cursor, uint8_t active_filter, uint32_t current_song_index)
+{
+    if (s_view_mode != UI_VIEW_SENSME) return;
+
+    if (k_mutex_lock(&s_ui_lcd_mutex, K_MSEC(50)) != 0) {
+        return;
+    }
+
+    /* 1. Header (y: 0 to 22) */
+    lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
+    lcd_show_string(14, 3, "=== SENSME MOOD CHANNELS ===", LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+
+    /* 2. Sub-header (y: 24 to 34): Active filter */
+    lcd_fill_rect(0, 24, 239, 34, LCD_COLOR_BLACK);
+    char buf[36];
+    if (active_filter == SENSME_CH_ALL) {
+        snprintf(buf, sizeof(buf), "Filter: <All Songs> (%u)", (unsigned)sensme_get_song_count());
+    } else {
+        snprintf(buf, sizeof(buf), "Filter: <%s> (%u)", sensme_channel_name(active_filter),
+                 (unsigned)sensme_get_channel_song_count(active_filter));
+    }
+    lcd_show_string(8, 24, buf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+
+    /* 3. Left side: Channel List (x: 4 to 134, y: 38 to 204) - 7 visible slots */
+    uint8_t top = 0;
+    if (cursor >= 4U) top = (uint8_t)(cursor - 3U);
+    if (top > SENSME_CH_COUNT - 7U) top = (uint8_t)(SENSME_CH_COUNT - 7U);
+
+    uint16_t row_y = 38;
+    for (uint8_t slot = 0; slot < 7; slot++) {
+        uint8_t ch_id = (uint8_t)(top + slot);
+        bool sel = (ch_id == cursor);
+        bool is_active = (ch_id == active_filter);
+
+        uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_BLACK;
+        uint16_t fg = sel ? LCD_COLOR_YELLOW : (is_active ? LCD_COLOR_GREEN : LCD_COLOR_WHITE);
+
+        lcd_fill_rect(4, row_y, 134, row_y + 21, bg);
+        lcd_draw_rect(4, row_y, 134, row_y + 21, sel ? LCD_COLOR_YELLOW : LCD_COLOR_DARKGREY);
+
+        char ch_buf[24];
+        if (ch_id == SENSME_CH_ALL) {
+            snprintf(ch_buf, sizeof(ch_buf), "0. %s", sensme_channel_name(ch_id));
+        } else {
+            snprintf(ch_buf, sizeof(ch_buf), "%u. %s", (unsigned)ch_id, sensme_channel_name(ch_id));
+        }
+        lcd_show_string(8, row_y + 3, ch_buf, fg, bg);
+        row_y += 24;
+    }
+
+    /* 4. Right side: Circular 2D Mood Radar Scope (center cx=188, cy=105, R=44) */
+    uint16_t cx = 188;
+    uint16_t cy = 105;
+    uint16_t R = 44;
+
+    /* Radar background and concentric rings */
+    lcd_fill_rect(138, 38, 238, 204, LCD_COLOR_BLACK);
+    lcd_draw_rect(138, 38, 238, 204, LCD_COLOR_DARKGREY);
+    lcd_draw_circle(cx, cy, R, LCD_COLOR_DARKGREY);
+    lcd_draw_circle(cx, cy, R / 2, 0x2104); /* Faint inner ring */
+
+    /* Crosshairs */
+    lcd_draw_line(cx - R + 2, cy, cx + R - 2, cy, LCD_COLOR_GRAY);
+    lcd_draw_line(cx, cy - R + 2, cx, cy + R - 2, LCD_COLOR_GRAY);
+
+    /* Quadrant labels */
+    lcd_show_string(cx - R + 3, cy - R + 3, "EXT", LCD_COLOR_RED, LCD_COLOR_BLACK);
+    lcd_show_string(cx + R - 26, cy - R + 3, "DNC", LCD_COLOR_MAGENTA, LCD_COLOR_BLACK);
+    lcd_show_string(cx - R + 3, cy + R - 14, "EMO", LCD_COLOR_PURPLE, LCD_COLOR_BLACK);
+    lcd_show_string(cx + R - 26, cy + R - 14, "RLX", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+
+    /* Plot Current Song Mood Point */
+    sensme_data_t cur_data;
+    if (sensme_get_song_data(current_song_index, &cur_data)) {
+        int px = (int)cx + ((int)cur_data.valence - 128) * (int)(R - 6) / 128;
+        int py = (int)cy - ((int)cur_data.energy - 128) * (int)(R - 6) / 128;
+        uint16_t pcolor = sensme_channel_color(cur_data.channel);
+
+        /* Glowing pulsating point */
+        lcd_fill_circle((uint16_t)px, (uint16_t)py, 3, pcolor);
+        lcd_draw_circle((uint16_t)px, (uint16_t)py, 5, LCD_COLOR_WHITE);
+
+        /* Mood info under radar */
+        char mood_buf[20];
+        snprintf(mood_buf, sizeof(mood_buf), "V:%3u E:%3u", cur_data.valence, cur_data.energy);
+        lcd_show_string(142, 160, mood_buf, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+        snprintf(mood_buf, sizeof(mood_buf), "[%s]", sensme_channel_name(cur_data.channel));
+        lcd_show_string(142, 178, mood_buf, pcolor, LCD_COLOR_BLACK);
+    }
+
+    /* 5. Footer (y: 206 to 239) */
+    lcd_fill_rect(0, 206, 239, 239, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 208, "RIGHT: Apply Mood Filter", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 224, "UP+DN: Save & Exit to Song", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }

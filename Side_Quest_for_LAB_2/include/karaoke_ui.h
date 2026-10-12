@@ -24,7 +24,8 @@ typedef enum {
     UI_VIEW_PLAYING,
     UI_VIEW_NUMBER_SELECT,
     UI_VIEW_SETTINGS,
-    UI_VIEW_MIXER
+    UI_VIEW_MIXER,
+    UI_VIEW_SENSME
 } ui_view_mode_t;
 
 typedef struct {
@@ -54,6 +55,7 @@ ui_view_mode_t karaoke_ui_get_view(void);
  * @brief Set current metadata for the active karaoke track.
  */
 void karaoke_ui_set_current_song(const song_entry_t *song);
+void karaoke_ui_set_current_song_index(uint32_t index);
 
 /**
  * @brief Refresh active karaoke view (lyrics, progress bar, VU meters, BPM).
@@ -120,6 +122,15 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
 void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karaoke_mix_t *mix,
                              const uint8_t programs[16], const uint8_t levels[16],
                              uint16_t drum_mask, bool song_mix);
+
+/**
+ * @brief Render the SensMe mood channels menu and 2D circular mood radar scope.
+ *
+ * @param cursor Active selected channel in list (0..12).
+ * @param active_filter Currently active mood channel filter (0 = All).
+ * @param current_song_index Catalog index of the currently playing song.
+ */
+void karaoke_ui_render_sensme(uint8_t cursor, uint8_t active_filter, uint32_t current_song_index);
 
 #ifdef __cplusplus
 }

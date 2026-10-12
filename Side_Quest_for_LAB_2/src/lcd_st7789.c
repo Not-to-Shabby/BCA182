@@ -329,6 +329,56 @@ void lcd_draw_rect(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t 
     lcd_draw_line(x2, y1, x2, y2, color);
 }
 
+void lcd_draw_circle(uint16_t x0, uint16_t y0, uint16_t r, uint16_t color)
+{
+    int x = (int)r;
+    int y = 0;
+    int err = 0;
+
+    while (x >= y) {
+        lcd_draw_pixel((uint16_t)(x0 + x), (uint16_t)(y0 + y), color);
+        lcd_draw_pixel((uint16_t)(x0 + y), (uint16_t)(y0 + x), color);
+        lcd_draw_pixel((uint16_t)(x0 - y), (uint16_t)(y0 + x), color);
+        lcd_draw_pixel((uint16_t)(x0 - x), (uint16_t)(y0 + y), color);
+        lcd_draw_pixel((uint16_t)(x0 - x), (uint16_t)(y0 - y), color);
+        lcd_draw_pixel((uint16_t)(x0 - y), (uint16_t)(y0 - x), color);
+        lcd_draw_pixel((uint16_t)(x0 + y), (uint16_t)(y0 - x), color);
+        lcd_draw_pixel((uint16_t)(x0 + x), (uint16_t)(y0 - y), color);
+
+        if (err <= 0) {
+            y += 1;
+            err += 2 * y + 1;
+        }
+        if (err > 0) {
+            x -= 1;
+            err -= 2 * x + 1;
+        }
+    }
+}
+
+void lcd_fill_circle(uint16_t x0, uint16_t y0, uint16_t r, uint16_t color)
+{
+    int x = (int)r;
+    int y = 0;
+    int err = 0;
+
+    while (x >= y) {
+        lcd_draw_line((uint16_t)(x0 - x), (uint16_t)(y0 + y), (uint16_t)(x0 + x), (uint16_t)(y0 + y), color);
+        lcd_draw_line((uint16_t)(x0 - y), (uint16_t)(y0 + x), (uint16_t)(x0 + y), (uint16_t)(y0 + x), color);
+        lcd_draw_line((uint16_t)(x0 - x), (uint16_t)(y0 - y), (uint16_t)(x0 + x), (uint16_t)(y0 - y), color);
+        lcd_draw_line((uint16_t)(x0 - y), (uint16_t)(y0 - x), (uint16_t)(x0 + y), (uint16_t)(y0 - x), color);
+
+        if (err <= 0) {
+            y += 1;
+            err += 2 * y + 1;
+        }
+        if (err > 0) {
+            x -= 1;
+            err -= 2 * x + 1;
+        }
+    }
+}
+
 void lcd_draw_line(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t color)
 {
     int dx = (x2 >= x1) ? (x2 - x1) : (x1 - x2);

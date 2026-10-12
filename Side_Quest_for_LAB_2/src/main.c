@@ -14,6 +14,7 @@
 #include "karaoke_catalog.h"
 #include "karaoke_settings.h"
 #include "karaoke_mixer.h"
+#include "sensme.h"
 #include "sd_card_reader.h"
 #include "random_play.h"
 #include "led_matrix.h"
@@ -52,6 +53,9 @@ static struct {
 
     /* Mixer View State */
     uint8_t mixer_cursor;
+
+    /* SensMe View State */
+    uint8_t sensme_cursor;
 
     /* Random play: songs picked lately, when a button was last touched, last automatic pick */
     random_play_t random;
@@ -125,6 +129,7 @@ static bool play_song(uint32_t index)
     if (!karaoke_catalog_get_song(index, &s)) return false;
 
     /* Immediately paint the new song title & [Loading Song...] on the LCD (zero black screen delay!) */
+    karaoke_ui_set_current_song_index(index);
     karaoke_ui_set_current_song(&s);
 
     /* The song that was playing keeps the mix it was left with. */
@@ -169,7 +174,7 @@ static bool play_random_song(void)
     if (total == 0U) {
         return false;
     }
-    uint32_t index = random_play_pick(&s_app.random, total, random_u32());
+    uint32_t index = random_play_pick_filtered(&s_app.random, total, random_u32(), sensme_matches_active_channel);
 
     s_app.current_song_index = index;
     printk("[App] Random pick: catalog index %u of %u\n", (unsigned)index, (unsigned)total);
@@ -216,7 +221,9 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
         mix_view_t mix_view = *karaoke_mixer_view();
         k_mutex_unlock(&s_app.lock);
 
-        if (mode == UI_VIEW_MIXER) {
+        if (mode == UI_VIEW_SENSME) {
+            karaoke_ui_render_sensme(s_app.sensme_cursor, sensme_get_active_channel(), s_app.current_song_index);
+        } else if (mode == UI_VIEW_MIXER) {
             uint8_t programs[16];
             uint8_t levels[16];
             uint8_t drum_note = 0;
@@ -292,6 +299,15 @@ static uint8_t mixer_item(void)
         pos = (uint8_t)(v->count - 1U);
     }
     return v->item[pos];
+}
+
+/* Called with s_app.lock held. */
+static void open_sensme(void)
+{
+    s_app.sensme_cursor = sensme_get_active_channel();
+    s_app.ui_mode = UI_VIEW_SENSME;
+    karaoke_ui_set_view(UI_VIEW_SENSME);
+    printk("[Nav] Entered SENSME mode!\n");
 }
 
 /* Both are called with s_app.lock held. */
@@ -445,6 +461,9 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 if (s_app.ui_mode == UI_VIEW_SETTINGS) {
                     /* No OK button needed: UP + DOWN saves and returns to the song */
                     karaoke_settings_save();
+                    s_app.ui_mode = UI_VIEW_PLAYING;
+                    karaoke_ui_set_view(UI_VIEW_PLAYING);
+                } else if (s_app.ui_mode == UI_VIEW_SENSME) {
                     s_app.ui_mode = UI_VIEW_PLAYING;
                     karaoke_ui_set_view(UI_VIEW_PLAYING);
                 } else if (s_app.ui_mode == UI_VIEW_MIXER) {
@@ -614,10 +633,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 uint8_t cur_mel  = cfg->melody_gain;
 
                 if (up && !last_up) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 6) % 7;
+                    s_app.settings_cursor = (s_app.settings_cursor + 7) % 8;
                 }
                 if (dn && !last_dn) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 7;
+                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 8;
                 }
 
                 if (lt && !last_lt) {
@@ -646,12 +665,26 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     } else if (s_app.settings_cursor == 4) {
                         karaoke_settings_set_sound_bank(cfg->sound_bank ? 0 : 1);
                     } else if (s_app.settings_cursor == 5) {
-                        open_mixer();
+                        open_sensme();
                     } else if (s_app.settings_cursor == 6) {
+                        open_mixer();
+                    } else if (s_app.settings_cursor == 7) {
                         karaoke_settings_save();
                         s_app.ui_mode = UI_VIEW_PLAYING;
                         karaoke_ui_set_view(UI_VIEW_PLAYING);
                     }
+                }
+            } else if (mode == UI_VIEW_SENSME) {
+                /* SensMe: UP/DOWN navigate 12 mood channels, RIGHT applies filter */
+                if (up && !last_up) {
+                    s_app.sensme_cursor = (s_app.sensme_cursor + SENSME_CH_COUNT - 1U) % SENSME_CH_COUNT;
+                }
+                if (dn && !last_dn) {
+                    s_app.sensme_cursor = (s_app.sensme_cursor + 1U) % SENSME_CH_COUNT;
+                }
+                if (rt && !last_rt) {
+                    sensme_set_active_channel(s_app.sensme_cursor);
+                    printk("[SensMe] Selected mood filter: %s\n", sensme_channel_name(s_app.sensme_cursor));
                 }
             } else if (mode == UI_VIEW_MIXER) {
                 /* Mixer: UP/DOWN pick a row, LEFT/RIGHT adjust it. The first step comes after 60 ms so that
@@ -835,6 +868,7 @@ int main(void)
     /* 5. Initialize Persistent Audio Settings (survives reset & shutdown) */
     karaoke_settings_init();
     karaoke_mixer_init();
+    sensme_init();
 
     /* 6. Start a random song (a KARAOKE_BOOT_SONG of 0 or more picks a fixed one for bench builds) */
     k_msleep(100);

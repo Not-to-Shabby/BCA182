@@ -98,6 +98,16 @@ void lcd_draw_rect(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t 
 void lcd_fill_rect(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t color);
 
 /**
+ * @brief Draw an unfilled circular outline using Bresenham's algorithm.
+ */
+void lcd_draw_circle(uint16_t x0, uint16_t y0, uint16_t r, uint16_t color);
+
+/**
+ * @brief Fill a solid circle using Bresenham's algorithm.
+ */
+void lcd_fill_circle(uint16_t x0, uint16_t y0, uint16_t r, uint16_t color);
+
+/**
  * @brief Render a single 16x8 ASCII character at specified coordinate.
  */
 void lcd_show_char(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg_color);

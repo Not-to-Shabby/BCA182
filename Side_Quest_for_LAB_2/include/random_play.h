@@ -40,6 +40,13 @@ void random_play_reset(random_play_t *st);
  */
 void random_play_note(random_play_t *st, uint32_t index);
 
+typedef bool (*random_play_filter_fn)(uint32_t index);
+
+/**
+ * @brief Turn a raw random number into a catalog index, with an optional filter predicate.
+ */
+uint32_t random_play_pick_filtered(const random_play_t *st, uint32_t total, uint32_t r, random_play_filter_fn filter);
+
 /**
  * @brief Turn a raw random number into a catalog index.
  *

@@ -24,6 +24,7 @@ typedef struct {
     uint8_t drum_gain;        /* 20% to 200%, default 100% */
     uint8_t melody_gain;      /* 20% to 250%, default 100%, scales the lyric-following channel */
     uint8_t sound_bank;       /* 0 = Yamaha OPL4, 1 = Roland SC-55 */
+    uint8_t sensme_channel;   /* 0 = All Songs, 1..12 = SensMe Mood Channel */
 } karaoke_settings_t;
 
 /**
@@ -61,6 +62,11 @@ void karaoke_settings_set_melody_gain(uint8_t gain);
  * @brief Update active sound card bank (0 = Yamaha OPL4, 1 = Roland SC-55).
  */
 void karaoke_settings_set_sound_bank(uint8_t bank);
+
+/**
+ * @brief Update active SensMe mood channel filter (0 = All Songs, 1..12 = Channel).
+ */
+void karaoke_settings_set_sensme_channel(uint8_t ch);
 
 /**
  * @brief Save active settings to non-volatile storage (RTC Backup Domain + SD card file).

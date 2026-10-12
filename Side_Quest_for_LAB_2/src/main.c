@@ -177,8 +177,29 @@ static bool play_random_song(void)
     uint32_t index = random_play_pick_filtered(&s_app.random, total, random_u32(), sensme_matches_active_channel);
 
     s_app.current_song_index = index;
-    printk("[App] Random pick: catalog index %u of %u\n", (unsigned)index, (unsigned)total);
+    printk("[App] Random pick: catalog index %u of %u (SensMe=%s)\n",
+           (unsigned)index, (unsigned)total, sensme_channel_name(sensme_get_active_channel()));
     return play_song(index);
+}
+
+/* Steps forward (+1) or backward (-1) to the next catalog index that matches the active SensMe mood filter. */
+static uint32_t find_adjacent_mood_song(uint32_t current, int dir)
+{
+    uint32_t total = karaoke_catalog_get_total_songs();
+    if (total == 0U) return 0U;
+
+    uint32_t cand = (current == KARAOKE_DOOM_SONG_INDEX) ? 0U : current;
+    for (uint32_t i = 0; i < total; i++) {
+        if (dir > 0) {
+            cand = (cand + 1U) % total;
+        } else {
+            cand = (cand == 0U) ? (total - 1U) : (cand - 1U);
+        }
+        if (sensme_matches_active_channel(cand)) {
+            return cand;
+        }
+    }
+    return cand;
 }
 
 /* Helper to convert 5 digits array to numeric song code */
@@ -464,6 +485,7 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     s_app.ui_mode = UI_VIEW_PLAYING;
                     karaoke_ui_set_view(UI_VIEW_PLAYING);
                 } else if (s_app.ui_mode == UI_VIEW_SENSME) {
+                    karaoke_settings_save();
                     s_app.ui_mode = UI_VIEW_PLAYING;
                     karaoke_ui_set_view(UI_VIEW_PLAYING);
                 } else if (s_app.ui_mode == UI_VIEW_MIXER) {
@@ -675,7 +697,7 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     }
                 }
             } else if (mode == UI_VIEW_SENSME) {
-                /* SensMe: UP/DOWN navigate 12 mood channels, RIGHT applies filter */
+                /* SensMe: UP/DOWN navigate 12 mood channels, RIGHT applies filter, saves, and plays a matching song */
                 if (up && !last_up) {
                     s_app.sensme_cursor = (s_app.sensme_cursor + SENSME_CH_COUNT - 1U) % SENSME_CH_COUNT;
                 }
@@ -683,8 +705,14 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     s_app.sensme_cursor = (s_app.sensme_cursor + 1U) % SENSME_CH_COUNT;
                 }
                 if (rt && !last_rt) {
-                    sensme_set_active_channel(s_app.sensme_cursor);
-                    printk("[SensMe] Selected mood filter: %s\n", sensme_channel_name(s_app.sensme_cursor));
+                    karaoke_settings_set_sensme_channel(s_app.sensme_cursor);
+                    karaoke_settings_save();
+                    printk("[SensMe] Selected & saved mood filter: %s (Channel %u)\n",
+                           sensme_channel_name(s_app.sensme_cursor), (unsigned)s_app.sensme_cursor);
+                    if (s_app.sensme_cursor != SENSME_CH_ALL &&
+                        !sensme_matches_active_channel(s_app.current_song_index)) {
+                        play_random_song();
+                    }
                 }
             } else if (mode == UI_VIEW_MIXER) {
                 /* Mixer: UP/DOWN pick a row, LEFT/RIGHT adjust it. The first step comes after 60 ms so that
@@ -751,10 +779,13 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     karaoke_settings_set_volume(v <= 95 ? v + 5 : 100);
                 }
 
-                /* Next / Prev Song: UP / DOWN */
+                /* Next / Prev Song: UP / DOWN (obeys active SensMe mood filter if enabled) */
                 if (up && !last_up) {
                     uint32_t total = karaoke_catalog_get_total_songs();
-                    if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
+                    if (sensme_get_active_channel() != SENSME_CH_ALL) {
+                        uint32_t next_idx = find_adjacent_mood_song(s_app.current_song_index, -1);
+                        play_song(next_idx);
+                    } else if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
                         s_app.current_song_index = (total > 0) ? total - 1 : 0;
                         play_song(s_app.current_song_index);
                     } else if (s_app.current_song_index > 0) {
@@ -764,7 +795,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 }
                 if (dn && !last_dn) {
                     uint32_t total = karaoke_catalog_get_total_songs();
-                    if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
+                    if (sensme_get_active_channel() != SENSME_CH_ALL) {
+                        uint32_t next_idx = find_adjacent_mood_song(s_app.current_song_index, 1);
+                        play_song(next_idx);
+                    } else if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
                         s_app.current_song_index = 0;
                         play_song(s_app.current_song_index);
                     } else if (s_app.current_song_index + 1 < total) {

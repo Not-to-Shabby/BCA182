@@ -11,6 +11,7 @@
 #include "karaoke_settings.h"
 #include "audio_codec_es8388.h"
 #include "yamaha_fm_synth.h"
+#include "sensme.h"
 #include "sd_card_reader.h"
 
 #include <stdio.h>
@@ -32,7 +33,8 @@ static karaoke_settings_t s_settings = {
     .instrument_gain = 100,
     .drum_gain = 100,
     .melody_gain = 100,
-    .sound_bank = 0
+    .sound_bank = 0,
+    .sensme_channel = 0
 };
 
 static void apply_hardware_settings(void)
@@ -42,6 +44,7 @@ static void apply_hardware_settings(void)
     yamaha_fm_set_drum_gain(s_settings.drum_gain);
     yamaha_fm_set_melody_gain(s_settings.melody_gain);
     yamaha_fm_set_sound_bank((synth_sound_bank_t)s_settings.sound_bank);
+    sensme_set_active_channel(s_settings.sensme_channel);
 }
 
 static void rtc_save_backup(void)
@@ -57,7 +60,7 @@ static void rtc_save_backup(void)
 
     RTC->BKP0R = SETTINGS_MAGIC;
     RTC->BKP1R = packed;
-    RTC->BKP2R = (uint32_t)s_settings.sound_bank;
+    RTC->BKP2R = (uint32_t)s_settings.sound_bank | ((uint32_t)s_settings.sensme_channel << 8);
 #endif
 }
 
@@ -74,6 +77,7 @@ static bool rtc_load_backup(void)
         uint8_t drum = (uint8_t)((packed >> 16) & 0xFFU);
         uint8_t mel  = (uint8_t)((packed >> 24) & 0xFFU);
         uint8_t bank = (uint8_t)(RTC->BKP2R & 1U);
+        uint8_t sm_ch = (uint8_t)((RTC->BKP2R >> 8) & 0xFFU);
 
         if (vol <= 100 && inst >= 20 && inst <= 200 && drum >= 20 && drum <= 200) {
             s_settings.master_volume = vol;
@@ -83,8 +87,12 @@ static bool rtc_load_backup(void)
                 s_settings.melody_gain = mel;
             }
             s_settings.sound_bank = bank;
-            printk("[Settings] Restored from RTC Backup: Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s\n",
-                   vol, inst, drum, s_settings.melody_gain, bank ? "Roland SC-55" : "Yamaha OPL4");
+            if (sm_ch < SENSME_CH_COUNT) {
+                s_settings.sensme_channel = sm_ch;
+            }
+            printk("[Settings] Restored from RTC Backup: Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s SensMe=%u\n",
+                   vol, inst, drum, s_settings.melody_gain, bank ? "Roland SC-55" : "Yamaha OPL4",
+                   s_settings.sensme_channel);
             return true;
         }
     }
@@ -116,7 +124,7 @@ static bool sd_load_cfg(void)
     }
     buf[br] = '\0';
 
-    int vol = -1, inst = -1, drum = -1, mel = -1, bank = -1;
+    int vol = -1, inst = -1, drum = -1, mel = -1, bank = -1, sensme = -1;
     char *line = strtok(buf, "\r\n");
     while (line != NULL) {
         if (strncmp(line, "VOL=", 4) == 0) {
@@ -129,6 +137,8 @@ static bool sd_load_cfg(void)
             mel = atoi(line + 7);
         } else if (strncmp(line, "BANK=", 5) == 0) {
             bank = atoi(line + 5);
+        } else if (strncmp(line, "SENSME=", 7) == 0) {
+            sensme = atoi(line + 7);
         }
         line = strtok(NULL, "\r\n");
     }
@@ -154,11 +164,17 @@ static bool sd_load_cfg(void)
         s_settings.sound_bank = (uint8_t)bank;
         updated = true;
     }
+    if (sensme >= 0 && sensme < SENSME_CH_COUNT) {
+        s_settings.sensme_channel = (uint8_t)sensme;
+        sensme_set_active_channel(s_settings.sensme_channel);
+        updated = true;
+    }
 
     if (updated) {
-        printk("[Settings] Restored from " SETTINGS_CFG_PATH ": Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s\n",
+        printk("[Settings] Restored from " SETTINGS_CFG_PATH ": Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s SensMe=%u (%s)\n",
                s_settings.master_volume, s_settings.instrument_gain, s_settings.drum_gain,
-               s_settings.melody_gain, s_settings.sound_bank ? "Roland SC-55" : "Yamaha OPL4");
+               s_settings.melody_gain, s_settings.sound_bank ? "Roland SC-55" : "Yamaha OPL4",
+               s_settings.sensme_channel, sensme_channel_name(s_settings.sensme_channel));
     }
     return updated;
 }
@@ -176,19 +192,21 @@ static void sd_save_cfg(void)
         return;
     }
 
-    char buf[128];
+    char buf[160];
     int len = snprintf(buf, sizeof(buf),
                        "# RT-Spark Karaoke Audio Settings\n"
                        "VOL=%u\n"
                        "INST=%u\n"
                        "DRUM=%u\n"
                        "MELODY=%u\n"
-                       "BANK=%u\n",
+                       "BANK=%u\n"
+                       "SENSME=%u\n",
                        s_settings.master_volume,
                        s_settings.instrument_gain,
                        s_settings.drum_gain,
                        s_settings.melody_gain,
-                       s_settings.sound_bank);
+                       s_settings.sound_bank,
+                       s_settings.sensme_channel);
 
     if (len > 0) {
         UINT bw = 0;
@@ -261,6 +279,15 @@ void karaoke_settings_set_sound_bank(uint8_t bank)
     s_settings.sound_bank = bank ? 1 : 0;
     yamaha_fm_set_sound_bank((synth_sound_bank_t)s_settings.sound_bank);
     rtc_save_backup();
+}
+
+void karaoke_settings_set_sensme_channel(uint8_t ch)
+{
+    if (ch < SENSME_CH_COUNT) {
+        s_settings.sensme_channel = ch;
+        sensme_set_active_channel(ch);
+        rtc_save_backup();
+    }
 }
 
 void karaoke_settings_save(void)

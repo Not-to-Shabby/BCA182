@@ -262,15 +262,20 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
         uint32_t min = sec / 60;
         uint32_t s = sec % 60;
 
-        snprintf(line_buf, sizeof(line_buf), "Time: %02u:%02u  BPM:%u", (unsigned)min, (unsigned)s, status->bpm);
-        char padded_time[28];
-        pad_string(padded_time, line_buf, 20);
+        snprintf(line_buf, sizeof(line_buf), "Time:%02u:%02u BPM:%u", (unsigned)min, (unsigned)s, status->bpm);
+        char padded_time[22];
+        pad_string(padded_time, line_buf, 18);
         lcd_show_string(8, 148, padded_time, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+
         sensme_data_t sd;
         if (sensme_get_song_data(s_current_catalog_index, &sd)) {
             char m_buf[14];
             snprintf(m_buf, sizeof(m_buf), "[%s]", sensme_channel_name(sd.channel));
-            lcd_show_string(172, 148, m_buf, sensme_channel_color(sd.channel), LCD_COLOR_BLACK);
+            char padded_mood[12];
+            pad_string(padded_mood, m_buf, 11);
+            lcd_show_string(152, 148, padded_mood, sensme_channel_color(sd.channel), LCD_COLOR_BLACK);
+        } else {
+            lcd_show_string(152, 148, "           ", LCD_COLOR_BLACK, LCD_COLOR_BLACK);
         }
 
         /* Progress Bar: width = 220 pixels (x=9 to x=229) */
@@ -327,11 +332,11 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
         bool sc55 = (yamaha_fm_get_sound_bank() == SYNTH_BANK_ROLAND_SC55);
         sensme_data_t sd_hud;
         if (sensme_get_song_data(s_current_catalog_index, &sd_hud)) {
-            snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70 [%s]", active_voices, sc55 ? "SC55" : "OPL4");
+            snprintf(line_buf, sizeof(line_buf), "Voices:%2u/70 [%s]", active_voices, sc55 ? "SC55" : "OPL4");
             lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
-            char sm_coords[16];
+            char sm_coords[14];
             snprintf(sm_coords, sizeof(sm_coords), "V:%3u E:%3u", sd_hud.valence, sd_hud.energy);
-            lcd_show_string(156, 218, sm_coords, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+            lcd_show_string(148, 218, sm_coords, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
         } else {
             snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  [%s] ", active_voices, sc55 ? "SC55" : "OPL4");
             lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);

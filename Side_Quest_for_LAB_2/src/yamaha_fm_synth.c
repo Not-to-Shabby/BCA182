@@ -336,6 +336,7 @@ typedef struct {
     /* percussion & OPL4 PCM WaveTable voice */
     const int16_t *pcm_data;
     uint32_t pcm_len;
+    uint32_t pcm_loop;              /* loop start sample index (0 = one-shot transient) */
     uint32_t pcm_pos;               /* 16.16 fixed-point sample cursor */
     uint32_t pcm_step;              /* 16.16 fixed-point pitch step */
     float pcm_amp, pcm_k;
@@ -1071,6 +1072,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         bool sc55 = (s_sound_bank == SYNTH_BANK_ROLAND_SC55);
         const int16_t *pcm = NULL;
         uint32_t plen = 0;
+        uint32_t p_loop = 0;
         float root_hz = 261.6256f;
         float p_amp = 0.0f;
         float p_tau = 0.050f;
@@ -1078,9 +1080,10 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         if (pid == P_PIANO || pid == P_BRIGHT) {
             pcm = sc55 ? SC55_PCM_PIANO : OPL4_PCM_PIANO;
             plen = sc55 ? SC55_PCM_PIANO_LEN : OPL4_PCM_PIANO_LEN;
+            p_loop = sc55 ? SC55_PCM_PIANO_LOOP_START : OPL4_PCM_PIANO_LOOP_START;
             root_hz = sc55 ? SC55_PCM_PIANO_ROOT_HZ : OPL4_PCM_PIANO_ROOT_HZ;
-            p_amp = 0.22f;
-            p_tau = 0.055f;
+            p_amp = 0.50f;
+            p_tau = 0.085f;
         } else if (pid == P_STEEL || pid == P_NYLON) {
             pcm = sc55 ? SC55_PCM_GUITAR : OPL4_PCM_GUITAR;
             plen = sc55 ? SC55_PCM_GUITAR_LEN : OPL4_PCM_GUITAR_LEN;
@@ -1107,6 +1110,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
             if (ratio_p > 3.5f)  ratio_p = 3.5f;
             v->pcm_data = pcm;
             v->pcm_len = plen;
+            v->pcm_loop = p_loop;
             v->pcm_pos = 0;
             v->pcm_step = (uint32_t)(((float)OPL4_MELODIC_SAMPLE_RATE * 65536.0f * ratio_p) / s_sample_rate);
             v->pcm_amp = p_amp;
@@ -2080,17 +2084,26 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
     if (v->pcm_data != NULL) {
         uint32_t p_pos = v->pcm_pos;
         uint32_t p_len = v->pcm_len;
-        if ((p_pos >> 16) + 1U < p_len && v->pcm_amp >= SILENCE) {
+        uint32_t p_loop = v->pcm_loop;
+        float cur_amp = v->pcm_amp * v->amp;
+
+        if (cur_amp >= SILENCE) {
             const int16_t *pcm = v->pcm_data;
             uint32_t p_step = v->pcm_step;
-            float p_scale = v->pcm_amp * v->vel_gain * ch_gain * (float)GAIN_ONE;
+            float p_scale = cur_amp * v->vel_gain * ch_gain * (float)GAIN_ONE;
             int32_t p_gl = ((int32_t)(p_scale * c->pan_l)) >> GAIN_Q;
             int32_t p_gr = ((int32_t)(p_scale * c->pan_r)) >> GAIN_Q;
 
             for (size_t i = 0; i < len; i++) {
                 uint32_t idx = p_pos >> 16;
                 if (idx + 1U >= p_len) {
-                    break;
+                    if (p_loop > 0U && p_loop < p_len - 1U) {
+                        uint32_t loop_span = (p_len - p_loop) << 16;
+                        p_pos -= loop_span;
+                        idx = p_pos >> 16;
+                    } else {
+                        break;
+                    }
                 }
                 int32_t frac = (int32_t)((p_pos >> 8) & 0xFFU);
                 int32_t s0 = pcm[idx];

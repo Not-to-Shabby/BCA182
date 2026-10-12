@@ -98,12 +98,79 @@ def extract_yrw801_melodic(rom, wave_id, midi_note, pitch_offset, out_len):
         out.append(0)
     return out
 
+def extract_yrw801_looped(rom, wave_id, midi_note, pitch_offset):
+    """
+    Decodes the full waveform from YRW801 ROM with its native sustain loop region,
+    aligning the loop start/end on rising zero-crossings and applying a 64-sample
+    raised-cosine loop crossfade for click-free infinite sustain.
+    """
+    hdr = rom[wave_id * 12 : (wave_id + 1) * 12]
+    b0, b1, b2 = hdr[0], hdr[1], hdr[2]
+    fmt = (b0 >> 6) & 3
+    start_addr = ((b0 & 0x3F) << 16) | (b1 << 8) | b2
+    loop_pos = (hdr[3] << 8) | hdr[4]
+    total_len = (65536 - ((hdr[5] << 8) | hdr[6])) & 0xFFFF
+
+    raw = []
+    for i in range(total_len):
+        if fmt == 1:
+            addr = start_addr + (i // 2) * 3
+            if i & 1:
+                u16 = (rom[addr + 2] << 8) | (rom[addr + 1] & 0xF0)
+            else:
+                u16 = (rom[addr + 0] << 8) | ((rom[addr + 1] & 0x0F) << 4)
+        elif fmt == 0:
+            u16 = rom[start_addr + i] << 8
+        else:
+            addr = start_addr + i * 2
+            u16 = (rom[addr] << 8) | rom[addr + 1]
+        s = u16 - 65536 if u16 >= 32768 else u16
+        raw.append(max(-32767, min(32767, s)))
+
+    pitch = (midi_note << 7) + pitch_offset
+    step_22k = 2.0 * (2.0 ** ((pitch - 12288.0) / 1536.0))
+
+    out = []
+    pos = 0.0
+    loop_start_out = None
+    while pos < total_len - 1:
+        idx = int(pos)
+        if loop_start_out is None and idx >= loop_pos:
+            loop_start_out = len(out)
+        frac = pos - idx
+        val = raw[idx] * (1.0 - frac) + raw[idx + 1] * frac
+        out.append(max(-32767, min(32767, int(round(val)))))
+        pos += step_22k
+
+    ls = loop_start_out if loop_start_out is not None else (len(out) // 2)
+    for i in range(ls, min(len(out) - 2, ls + 100)):
+        if out[i] <= 0 and out[i + 1] > 0:
+            ls = i + 1
+            break
+
+    le = len(out)
+    for i in range(len(out) - 2, max(ls + 128, len(out) - 100), -1):
+        if out[i] <= 0 and out[i + 1] > 0:
+            le = i + 1
+            break
+
+    out_trimmed = list(out[:le])
+    xfade_len = 64
+    for k in range(xfade_len):
+        w = 0.5 * (1.0 - math.cos(math.pi * (k + 1) / float(xfade_len)))
+        idx_end = le - xfade_len + k
+        idx_start = ls - xfade_len + k
+        blended = out_trimmed[idx_end] * (1.0 - w) + out_trimmed[idx_start] * w
+        out_trimmed[idx_end] = max(-32767, min(32767, int(round(blended))))
+
+    return out_trimmed, ls
+
 def main():
     rom = get_yrw801_rom()
     print(f"Loaded Yamaha YRW801 ROM ({len(rom)} bytes, CRC32=0x{zlib.crc32(rom)&0xFFFFFFFF:08X})")
 
-    # 1. Acoustic Grand Piano (regions_00: Wave 0x130 = 304, pitch_offset = 4260, root C4 = note 60)
-    piano = extract_yrw801_melodic(rom, 304, 60, 4260, int(0.085 * FS))
+    # 1. Full Looped Acoustic Grand Piano (regions_00: Wave 0x130 = 304, pitch_offset = 4260, root C4 = note 60)
+    piano, piano_loop = extract_yrw801_looped(rom, 304, 60, 4260)
     # 2. Acoustic Steel Guitar (regions_19: Wave 0x00d = 13, pitch_offset = 5410, root E3 = note 52)
     guitar = extract_yrw801_melodic(rom, 13, 52, 5410, int(0.065 * FS))
     # 3. Slap / Fingered Bass (regions_24: Wave 0x0a3 = 163, pitch_offset = 7606, root E2 = note 40)
@@ -114,7 +181,7 @@ def main():
     lines = [
         "/**",
         " * @file opl4_melodic_samples.h",
-        f" * @brief Genuine Yamaha OPL4 (YRW801) factory acoustic attack WaveTables ({total_bytes} bytes in Flash).",
+        f" * @brief Genuine Yamaha OPL4 (YRW801) factory acoustic WaveTables ({total_bytes} bytes in Flash).",
         " *        Extracted directly from the official Yamaha YRW801 ROM by tools/gen_opl4_melodic.py.",
         " */",
         "",
@@ -126,6 +193,7 @@ def main():
         "#define OPL4_MELODIC_SAMPLE_RATE 22050U",
         "",
         f"#define OPL4_PCM_PIANO_LEN {len(piano)}U",
+        f"#define OPL4_PCM_PIANO_LOOP_START {piano_loop}U",
         f"#define OPL4_PCM_PIANO_ROOT_HZ 261.6256f /* C4 (YRW801 Wave 304) */",
         f"static const int16_t OPL4_PCM_PIANO[{len(piano)}] = {{",
     ]

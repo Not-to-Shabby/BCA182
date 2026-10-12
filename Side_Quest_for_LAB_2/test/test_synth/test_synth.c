@@ -1300,10 +1300,41 @@ void test_hybrid_pcm_attack_attaches_to_piano_and_acoustic_guitar(void)
     TEST_ASSERT_EQUAL_PTR(pcm_low, pcm_high);
     TEST_ASSERT_TRUE(step_high > step_low * 3); /* 2 octaves higher = 4x pitch step */
 
-    /* After 150 ms, the ~85 ms transient finishes and reverts to pure FM sustain */
+    /* Piano is a full looped WaveTable: it sustains and loops while held */
     render_ms(150);
     for (int v = 0; v < FM_MAX_VOICES; v++) {
         if (s_voices[v].active && s_voices[v].note == 72) {
+            TEST_ASSERT_NOT_NULL(s_voices[v].pcm_data);
+            TEST_ASSERT_TRUE(s_voices[v].pcm_loop > 0);
+            break;
+        }
+    }
+
+    /* Note off and render past release: voice becomes inactive */
+    yamaha_fm_note_off(0, 72, 0);
+    render_ms(1200);
+    bool voice_still_active = false;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 72) {
+            voice_still_active = true;
+            break;
+        }
+    }
+    TEST_ASSERT_FALSE(voice_still_active);
+
+    /* Guitar uses a short one-shot pick attack (pcm_loop == 0): transient finishes while held */
+    setUp();
+    play(0, 25, 60, 100);
+    render_ms(20);
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 60) {
+            TEST_ASSERT_EQUAL_UINT32(0, s_voices[v].pcm_loop);
+            break;
+        }
+    }
+    render_ms(150);
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 60) {
             TEST_ASSERT_NULL(s_voices[v].pcm_data);
             break;
         }

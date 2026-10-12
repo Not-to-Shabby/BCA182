@@ -92,6 +92,23 @@ void test_sensme_database_initialization_and_lookup(void)
 
     /* Out of bounds lookup */
     TEST_ASSERT_FALSE(sensme_get_song_data(99, &d));
+
+    /* Verify binary layout matches Python's struct.pack("<4sHHII", b"SENS", 1, 4, count, crc) */
+    uint8_t raw_hdr[64];
+    memset(raw_hdr, 0, sizeof(raw_hdr));
+    memcpy(raw_hdr, "SENS", 4);
+    raw_hdr[4] = 1; raw_hdr[5] = 0; /* version = 1 */
+    raw_hdr[6] = 4; raw_hdr[7] = 0; /* entry_size = 4 */
+    raw_hdr[8] = 3; raw_hdr[9] = 0; raw_hdr[10] = 0; raw_hdr[11] = 0; /* song_count = 3 */
+    raw_hdr[12] = 0x70; raw_hdr[13] = 0x0A; raw_hdr[14] = 0x67; raw_hdr[15] = 0x21; /* data_crc32 */
+    raw_hdr[16 + SENSME_CH_RELAX * 2] = 1;
+
+    w25q64_erase_sector(SENSME_FLASH_ADDR);
+    w25q64_write(SENSME_FLASH_ADDR, raw_hdr, sizeof(raw_hdr));
+    w25q64_write(SENSME_FLASH_ADDR + SENSME_HEADER_BYTES, entries, sizeof(entries));
+    TEST_ASSERT_TRUE(sensme_init());
+    TEST_ASSERT_EQUAL_UINT32(3, sensme_get_song_count());
+    TEST_ASSERT_EQUAL_UINT16(1, sensme_get_channel_song_count(SENSME_CH_RELAX));
 }
 
 void test_sensme_channel_names_and_colors(void)

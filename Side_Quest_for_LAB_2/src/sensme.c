@@ -21,12 +21,12 @@
 #endif
 
 typedef struct __attribute__((packed)) {
-    uint32_t magic;         /* 0x53454E53 ("SENS") */
+    uint32_t magic;         /* 0x534E4553 ("SENS" in little-endian) */
     uint16_t version;       /* 1 */
     uint16_t entry_size;    /* 4 bytes */
     uint32_t song_count;    /* Total songs (e.g. 47,998) */
-    uint16_t ch_counts[16]; /* Song count per SensMe channel */
     uint32_t data_crc32;    /* CRC32 of entry table */
+    uint16_t ch_counts[16]; /* Song count per SensMe channel */
     uint8_t  reserved[16];  /* Zero padding to 64 bytes */
 } sensme_header_t;
 

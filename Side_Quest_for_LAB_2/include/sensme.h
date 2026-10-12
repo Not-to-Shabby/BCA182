@@ -24,7 +24,7 @@
 extern "C" {
 #endif
 
-#define SENSME_MAGIC            0x53454E53U  /**< "SENS" in ASCII */
+#define SENSME_MAGIC            0x534E4553U  /**< "SENS" in little-endian ASCII (bytes: 'S', 'E', 'N', 'S') */
 #define SENSME_VERSION          1U
 #define SENSME_ENTRY_BYTES      4U
 #define SENSME_HEADER_BYTES     64U

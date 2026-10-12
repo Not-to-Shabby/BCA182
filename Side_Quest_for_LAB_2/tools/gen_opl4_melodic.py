@@ -71,7 +71,7 @@ def extract_yrw801_melodic(rom, wave_id, midi_note, pitch_offset, out_len):
         raw.append(max(-32767, min(32767, s)))
 
     pitch = (midi_note << 7) + pitch_offset
-    step_22k = 2.0 * (2.0 ** ((pitch - 12288.0) / 1536.0))
+    step_22k = 2.0 ** ((pitch - 12288.0) / 1536.0)
 
     out = []
     pos = 0.0

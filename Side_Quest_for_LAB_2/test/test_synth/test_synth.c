@@ -1441,6 +1441,29 @@ void test_gs_rhythm_part_turns_another_channel_into_a_drum_part(void)
     TEST_ASSERT_FALSE(drum);
 }
 
+void test_guitars_have_natural_acoustic_harmonic_series_and_proper_pitch(void)
+{
+    /* Steel Guitar: program 25, note E3 (52) = 164.81 Hz */
+    setUp();
+    play(0, 25, 52, 100);
+    render_ms(600);
+    double hz_steel = pitch_hz(150);
+    /* Verify pitch is at fundamental 164.81 Hz (not octave-doubled steel pan overtone) */
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 164.81f, (float)hz_steel);
+
+    /* Verify brightness naturally decays (pluck attack is bright, sustain is warm) */
+    double early_b = brightness(20, 60);
+    double late_b  = brightness(300, 100);
+    TEST_ASSERT_TRUE(early_b > late_b * 1.20);
+
+    /* Nylon Guitar: program 24, note A3 (57) = 220.0 Hz */
+    setUp();
+    play(0, 24, 57, 100);
+    render_ms(600);
+    double hz_nylon = pitch_hz(150);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 220.0f, (float)hz_nylon);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1515,5 +1538,6 @@ int main(void)
     RUN_TEST(test_a_drum_section_gain_changes_only_its_own_drums);
     RUN_TEST(test_channel_gain_mute_and_solo);
     RUN_TEST(test_resetting_the_channel_mix_keeps_the_section_levels);
+    RUN_TEST(test_guitars_have_natural_acoustic_harmonic_series_and_proper_pitch);
     return UNITY_END();
 }

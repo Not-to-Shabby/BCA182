@@ -452,11 +452,11 @@ static const fm_patch_t PATCHES[P_COUNT] = {
     [P_PERC_ORGAN]  = {1, 3,     1.1f, 0.35f, 0.12f, 0.4f, 0.002f, 0.1f, 1.00f, 0.05f, 0.26f, 0.00f, true},
     [P_REED_ORGAN]  = {1, 1,     1.6f, 1.4f, 0.10f, 0.8f, 0.020f, 0.1f, 1.00f, 0.06f, 0.30f, 0.03f, false},
     [P_ACCORD]      = {1, 1,     1.8f, 1.3f, 0.15f, 0.6f, 0.040f, 0.1f, 1.00f, 0.08f, 0.30f, 0.08f, false},
-    [P_NYLON]       = {1, 2,     2.3f, 0.35f, 0.07f, 0.1f, 0.002f, 0.9f, 0.00f, 0.12f, 0.42f, 0.00f, false},
-    [P_STEEL]       = {1, 3,     3.0f, 0.7f, 0.09f, 0.15f, 0.001f, 1.1f, 0.00f, 0.12f, 0.40f, 0.00f, false},
+    [P_NYLON]       = {1, 1,     1.8f, 0.18f, 0.06f, 0.25f, 0.002f, 1.0f, 0.00f, 0.12f, 0.42f, 0.00f, false},
+    [P_STEEL]       = {1, 1,     2.6f, 0.30f, 0.08f, 0.45f, 0.001f, 1.2f, 0.00f, 0.12f, 0.42f, 0.00f, false},
     [P_JAZZ_GTR]    = {1, 1,     1.5f, 0.5f, 0.20f, 0.1f, 0.003f, 2.0f, 0.22f, 0.15f, 0.40f, 0.00f, false},
-    [P_CLEAN_GTR]   = {1, 2,     1.9f, 0.6f, 0.15f, 0.1f, 0.002f, 1.8f, 0.15f, 0.12f, 0.40f, 0.00f, false},
-    [P_MUTED_GTR]   = {1, 2,     2.6f, 0.4f, 0.04f, 0.2f, 0.001f, 0.22f, 0.00f, 0.05f, 0.42f, 0.00f, false},
+    [P_CLEAN_GTR]   = {1, 1,     2.2f, 0.35f, 0.12f, 0.35f, 0.002f, 1.8f, 0.15f, 0.12f, 0.40f, 0.00f, false},
+    [P_MUTED_GTR]   = {1, 1,     2.4f, 0.20f, 0.03f, 0.35f, 0.001f, 0.20f, 0.00f, 0.05f, 0.42f, 0.00f, false},
     [P_OD_GTR]      = {1, 1,     3.2f, 2.8f, 0.20f, 1.3f, 0.004f, 0.3f, 0.75f, 0.08f, 0.30f, 0.00f, false},
     [P_DIST_GTR]    = {1, 1,     4.4f, 3.8f, 0.20f, 1.7f, 0.004f, 0.3f, 0.75f, 0.08f, 0.28f, 0.00f, false},
     [P_ACO_BASS]    = {1, 1,     1.7f, 0.4f, 0.10f, 0.1f, 0.003f, 1.0f, 0.30f, 0.10f, 0.50f, 0.00f, false},
@@ -512,9 +512,9 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_EPIANO]      = {EXT_TINE, 7.00f, 1.4f, 0.040f},
     [P_CLAV]        = {EXT_TINE, 3.00f, 1.8f, 0.025f},
 
-    /* Guitars (4-op pick transient & double-tracked overdrive/distortion body) */
-    [P_NYLON]       = {EXT_TINE, 3.01f, 1.2f, 0.025f},
-    [P_STEEL]       = {EXT_TINE, 4.01f, 1.4f, 0.025f},
+    /* Guitars (4-op stereo acoustic body & double-tracked overdrive/distortion body) */
+    [P_NYLON]       = {EXT_ENSEMBLE, 1.8f, 1.0f, 0.95f},
+    [P_STEEL]       = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
     [P_CLEAN_GTR]   = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
     [P_OD_GTR]      = {EXT_ENSEMBLE, 4.5f, 1.0f, 1.1f},
     [P_DIST_GTR]    = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.15f},

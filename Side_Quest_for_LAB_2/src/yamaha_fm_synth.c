@@ -444,7 +444,7 @@ static const fm_patch_t PATCHES[P_COUNT] = {
     [P_BRIGHT]      = {1, 1,     4.2f, 1.0f, 0.10f, 0.0f, 0.002f, 1.4f, 0.00f, 0.16f, 0.38f, 0.00f, false},
     [P_EPIANO]      = {1, 14,    1.3f, 0.12f, 0.22f, 0.0f, 0.002f, 2.2f, 0.00f, 0.30f, 0.34f, 0.00f, false},
     [P_HONKY]       = {1, 1.012f, 2.6f, 0.9f, 0.10f, 0.0f, 0.002f, 1.3f, 0.00f, 0.15f, 0.40f, 0.00f, false},
-    [P_CLAV]        = {1, 3,     3.5f, 1.2f, 0.05f, 0.0f, 0.001f, 0.5f, 0.00f, 0.06f, 0.38f, 0.00f, false},
+    [P_CLAV]        = {1, 1,     3.2f, 0.55f, 0.06f, 0.50f, 0.001f, 0.5f, 0.00f, 0.06f, 0.40f, 0.00f, false},
     [P_BELL]        = {1, 3.5f,  2.4f, 0.2f, 0.70f, 0.0f, 0.001f, 2.6f, 0.00f, 0.35f, 0.34f, 0.00f, false},
     [P_VIBES]       = {1, 4,     0.9f, 0.1f, 0.80f, 0.0f, 0.002f, 2.4f, 0.00f, 0.30f, 0.38f, 0.00f, false},
     [P_MARIMBA]     = {1, 4,     1.4f, 0.05f, 0.06f, 0.0f, 0.001f, 0.5f, 0.00f, 0.10f, 0.45f, 0.00f, false},
@@ -461,16 +461,16 @@ static const fm_patch_t PATCHES[P_COUNT] = {
     [P_DIST_GTR]    = {1, 1,     4.4f, 3.8f, 0.20f, 1.7f, 0.004f, 0.3f, 0.75f, 0.08f, 0.28f, 0.00f, false},
     [P_ACO_BASS]    = {1, 1,     1.7f, 0.4f, 0.10f, 0.1f, 0.003f, 1.0f, 0.30f, 0.10f, 0.50f, 0.00f, false},
     [P_FINGER_BASS] = {1, 1,     2.1f, 0.55f, 0.12f, 0.15f, 0.003f, 1.4f, 0.45f, 0.10f, 0.50f, 0.00f, false},
-    [P_PICK_BASS]   = {1, 1,     3.0f, 0.8f, 0.06f, 0.2f, 0.002f, 0.9f, 0.35f, 0.08f, 0.50f, 0.00f, false},
+    [P_PICK_BASS]   = {1, 1,     3.0f, 0.45f, 0.05f, 0.35f, 0.002f, 0.9f, 0.35f, 0.08f, 0.50f, 0.00f, false},
     [P_FRETLESS]    = {1, 1,     1.4f, 0.8f, 0.15f, 0.1f, 0.010f, 1.5f, 0.65f, 0.12f, 0.20f, 0.03f, false},
-    [P_SLAP]        = {1, 1,     3.6f, 0.6f, 0.03f, 0.2f, 0.001f, 0.45f, 0.25f, 0.06f, 0.48f, 0.00f, false},
+    [P_SLAP]        = {1, 1,     3.6f, 0.40f, 0.03f, 0.35f, 0.001f, 0.45f, 0.25f, 0.06f, 0.48f, 0.00f, false},
     [P_SYN_BASS1]   = {1, 1,     3.0f, 2.2f, 0.25f, 1.0f, 0.002f, 0.3f, 0.80f, 0.06f, 0.40f, 0.00f, false},
     [P_SYN_BASS2]   = {1, 2,     3.6f, 1.5f, 0.15f, 0.6f, 0.002f, 0.3f, 0.70f, 0.06f, 0.40f, 0.00f, false},
     [P_VIOLIN]      = {1, 1,     0.8f, 1.2f, 0.20f, 0.5f, 0.070f, 0.1f, 1.00f, 0.15f, 0.30f, 0.10f, false},
     [P_CELLO]       = {1, 1,     0.7f, 1.0f, 0.25f, 0.45f, 0.090f, 0.1f, 1.00f, 0.18f, 0.34f, 0.07f, false},
     [P_STRINGS]     = {1, 1,     0.9f, 1.3f, 0.35f, 0.55f, 0.180f, 0.1f, 1.00f, 0.30f, 0.28f, 0.07f, false},
-    [P_PIZZ]        = {1, 2,     2.0f, 0.3f, 0.05f, 0.1f, 0.001f, 0.3f, 0.00f, 0.06f, 0.45f, 0.00f, false},
-    [P_HARP]        = {1, 2,     2.2f, 0.4f, 0.15f, 0.1f, 0.001f, 1.4f, 0.00f, 0.20f, 0.40f, 0.00f, false},
+    [P_PIZZ]        = {1, 1,     2.0f, 0.15f, 0.04f, 0.30f, 0.001f, 0.28f, 0.00f, 0.06f, 0.45f, 0.00f, false},
+    [P_HARP]        = {1, 1,     2.0f, 0.15f, 0.08f, 0.25f, 0.001f, 1.4f, 0.00f, 0.20f, 0.42f, 0.00f, false},
     [P_TIMPANI]     = {1, 1.5f,  3.0f, 0.2f, 0.05f, 0.2f, 0.001f, 0.9f, 0.00f, 0.15f, 0.45f, 0.00f, false},
     [P_CHOIR]       = {1, 1,     0.9f, 0.8f, 0.30f, 0.2f, 0.120f, 0.1f, 1.00f, 0.25f, 0.30f, 0.09f, false},
     [P_TRUMPET]     = {1, 1,     0.8f, 2.5f, 0.08f, 0.2f, 0.035f, 0.1f, 1.00f, 0.07f, 0.30f, 0.03f, false},
@@ -489,7 +489,7 @@ static const fm_patch_t PATCHES[P_COUNT] = {
     [P_CALLIOPE]    = {1, 1,     1.4f, 1.2f, 0.15f, 0.5f, 0.020f, 0.1f, 1.00f, 0.05f, 0.30f, 0.03f, false},
     [P_PAD]         = {1, 1,     1.0f, 1.4f, 0.50f, 0.4f, 0.300f, 0.1f, 1.00f, 0.50f, 0.26f, 0.05f, false},
     [P_SITAR]       = {1, 3.1f,  2.8f, 1.0f, 0.10f, 0.5f, 0.001f, 1.0f, 0.00f, 0.12f, 0.38f, 0.00f, false},
-    [P_PLUCK]       = {1, 3,     3.2f, 0.8f, 0.05f, 0.1f, 0.001f, 0.5f, 0.00f, 0.08f, 0.42f, 0.00f, false},
+    [P_PLUCK]       = {1, 1,     3.0f, 0.25f, 0.045f, 0.55f, 0.001f, 0.5f, 0.00f, 0.08f, 0.42f, 0.00f, false},
     [P_STEELDRUM]   = {1, 2,     1.8f, 0.2f, 0.30f, 0.0f, 0.001f, 0.7f, 0.00f, 0.20f, 0.40f, 0.00f, false},
     [P_SFX]         = {1, 1.5f,  1.0f, 0.5f, 0.30f, 0.3f, 0.010f, 0.3f, 0.00f, 0.20f, 0.15f, 0.00f, false},
     [P_BAGPIPE]     = {1, 1,     2.0f, 1.8f, 0.10f, 0.9f, 0.020f, 0.1f, 1.00f, 0.06f, 0.28f, 0.00f, false},
@@ -510,7 +510,7 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_BRIGHT]      = {EXT_TINE, 4.01f, 2.0f, 0.030f},
     [P_HONKY]       = {EXT_TINE, 3.01f, 1.5f, 0.035f},
     [P_EPIANO]      = {EXT_TINE, 7.00f, 1.4f, 0.040f},
-    [P_CLAV]        = {EXT_TINE, 3.00f, 1.8f, 0.025f},
+    [P_CLAV]        = {EXT_ENSEMBLE, 2.0f, 1.0f, 1.0f},
 
     /* Guitars (4-op stereo acoustic body & double-tracked overdrive/distortion body) */
     [P_NYLON]       = {EXT_ENSEMBLE, 1.8f, 1.0f, 0.95f},
@@ -522,8 +522,8 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     /* Basses (4-op fat dual-oscillator sub & punch) */
     [P_ACO_BASS]    = {EXT_ENSEMBLE, 2.0f, 1.0f, 0.9f},
     [P_FINGER_BASS] = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
-    [P_PICK_BASS]   = {EXT_TINE, 3.00f, 1.3f, 0.025f},
-    [P_SLAP]        = {EXT_TINE, 4.00f, 1.8f, 0.020f},
+    [P_PICK_BASS]   = {EXT_ENSEMBLE, 2.5f, 1.0f, 1.0f},
+    [P_SLAP]        = {EXT_ENSEMBLE, 3.0f, 1.0f, 1.05f},
     [P_SYN_BASS1]   = {EXT_ENSEMBLE, 3.5f, 1.0f, 1.1f},
     [P_SYN_BASS2]   = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
 
@@ -531,6 +531,7 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_STRINGS]     = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
     [P_VIOLIN]      = {EXT_ENSEMBLE, 3.0f, 1.0f, 1.0f},
     [P_CELLO]       = {EXT_ENSEMBLE, 3.0f, 1.0f, 1.0f},
+    [P_HARP]        = {EXT_ENSEMBLE, 2.0f, 1.0f, 0.95f},
     [P_CHOIR]       = {EXT_ENSEMBLE, 4.0f, 1.0f, 1.0f},
     [P_PAD]         = {EXT_ENSEMBLE, 5.0f, 1.0f, 1.05f},
 
@@ -1076,20 +1077,20 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
 
         if (pid == P_PIANO || pid == P_BRIGHT) {
             pcm = sc55 ? SC55_PCM_PIANO : OPL4_PCM_PIANO;
-            plen = OPL4_PCM_PIANO_LEN;
-            root_hz = OPL4_PCM_PIANO_ROOT_HZ;
+            plen = sc55 ? SC55_PCM_PIANO_LEN : OPL4_PCM_PIANO_LEN;
+            root_hz = sc55 ? SC55_PCM_PIANO_ROOT_HZ : OPL4_PCM_PIANO_ROOT_HZ;
             p_amp = 0.22f;
             p_tau = 0.055f;
         } else if (pid == P_STEEL || pid == P_NYLON) {
             pcm = sc55 ? SC55_PCM_GUITAR : OPL4_PCM_GUITAR;
-            plen = OPL4_PCM_GUITAR_LEN;
+            plen = sc55 ? SC55_PCM_GUITAR_LEN : OPL4_PCM_GUITAR_LEN;
             root_hz = sc55 ? SC55_PCM_GUITAR_ROOT_HZ : OPL4_PCM_GUITAR_ROOT_HZ;
             p_amp = 0.25f;
             p_tau = 0.045f;
         } else if (pid == P_FINGER_BASS || pid == P_PICK_BASS || pid == P_SLAP || pid == P_ACO_BASS) {
             pcm = sc55 ? SC55_PCM_BASS : OPL4_PCM_BASS;
-            plen = OPL4_PCM_BASS_LEN;
-            root_hz = OPL4_PCM_BASS_ROOT_HZ;
+            plen = sc55 ? SC55_PCM_BASS_LEN : OPL4_PCM_BASS_LEN;
+            root_hz = sc55 ? SC55_PCM_BASS_ROOT_HZ : OPL4_PCM_BASS_ROOT_HZ;
             p_amp = 0.26f;
             p_tau = 0.038f;
         } else if (sc55 && (pid == P_OD_GTR || pid == P_DIST_GTR)) {

@@ -1464,6 +1464,46 @@ void test_guitars_have_natural_acoustic_harmonic_series_and_proper_pitch(void)
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 220.0f, (float)hz_nylon);
 }
 
+void test_retuned_plucked_and_sc55_instruments_are_in_tune(void)
+{
+    /* 1. SC-55 Piano C4 (note 60, 261.63 Hz): verify attack step matches 523.25 Hz root */
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_ROLAND_SC55);
+    play(0, 0, 60, 100);
+    render_ms(20);
+    uint32_t step_piano = 0;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].note == 60) {
+            step_piano = s_voices[v].pcm_step;
+            break;
+        }
+    }
+    /* Note 60 is 261.63 Hz. Root is 523.25 Hz -> ratio is 0.50x -> at 44.1 kHz, step is ~16384 */
+    TEST_ASSERT_INT_WITHIN(500, 16384, (int)step_piano);
+
+    /* 2. Banjo (program 105): note G4 (67, 392.0 Hz) */
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_YAMAHA_OPL4);
+    play(0, 105, 67, 100);
+    render_ms(500);
+    double hz_banjo = pitch_hz(150);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 392.0f, (float)hz_banjo);
+
+    /* 3. Orchestral Harp (program 46): note C4 (60, 261.63 Hz) */
+    setUp();
+    play(0, 46, 60, 100);
+    render_ms(600);
+    double hz_harp = pitch_hz(150);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 261.63f, (float)hz_harp);
+
+    /* 4. Clavinet (program 7): note E4 (64, 329.63 Hz) */
+    setUp();
+    play(0, 7, 64, 100);
+    render_ms(500);
+    double hz_clav = pitch_hz(150);
+    TEST_ASSERT_FLOAT_WITHIN(6.0f, 329.63f, (float)hz_clav);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1539,5 +1579,6 @@ int main(void)
     RUN_TEST(test_channel_gain_mute_and_solo);
     RUN_TEST(test_resetting_the_channel_mix_keeps_the_section_levels);
     RUN_TEST(test_guitars_have_natural_acoustic_harmonic_series_and_proper_pitch);
+    RUN_TEST(test_retuned_plucked_and_sc55_instruments_are_in_tune);
     return UNITY_END();
 }

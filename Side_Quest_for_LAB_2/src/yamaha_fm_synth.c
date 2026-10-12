@@ -1085,8 +1085,8 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
             pcm = sc55 ? SC55_PCM_GUITAR : OPL4_PCM_GUITAR;
             plen = sc55 ? SC55_PCM_GUITAR_LEN : OPL4_PCM_GUITAR_LEN;
             root_hz = sc55 ? SC55_PCM_GUITAR_ROOT_HZ : OPL4_PCM_GUITAR_ROOT_HZ;
-            p_amp = 0.25f;
-            p_tau = 0.045f;
+            p_amp = 0.15f;
+            p_tau = 0.020f;
         } else if (pid == P_FINGER_BASS || pid == P_PICK_BASS || pid == P_SLAP || pid == P_ACO_BASS) {
             pcm = sc55 ? SC55_PCM_BASS : OPL4_PCM_BASS;
             plen = sc55 ? SC55_PCM_BASS_LEN : OPL4_PCM_BASS_LEN;

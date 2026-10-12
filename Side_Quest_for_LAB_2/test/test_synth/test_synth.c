@@ -1478,8 +1478,8 @@ void test_retuned_plucked_and_sc55_instruments_are_in_tune(void)
             break;
         }
     }
-    /* Note 60 is 261.63 Hz. Root is 523.25 Hz -> ratio is 0.50x -> at 44.1 kHz, step is ~16384 */
-    TEST_ASSERT_INT_WITHIN(500, 16384, (int)step_piano);
+    /* Note 60 is 261.63 Hz. Root is 261.63 Hz -> ratio is 1.0x -> at 44.1 kHz, step is ~32768 */
+    TEST_ASSERT_INT_WITHIN(500, 32768, (int)step_piano);
 
     /* 2. Banjo (program 105): note G4 (67, 392.0 Hz) */
     setUp();

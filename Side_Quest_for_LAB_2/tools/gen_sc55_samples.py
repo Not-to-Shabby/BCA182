@@ -178,10 +178,10 @@ def main():
         "#include <stdint.h>",
         "",
         "#define SC55_PCM_SAMPLE_RATE 22050U",
-        "#define SC55_PCM_PIANO_ROOT_HZ 523.2511f /* C5 (SC55 Piano sample [50] actual pitch) */",
-        "#define SC55_PCM_GUITAR_ROOT_HZ 261.6256f /* C4 */",
-        "#define SC55_PCM_BASS_ROOT_HZ 130.8128f /* C3 (SC55 Pick Bass sample [551] actual pitch) */",
-        "#define SC55_PCM_DIST_GTR_ROOT_HZ 261.6256f /* C4 */",
+        "#define SC55_PCM_PIANO_ROOT_HZ 261.6256f",
+        "#define SC55_PCM_GUITAR_ROOT_HZ 261.6256f",
+        "#define SC55_PCM_BASS_ROOT_HZ 82.4069f",
+        "#define SC55_PCM_DIST_GTR_ROOT_HZ 261.6256f",
         "",
     ]
 

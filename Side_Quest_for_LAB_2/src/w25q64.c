@@ -31,11 +31,16 @@ static bool s_available = false;
 static inline void cs_low(void)
 {
     GPIOB->BSRR = (1U << (12 + 16)); /* PB12 LOW */
+    __NOP(); __NOP(); __NOP(); __NOP();
 }
 
 static inline void cs_high(void)
 {
+    while (SPI2->SR & SPI_SR_BSY) {
+    }
+    __NOP(); __NOP(); __NOP(); __NOP();
     GPIOB->BSRR = (1U << 12);        /* PB12 HIGH */
+    __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
 }
 
 static inline uint8_t spi_transfer(uint8_t byte)
@@ -91,8 +96,8 @@ void w25q64_unlock(void)
 
 bool w25q64_init(void)
 {
-    /* 1. Clocks: GPIOB, GPIOC, SPI2 */
-    RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOCEN);
+    /* 1. Clocks: GPIOB, GPIOC, GPIOD, SPI2 */
+    RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOCEN | RCC_AHB1ENR_GPIODEN);
     RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
 
     /* 2. Configure PB12 as GPIO Output, Push-Pull, High-Speed (CS pin) */
@@ -101,6 +106,9 @@ bool w25q64_init(void)
     GPIOB->OSPEEDR |= (3U << 24);                              /* Very High Speed */
     GPIOB->PUPDR &= ~(3U << 24);
     cs_high();                                                 /* Start HIGH (deselected) */
+
+    /* Ensure WP/HOLD pins if connected (e.g. PB14/PB15 or PD11/PD12) are not pulled low */
+    GPIOB->PUPDR = (GPIOB->PUPDR & ~((3U << 28) | (3U << 30))) | ((1U << 28) | (1U << 30)); /* Pull-up PB14/PB15 */
 
     /* 3. Configure PB13 (SCK) as AF5 */
     GPIOB->MODER = (GPIOB->MODER & ~(3U << 26)) | (2U << 26); /* Alternate Function */
@@ -120,9 +128,9 @@ bool w25q64_init(void)
 
     /* 5. Configure SPI2:
      * Master mode, Software slave management (SSM=1, SSI=1),
-     * Prescaler /2 (Baud = 30 MHz / 2 = 15 MHz), CPOL=0, CPHA=0, 8-bit.
+     * Prescaler /8 (BR=010 -> 30 MHz / 8 = 3.75 MHz) for rock-solid signal integrity, CPOL=0, CPHA=0.
      */
-    SPI2->CR1 = SPI_CR1_MSTR | SPI_CR1_SSM | SPI_CR1_SSI;
+    SPI2->CR1 = SPI_CR1_MSTR | SPI_CR1_SSM | SPI_CR1_SSI | (2U << 3);
     SPI2->CR2 = 0;
     SPI2->CR1 |= SPI_CR1_SPE; /* Enable SPI2 */
 
@@ -131,8 +139,11 @@ bool w25q64_init(void)
     s_available = (id == W25Q64_JEDEC_ID);
 
     if (s_available) {
+        uint8_t sr1_before = w25q64_read_status();
         w25q64_unlock();
-        printk("[W25Q64] Flash detected & unlocked: JEDEC ID 0x%06X (Winbond 8MB SPI NOR Flash, 15 MHz)\n", (unsigned)id);
+        uint8_t sr1_after = w25q64_read_status();
+        printk("[W25Q64] Flash detected: JEDEC ID 0x%06X, SR1=0x%02X->0x%02X\n",
+               (unsigned)id, (unsigned)sr1_before, (unsigned)sr1_after);
     } else {
         printk("[W25Q64] Probe failed: JEDEC ID 0x%06X (expected 0x%06X)\n", (unsigned)id, (unsigned)W25Q64_JEDEC_ID);
     }
@@ -231,7 +242,7 @@ void w25q64_write(uint32_t addr, const void *buf, size_t len)
 /* -------------------------------------------------------------------------- */
 /* Host / Native Test Mock Emulation (RAM backing store)                      */
 /* -------------------------------------------------------------------------- */
-#define MOCK_NOR_SIZE   (256U * 1024U)
+#define MOCK_NOR_SIZE   (1024U * 1024U)
 static uint8_t s_mock_nor[MOCK_NOR_SIZE];
 static bool s_mock_inited = false;
 

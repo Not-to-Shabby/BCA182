@@ -28,7 +28,7 @@ extern "C" {
 #define SENSME_VERSION          1U
 #define SENSME_ENTRY_BYTES      4U
 #define SENSME_HEADER_BYTES     64U
-#define SENSME_FLASH_ADDR       0x000000U   /**< Base address in W25Q64 NOR Flash */
+#define SENSME_FLASH_ADDR       0x080000U   /**< 512 KB offset in W25Q64 NOR Flash (avoids sector 0 OTP lock) */
 #define SENSME_SD_PATH          "SD:/sensme.bin"
 
 typedef enum {

@@ -332,11 +332,11 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
         bool sc55 = (yamaha_fm_get_sound_bank() == SYNTH_BANK_ROLAND_SC55);
         sensme_data_t sd_hud;
         if (sensme_get_song_data(s_current_catalog_index, &sd_hud)) {
-            snprintf(line_buf, sizeof(line_buf), "Voices:%2u/70 [%s]", active_voices, sc55 ? "SC55" : "OPL4");
+            snprintf(line_buf, sizeof(line_buf), "Vox:%2u/70 [%s]", active_voices, sc55 ? "SC55" : "OPL4");
             lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
             char sm_coords[14];
             snprintf(sm_coords, sizeof(sm_coords), "V:%3u E:%3u", sd_hud.valence, sd_hud.energy);
-            lcd_show_string(148, 218, sm_coords, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+            lcd_show_string(144, 218, sm_coords, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
         } else {
             snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  [%s] ", active_voices, sc55 ? "SC55" : "OPL4");
             lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);

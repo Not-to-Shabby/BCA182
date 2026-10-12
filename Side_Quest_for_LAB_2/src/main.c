@@ -783,8 +783,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 if (up && !last_up) {
                     uint32_t total = karaoke_catalog_get_total_songs();
                     if (sensme_get_active_channel() != SENSME_CH_ALL) {
-                        uint32_t next_idx = find_adjacent_mood_song(s_app.current_song_index, -1);
-                        play_song(next_idx);
+                        s_app.current_song_index = find_adjacent_mood_song(s_app.current_song_index, -1);
+                        play_song(s_app.current_song_index);
                     } else if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
                         s_app.current_song_index = (total > 0) ? total - 1 : 0;
                         play_song(s_app.current_song_index);
@@ -796,8 +796,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 if (dn && !last_dn) {
                     uint32_t total = karaoke_catalog_get_total_songs();
                     if (sensme_get_active_channel() != SENSME_CH_ALL) {
-                        uint32_t next_idx = find_adjacent_mood_song(s_app.current_song_index, 1);
-                        play_song(next_idx);
+                        s_app.current_song_index = find_adjacent_mood_song(s_app.current_song_index, 1);
+                        play_song(s_app.current_song_index);
                     } else if (s_app.current_song_index == KARAOKE_DOOM_SONG_INDEX) {
                         s_app.current_song_index = 0;
                         play_song(s_app.current_song_index);

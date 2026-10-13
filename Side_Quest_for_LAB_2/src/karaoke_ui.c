@@ -329,16 +329,18 @@ void karaoke_ui_update_player(const midi_player_status_t *status,
     /* 6. Active Voice Polyphony & Active Sound Card HUD: Differential update */
     if (active_voices != s_last_voices) {
         s_last_voices = active_voices;
-        bool sc55 = (yamaha_fm_get_sound_bank() == SYNTH_BANK_ROLAND_SC55);
+        synth_sound_bank_t b = yamaha_fm_get_sound_bank();
+        const char *b_tag = (b == SYNTH_BANK_PURE_FM) ? "FM  " :
+                            ((b == SYNTH_BANK_ROLAND_SC55) ? "SC55" : "OPL4");
         sensme_data_t sd_hud;
         if (sensme_get_song_data(s_current_catalog_index, &sd_hud)) {
-            snprintf(line_buf, sizeof(line_buf), "Vox:%2u/70 [%s]", active_voices, sc55 ? "SC55" : "OPL4");
+            snprintf(line_buf, sizeof(line_buf), "Vox:%2u/70 [%s]", active_voices, b_tag);
             lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
             char sm_coords[14];
             snprintf(sm_coords, sizeof(sm_coords), "V:%3u E:%3u", sd_hud.valence, sd_hud.energy);
             lcd_show_string(144, 218, sm_coords, LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
         } else {
-            snprintf(line_buf, sizeof(line_buf), "Voices: %2u/70  [%s] ", active_voices, sc55 ? "SC55" : "OPL4");
+            snprintf(line_buf, sizeof(line_buf), "Vox:%2u/70  [%s] ", active_voices, b_tag);
             lcd_show_string(8, 218, line_buf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
         }
     }
@@ -527,7 +529,9 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
         lcd_fill_rect(8, y, 231, y + 19, bg);
         lcd_draw_rect(8, y, 231, y + 19, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
         if (r == 4) {
-            snprintf(buf, sizeof(buf), "Sound Card: <%s>", (bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
+            const char *bname = (bank == 2) ? "Pure FM OPL3" :
+                                ((bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
+            snprintf(buf, sizeof(buf), "Sound Card: <%s>", bname);
         } else if (r == 5) {
             uint8_t ach = sensme_get_active_channel();
             snprintf(buf, sizeof(buf), "SensMe Mood: <%s> >", sensme_channel_name(ach));

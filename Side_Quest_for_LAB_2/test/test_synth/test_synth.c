@@ -1612,6 +1612,20 @@ void test_upgraded_multibank_wavetable_instruments(void)
     }
     TEST_ASSERT_NOT_NULL(pcm_dist_sc55);
     TEST_ASSERT_TRUE(pcm_dist_opl4 != pcm_dist_sc55);
+
+    /* 5. Pure FM Mode (SYNTH_BANK_PURE_FM) disables melodic WaveTables and plays pure FM */
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_PURE_FM);
+    TEST_ASSERT_EQUAL(SYNTH_BANK_PURE_FM, yamaha_fm_get_sound_bank());
+    play(0, 0, 60, 100);    /* Grand Piano */
+    play(1, 48, 60, 100);   /* Strings */
+    render_ms(20);
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && !s_voices[v].is_drum) {
+            TEST_ASSERT_NULL(s_voices[v].pcm_data);
+        }
+    }
+    yamaha_fm_set_sound_bank(SYNTH_BANK_YAMAHA_OPL4);
 }
 
 int main(void)

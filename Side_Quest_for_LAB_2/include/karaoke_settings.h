@@ -59,7 +59,7 @@ void karaoke_settings_set_drum_gain(uint8_t gain);
 void karaoke_settings_set_melody_gain(uint8_t gain);
 
 /**
- * @brief Update active sound card bank (0 = Yamaha OPL4, 1 = Roland SC-55).
+ * @brief Update active sound card bank (0 = Yamaha OPL4, 1 = Roland SC-55, 2 = Pure FM OPL3/DX7).
  */
 void karaoke_settings_set_sound_bank(uint8_t bank);
 

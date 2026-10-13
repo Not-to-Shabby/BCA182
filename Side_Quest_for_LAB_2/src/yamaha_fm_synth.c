@@ -1090,7 +1090,7 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
         v->sus = p->sustain;
     }
 
-    if (s_hybrid_pcm && s_third_op && busy <= THIRD_OP_MAX_VOICES) {
+    if (s_hybrid_pcm && s_sound_bank != SYNTH_BANK_PURE_FM && s_third_op && busy <= THIRD_OP_MAX_VOICES) {
         bool sc55 = (s_sound_bank == SYNTH_BANK_ROLAND_SC55);
         const int16_t *pcm = NULL;
         uint32_t plen = 0;
@@ -1767,7 +1767,13 @@ bool yamaha_fm_get_hybrid_attack(void)
 
 void yamaha_fm_set_sound_bank(synth_sound_bank_t bank)
 {
-    s_sound_bank = (bank == SYNTH_BANK_ROLAND_SC55) ? SYNTH_BANK_ROLAND_SC55 : SYNTH_BANK_YAMAHA_OPL4;
+    if (bank == SYNTH_BANK_PURE_FM) {
+        s_sound_bank = SYNTH_BANK_PURE_FM;
+    } else if (bank == SYNTH_BANK_ROLAND_SC55) {
+        s_sound_bank = SYNTH_BANK_ROLAND_SC55;
+    } else {
+        s_sound_bank = SYNTH_BANK_YAMAHA_OPL4;
+    }
 }
 
 synth_sound_bank_t yamaha_fm_get_sound_bank(void)

@@ -76,7 +76,7 @@ static bool rtc_load_backup(void)
         uint8_t inst = (uint8_t)((packed >> 8) & 0xFFU);
         uint8_t drum = (uint8_t)((packed >> 16) & 0xFFU);
         uint8_t mel  = (uint8_t)((packed >> 24) & 0xFFU);
-        uint8_t bank = (uint8_t)(RTC->BKP2R & 1U);
+        uint8_t bank = (uint8_t)(RTC->BKP2R & 3U);
         uint8_t sm_ch = (uint8_t)((RTC->BKP2R >> 8) & 0xFFU);
 
         if (vol <= 100 && inst >= 20 && inst <= 200 && drum >= 20 && drum <= 200) {
@@ -86,12 +86,14 @@ static bool rtc_load_backup(void)
             if (mel >= 20) {
                 s_settings.melody_gain = mel;
             }
-            s_settings.sound_bank = bank;
+            s_settings.sound_bank = (bank <= 2U) ? bank : 0U;
             if (sm_ch < SENSME_CH_COUNT) {
                 s_settings.sensme_channel = sm_ch;
             }
+            const char *bname = (s_settings.sound_bank == 2) ? "Pure FM OPL3" :
+                                ((s_settings.sound_bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
             printk("[Settings] Restored from RTC Backup: Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s SensMe=%u\n",
-                   vol, inst, drum, s_settings.melody_gain, bank ? "Roland SC-55" : "Yamaha OPL4",
+                   vol, inst, drum, s_settings.melody_gain, bname,
                    s_settings.sensme_channel);
             return true;
         }
@@ -160,7 +162,7 @@ static bool sd_load_cfg(void)
         s_settings.melody_gain = (uint8_t)mel;
         updated = true;
     }
-    if (bank >= 0 && bank <= 1) {
+    if (bank >= 0 && bank <= 2) {
         s_settings.sound_bank = (uint8_t)bank;
         updated = true;
     }
@@ -171,9 +173,11 @@ static bool sd_load_cfg(void)
     }
 
     if (updated) {
+        const char *bname = (s_settings.sound_bank == 2) ? "Pure FM OPL3" :
+                            ((s_settings.sound_bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
         printk("[Settings] Restored from " SETTINGS_CFG_PATH ": Vol=%u%% Inst=%u%% Drum=%u%% Melody=%u%% Bank=%s SensMe=%u (%s)\n",
                s_settings.master_volume, s_settings.instrument_gain, s_settings.drum_gain,
-               s_settings.melody_gain, s_settings.sound_bank ? "Roland SC-55" : "Yamaha OPL4",
+               s_settings.melody_gain, bname,
                s_settings.sensme_channel, sensme_channel_name(s_settings.sensme_channel));
     }
     return updated;
@@ -276,7 +280,7 @@ void karaoke_settings_set_melody_gain(uint8_t gain)
 
 void karaoke_settings_set_sound_bank(uint8_t bank)
 {
-    s_settings.sound_bank = bank ? 1 : 0;
+    s_settings.sound_bank = (bank <= 2U) ? bank : 0U;
     yamaha_fm_set_sound_bank((synth_sound_bank_t)s_settings.sound_bank);
     rtc_save_backup();
 }

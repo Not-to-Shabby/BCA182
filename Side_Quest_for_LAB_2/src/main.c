@@ -671,7 +671,7 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     } else if (s_app.settings_cursor == 3) {
                         karaoke_settings_set_melody_gain(cur_mel >= 25 ? cur_mel - 5 : 20);
                     } else if (s_app.settings_cursor == 4) {
-                        karaoke_settings_set_sound_bank(cfg->sound_bank ? 0 : 1);
+                        karaoke_settings_set_sound_bank((uint8_t)((cfg->sound_bank + 2U) % 3U));
                     }
                 }
 
@@ -685,7 +685,7 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     } else if (s_app.settings_cursor == 3) {
                         karaoke_settings_set_melody_gain(cur_mel <= 245 ? cur_mel + 5 : 250);
                     } else if (s_app.settings_cursor == 4) {
-                        karaoke_settings_set_sound_bank(cfg->sound_bank ? 0 : 1);
+                        karaoke_settings_set_sound_bank((uint8_t)((cfg->sound_bank + 1U) % 3U));
                     } else if (s_app.settings_cursor == 5) {
                         open_sensme();
                     } else if (s_app.settings_cursor == 6) {

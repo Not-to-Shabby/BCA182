@@ -26,7 +26,8 @@ extern "C" {
 
 typedef enum {
     SYNTH_BANK_YAMAHA_OPL4 = 0,
-    SYNTH_BANK_ROLAND_SC55 = 1
+    SYNTH_BANK_ROLAND_SC55 = 1,
+    SYNTH_BANK_PURE_FM     = 2
 } synth_sound_bank_t;
 
 /**

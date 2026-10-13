@@ -427,7 +427,7 @@ static uint16_t s_last_bend[FM_MIDI_CHANNELS];
 /* Instrument patches                                                         */
 /* -------------------------------------------------------------------------- */
 enum {
-    P_PIANO, P_BRIGHT, P_EPIANO, P_HONKY, P_CLAV, P_BELL, P_VIBES, P_MARIMBA,
+    P_PIANO, P_BRIGHT, P_EPIANO, P_RHODES, P_HONKY, P_CLAV, P_BELL, P_VIBES, P_MARIMBA,
     P_ORGAN, P_PERC_ORGAN, P_REED_ORGAN, P_ACCORD,
     P_NYLON, P_STEEL, P_JAZZ_GTR, P_CLEAN_GTR, P_MUTED_GTR, P_OD_GTR, P_DIST_GTR,
     P_ACO_BASS, P_FINGER_BASS, P_PICK_BASS, P_FRETLESS, P_SLAP, P_SYN_BASS1, P_SYN_BASS2,
@@ -444,6 +444,7 @@ static const fm_patch_t PATCHES[P_COUNT] = {
     [P_PIANO]       = {1, 1,     3.2f, 0.7f, 0.12f, 0.0f, 0.002f, 1.6f, 0.00f, 0.18f, 0.40f, 0.00f, false},
     [P_BRIGHT]      = {1, 1,     4.2f, 1.0f, 0.10f, 0.0f, 0.002f, 1.4f, 0.00f, 0.16f, 0.38f, 0.00f, false},
     [P_EPIANO]      = {1, 14,    1.3f, 0.12f, 0.22f, 0.0f, 0.002f, 2.2f, 0.00f, 0.30f, 0.34f, 0.00f, false},
+    [P_RHODES]      = {1, 1,     1.9f, 0.35f, 0.16f, 0.3f, 0.002f, 2.0f, 0.00f, 0.25f, 0.38f, 0.00f, false},
     [P_HONKY]       = {1, 1.012f, 2.6f, 0.9f, 0.10f, 0.0f, 0.002f, 1.3f, 0.00f, 0.15f, 0.40f, 0.00f, false},
     [P_CLAV]        = {1, 1,     3.2f, 0.55f, 0.06f, 0.50f, 0.001f, 0.5f, 0.00f, 0.06f, 0.40f, 0.00f, false},
     [P_BELL]        = {1, 3.5f,  2.4f, 0.2f, 0.70f, 0.0f, 0.001f, 2.6f, 0.00f, 0.35f, 0.34f, 0.00f, false},
@@ -511,6 +512,7 @@ static const ext_patch_t EXT_PATCHES[P_COUNT] = {
     [P_BRIGHT]      = {EXT_TINE, 4.01f, 2.0f, 0.030f},
     [P_HONKY]       = {EXT_TINE, 3.01f, 1.5f, 0.035f},
     [P_EPIANO]      = {EXT_TINE, 7.00f, 1.4f, 0.040f},
+    [P_RHODES]      = {EXT_TINE, 7.00f, 1.2f, 0.055f},
     [P_CLAV]        = {EXT_ENSEMBLE, 2.0f, 1.0f, 1.0f},
 
     /* Guitars (4-op stereo acoustic body & double-tracked overdrive/distortion body) */
@@ -588,7 +590,7 @@ static const uint8_t PATCH_WAVE_M[P_COUNT] = {
 
 /* General MIDI program number -> patch. */
 static const uint8_t PROGRAM_PATCH[128] = {
-    /*   0 */ P_PIANO, P_BRIGHT, P_BRIGHT, P_HONKY, P_EPIANO, P_EPIANO, P_CLAV, P_CLAV,
+    /*   0 */ P_PIANO, P_BRIGHT, P_BRIGHT, P_HONKY, P_RHODES, P_EPIANO, P_CLAV, P_CLAV,
     /*   8 */ P_BELL, P_BELL, P_BELL, P_VIBES, P_MARIMBA, P_MARIMBA, P_BELL, P_PLUCK,
     /*  16 */ P_ORGAN, P_PERC_ORGAN, P_ORGAN, P_ORGAN, P_REED_ORGAN, P_ACCORD, P_ACCORD, P_ACCORD,
     /*  24 */ P_NYLON, P_STEEL, P_JAZZ_GTR, P_CLEAN_GTR, P_MUTED_GTR, P_OD_GTR, P_DIST_GTR, P_NYLON,
@@ -1096,12 +1098,34 @@ static void fm_note_on(uint8_t ch, uint8_t note, uint8_t vel, uint8_t prog)
             root_hz = sc55 ? SC55_PCM_BASS_ROOT_HZ : OPL4_PCM_BASS_ROOT_HZ;
             p_amp = 0.26f;
             p_tau = 0.038f;
-        } else if (sc55 && (pid == P_OD_GTR || pid == P_DIST_GTR)) {
-            pcm = SC55_PCM_DIST_GTR;
-            plen = SC55_PCM_DIST_GTR_LEN;
-            root_hz = SC55_PCM_DIST_GTR_ROOT_HZ;
+        } else if (pid == P_OD_GTR || pid == P_DIST_GTR) {
+            pcm = sc55 ? SC55_PCM_DIST_GTR : OPL4_PCM_DIST_GTR;
+            plen = sc55 ? SC55_PCM_DIST_GTR_LEN : OPL4_PCM_DIST_GTR_LEN;
+            p_loop = sc55 ? SC55_PCM_DIST_GTR_LOOP_START : OPL4_PCM_DIST_GTR_LOOP_START;
+            root_hz = sc55 ? SC55_PCM_DIST_GTR_ROOT_HZ : OPL4_PCM_DIST_GTR_ROOT_HZ;
+            p_amp = 0.35f;
+            p_tau = 0.250f;
+        } else if (pid == P_STRINGS || pid == P_VIOLIN || pid == P_CELLO) {
+            pcm = sc55 ? SC55_PCM_STRINGS : OPL4_PCM_STRINGS;
+            plen = sc55 ? SC55_PCM_STRINGS_LEN : OPL4_PCM_STRINGS_LEN;
+            p_loop = sc55 ? SC55_PCM_STRINGS_LOOP_START : OPL4_PCM_STRINGS_LOOP_START;
+            root_hz = sc55 ? SC55_PCM_STRINGS_ROOT_HZ : OPL4_PCM_STRINGS_ROOT_HZ;
             p_amp = 0.28f;
-            p_tau = 0.055f;
+            p_tau = 0.400f;
+        } else if (pid == P_FLUTE) {
+            pcm = sc55 ? SC55_PCM_FLUTE : OPL4_PCM_FLUTE;
+            plen = sc55 ? SC55_PCM_FLUTE_LEN : OPL4_PCM_FLUTE_LEN;
+            p_loop = sc55 ? SC55_PCM_FLUTE_LOOP_START : OPL4_PCM_FLUTE_LOOP_START;
+            root_hz = sc55 ? SC55_PCM_FLUTE_ROOT_HZ : OPL4_PCM_FLUTE_ROOT_HZ;
+            p_amp = 0.22f;
+            p_tau = 0.045f;
+        } else if (pid == P_CHOIR) {
+            pcm = sc55 ? SC55_PCM_CHOIR : OPL4_PCM_CHOIR;
+            plen = sc55 ? SC55_PCM_CHOIR_LEN : OPL4_PCM_CHOIR_LEN;
+            p_loop = sc55 ? SC55_PCM_CHOIR_LOOP_START : OPL4_PCM_CHOIR_LOOP_START;
+            root_hz = sc55 ? SC55_PCM_CHOIR_ROOT_HZ : OPL4_PCM_CHOIR_ROOT_HZ;
+            p_amp = 0.35f;
+            p_tau = 0.450f;
         }
 
         if (pcm != NULL) {
@@ -2087,7 +2111,7 @@ static void render_fm_sub(fm_voice_t *v, size_t len, float ch_gain, float ratio,
         uint32_t p_loop = v->pcm_loop;
         float cur_amp = v->pcm_amp * v->amp;
 
-        if (cur_amp >= SILENCE) {
+        if (cur_amp >= SILENCE || (v->pcm_amp >= SILENCE && v->state == ST_ATTACK)) {
             const int16_t *pcm = v->pcm_data;
             uint32_t p_step = v->pcm_step;
             float p_scale = cur_amp * v->vel_gain * ch_gain * (float)GAIN_ONE;

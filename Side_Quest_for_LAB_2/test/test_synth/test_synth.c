@@ -1535,6 +1535,85 @@ void test_retuned_plucked_and_sc55_instruments_are_in_tune(void)
     TEST_ASSERT_FLOAT_WITHIN(6.0f, 329.63f, (float)hz_clav);
 }
 
+void test_upgraded_multibank_wavetable_instruments(void)
+{
+    /* 1. Fender Rhodes (GM 4) vs DX7 E.Piano (GM 5) separation */
+    TEST_ASSERT_EQUAL_UINT8(P_RHODES, PROGRAM_PATCH[4]);
+    TEST_ASSERT_EQUAL_UINT8(P_EPIANO, PROGRAM_PATCH[5]);
+
+    /* Rhodes has a warm 1:1 fundamental while DX7 has a bright 1:14 tine */
+    setUp();
+    play(0, 4, 60, 100);    /* Rhodes */
+    render_ms(300);
+    double rhodes_b = brightness(100, 100);
+
+    setUp();
+    play(0, 5, 60, 100);    /* DX7 E.Piano 1 */
+    render_ms(300);
+    double dx7_b = brightness(100, 100);
+    TEST_ASSERT_TRUE(dx7_b > rhodes_b * 1.5);
+
+    /* 2. Orchestral Strings (GM 48) attaches looped strings WaveTable */
+    setUp();
+    play(0, 48, 60, 100);
+    render_ms(20);
+    const int16_t *pcm_str = NULL;
+    uint32_t loop_str = 0;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 0) {
+            pcm_str = s_voices[v].pcm_data;
+            loop_str = s_voices[v].pcm_loop;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(pcm_str);
+    TEST_ASSERT_TRUE(loop_str > 0);
+
+    /* 3. Choir Aahs (GM 52) attaches looped choir WaveTable */
+    setUp();
+    play(0, 52, 60, 100);
+    render_ms(20);
+    const int16_t *pcm_choir = NULL;
+    uint32_t loop_choir = 0;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 0) {
+            pcm_choir = s_voices[v].pcm_data;
+            loop_choir = s_voices[v].pcm_loop;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(pcm_choir);
+    TEST_ASSERT_TRUE(loop_choir > 0);
+
+    /* 4. Distortion Guitar (GM 30) attaches looped distortion WaveTable on both banks */
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_YAMAHA_OPL4);
+    play(0, 30, 60, 100);
+    render_ms(20);
+    const int16_t *pcm_dist_opl4 = NULL;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 0) {
+            pcm_dist_opl4 = s_voices[v].pcm_data;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(pcm_dist_opl4);
+
+    setUp();
+    yamaha_fm_set_sound_bank(SYNTH_BANK_ROLAND_SC55);
+    play(0, 30, 60, 100);
+    render_ms(20);
+    const int16_t *pcm_dist_sc55 = NULL;
+    for (int v = 0; v < FM_MAX_VOICES; v++) {
+        if (s_voices[v].active && s_voices[v].channel == 0) {
+            pcm_dist_sc55 = s_voices[v].pcm_data;
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(pcm_dist_sc55);
+    TEST_ASSERT_TRUE(pcm_dist_opl4 != pcm_dist_sc55);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1611,5 +1690,6 @@ int main(void)
     RUN_TEST(test_resetting_the_channel_mix_keeps_the_section_levels);
     RUN_TEST(test_guitars_have_natural_acoustic_harmonic_series_and_proper_pitch);
     RUN_TEST(test_retuned_plucked_and_sc55_instruments_are_in_tune);
+    RUN_TEST(test_upgraded_multibank_wavetable_instruments);
     return UNITY_END();
 }

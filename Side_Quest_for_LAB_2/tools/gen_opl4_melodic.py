@@ -165,6 +165,82 @@ def extract_yrw801_looped(rom, wave_id, midi_note, pitch_offset):
 
     return out_trimmed, ls
 
+def extract_yrw801_compact_looped(rom, wave_id, max_atk_samples=1600, max_loop_samples=2400):
+    """
+    Decodes a native 22.05 kHz 12-bit waveform from YRW801 ROM, preserving its
+    natural attack transient and splicing smoothly into its sustain loop region
+    on rising zero-crossings with a 64-sample raised-cosine loop crossfade.
+    """
+    hdr = rom[wave_id * 12 : (wave_id + 1) * 12]
+    b0, b1, b2 = hdr[0], hdr[1], hdr[2]
+    fmt = (b0 >> 6) & 3
+    start_addr = ((b0 & 0x3F) << 16) | (b1 << 8) | b2
+    loop_pos = (hdr[3] << 8) | hdr[4]
+    total_len = (65536 - ((hdr[5] << 8) | hdr[6])) & 0xFFFF
+
+    raw = []
+    for i in range(total_len):
+        if fmt == 1:
+            addr = start_addr + (i // 2) * 3
+            if i & 1:
+                u16 = (rom[addr + 2] << 8) | (rom[addr + 1] & 0xF0)
+            else:
+                u16 = (rom[addr + 0] << 8) | ((rom[addr + 1] & 0x0F) << 4)
+        elif fmt == 0:
+            u16 = rom[start_addr + i] << 8
+        else:
+            addr = start_addr + i * 2
+            u16 = (rom[addr] << 8) | rom[addr + 1]
+        s = u16 - 65536 if u16 >= 32768 else u16
+        raw.append(max(-32767, min(32767, s)))
+
+    if loop_pos > max_atk_samples:
+        atk = raw[:max_atk_samples]
+        a_end = len(atk) - 1
+        for i in range(len(atk) - 2, max(100, len(atk) - 200), -1):
+            if atk[i] <= 0 and atk[i + 1] > 0:
+                a_end = i + 1
+                break
+        l_start = loop_pos
+        for i in range(loop_pos, min(total_len - 2, loop_pos + 200)):
+            if raw[i] <= 0 and raw[i + 1] > 0:
+                l_start = i + 1
+                break
+        l_end = min(total_len, l_start + max_loop_samples)
+        for i in range(l_end - 2, max(l_start + 150, l_end - 200), -1):
+            if raw[i] <= 0 and raw[i + 1] > 0:
+                l_end = i + 1
+                break
+        combined = list(raw[:a_end]) + list(raw[l_start:l_end])
+        ls = a_end
+        le = len(combined)
+    else:
+        l_start = loop_pos
+        for i in range(loop_pos, min(total_len - 2, loop_pos + 200)):
+            if raw[i] <= 0 and raw[i + 1] > 0:
+                l_start = i + 1
+                break
+        l_end = min(total_len, l_start + max_loop_samples)
+        for i in range(l_end - 2, max(l_start + 150, l_end - 200), -1):
+            if raw[i] <= 0 and raw[i + 1] > 0:
+                l_end = i + 1
+                break
+        combined = list(raw[:l_end])
+        ls = l_start
+        le = l_end
+
+    xfade = min(64, ls, (le - ls) // 2)
+    for k in range(xfade):
+        w = 0.5 * (1.0 - math.cos(math.pi * (k + 1) / float(xfade)))
+        idx_end = le - xfade + k
+        idx_start = ls - xfade + k
+        combined[idx_end] = max(-32767, min(32767, int(round(combined[idx_end] * (1.0 - w) + combined[idx_start] * w))))
+
+    mx = max(1, max(abs(x) for x in combined))
+    scale = 28000.0 / mx
+    combined = [max(-32767, min(32767, int(round(x * scale)))) for x in combined]
+    return combined, ls
+
 def main():
     rom = get_yrw801_rom()
     print(f"Loaded Yamaha YRW801 ROM ({len(rom)} bytes, CRC32=0x{zlib.crc32(rom)&0xFFFFFFFF:08X})")
@@ -175,8 +251,16 @@ def main():
     guitar = extract_yrw801_melodic(rom, 13, 52, 5410, int(0.065 * FS))
     # 3. Slap / Fingered Bass (regions_24: Wave 0x0a3 = 163, pitch_offset = 7606, root E2 = note 40)
     bass = extract_yrw801_melodic(rom, 163, 40, 7606, int(0.055 * FS))
+    # 4. Orchestral Strings Ensemble (Wave 53: 339.6 Hz root, looped bow sustain)
+    strings, strings_loop = extract_yrw801_compact_looped(rom, 53)
+    # 5. Concert Flute (Wave 118: 393.75 Hz G4 root, breath chiff + looped body)
+    flute, flute_loop = extract_yrw801_compact_looped(rom, 118)
+    # 6. Overdriven / Distortion Guitar (Wave 255: 344.5 Hz F4 root, looped tube drive)
+    od_gtr, od_gtr_loop = extract_yrw801_compact_looped(rom, 255)
+    # 7. Choir Aahs (Wave 176: 239.7 Hz B3 root, looped vocal formant)
+    choir, choir_loop = extract_yrw801_compact_looped(rom, 176)
 
-    total_bytes = (len(piano) + len(guitar) + len(bass)) * 2
+    total_bytes = (len(piano) + len(guitar) + len(bass) + len(strings) + len(flute) + len(od_gtr) + len(choir)) * 2
 
     lines = [
         "/**",
@@ -221,6 +305,23 @@ def main():
         lines.append("    " + ", ".join(str(x) for x in bass[i:i+16]) + ",")
     lines.append("};")
     lines.append("")
+
+    for name, arr, lstart, r_hz, comment in [
+        ("STRINGS", strings, strings_loop, "339.6000f", "F4 (YRW801 Wave 53)"),
+        ("FLUTE",   flute,   flute_loop,   "393.7500f", "G4 (YRW801 Wave 118)"),
+        ("DIST_GTR", od_gtr, od_gtr_loop,  "344.5300f", "F4 (YRW801 Wave 255)"),
+        ("CHOIR",   choir,   choir_loop,   "239.6700f", "B3 (YRW801 Wave 176)"),
+    ]:
+        lines.extend([
+            f"#define OPL4_PCM_{name}_LEN {len(arr)}U",
+            f"#define OPL4_PCM_{name}_LOOP_START {lstart}U",
+            f"#define OPL4_PCM_{name}_ROOT_HZ {r_hz} /* {comment} */",
+            f"static const int16_t OPL4_PCM_{name}[{len(arr)}] = {{",
+        ])
+        for i in range(0, len(arr), 16):
+            lines.append("    " + ", ".join(str(x) for x in arr[i:i+16]) + ",")
+        lines.append("};")
+        lines.append("")
     lines.append("#endif /* OPL4_MELODIC_SAMPLES_H_ */")
     lines.append("")
 

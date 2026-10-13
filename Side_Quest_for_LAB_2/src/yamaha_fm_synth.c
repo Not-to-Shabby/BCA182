@@ -633,7 +633,7 @@ static drum_recipe_t make_recipe(uint8_t note, uint8_t kit_prog)
     static const drum_recipe_t SHAKE    = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.30f, 0.05f, true,  false};
     static const drum_recipe_t GUIRO    = {0.0f, 0.0f, 0.05f, 0.0f, 0.10f, 0.30f, 0.10f, false, false};
     static const drum_recipe_t WHIS     = {2400.0f, 2400.0f, 0.05f, 0.35f, 0.18f, 0.0f, 0.02f, false, false};
-    static const drum_recipe_t TRI      = {4200.0f, 4200.0f, 0.05f, 0.30f, 0.60f, 0.05f, 0.10f, true,  false};
+    static const drum_recipe_t TRI      = {4200.0f, 4200.0f, 0.05f, 0.15f, 0.45f, 0.01f, 0.06f, true,  false};
     drum_recipe_t r;
 
     switch (note) {
@@ -677,6 +677,7 @@ static drum_recipe_t make_recipe(uint8_t note, uint8_t kit_prog)
     case 73: case 74: return GUIRO;
     case 75: case 76: case 77: return CLICK;
     case 80: case 81: r = TRI;   break;
+    case 82:          r = SHAKE; r.noise_tau = 0.04f; break; /* Shaker: short crisp maraca */
     default:          r = SHAKE; break;
     }
 
@@ -710,15 +711,28 @@ typedef struct {
 
 /* Key map of the SC-55 Standard drum preset: every key has its own recording. The preset tunes
  * the crash, ride and bell about 8-9 semitones down (coarse tune -8/-9), which is the 0.6x here. */
-static bool make_sc55_wave(uint8_t note, opl4_drum_wave_t *w)
+static bool make_sc55_wave(uint8_t note, uint8_t kit_prog, opl4_drum_wave_t *w)
 {
+    bool room_kit = (kit_prog >= 8 && kit_prog <= 15);
     switch (note) {
-    case 35: w->data = SC55_PCM_KICK2;     w->len = SC55_PCM_KICK2_LEN;     w->pitch = 1.00f; w->gain = 0.90f; return true;
-    case 36: w->data = SC55_PCM_KICK;      w->len = SC55_PCM_KICK_LEN;      w->pitch = 1.00f; w->gain = 0.92f; return true;
+    case 35:
+        w->data = room_kit ? SC55_PCM_KICK_ROOM : SC55_PCM_KICK2;
+        w->len = room_kit ? SC55_PCM_KICK_ROOM_LEN : SC55_PCM_KICK2_LEN;
+        w->pitch = 1.00f; w->gain = room_kit ? 1.08f : 0.90f; return true;
+    case 36:
+        w->data = room_kit ? SC55_PCM_KICK_ROOM : SC55_PCM_KICK;
+        w->len = room_kit ? SC55_PCM_KICK_ROOM_LEN : SC55_PCM_KICK_LEN;
+        w->pitch = 1.00f; w->gain = room_kit ? 1.10f : 0.92f; return true;
     case 37: w->data = SC55_PCM_STICK;     w->len = SC55_PCM_STICK_LEN;     w->pitch = 1.00f; w->gain = 0.36f; return true;
-    case 38: w->data = SC55_PCM_SNARE_FAT; w->len = SC55_PCM_SNARE_FAT_LEN; w->pitch = 1.00f; w->gain = 1.48f; return true;
+    case 38:
+        w->data = room_kit ? SC55_PCM_SNARE_ROOM : SC55_PCM_SNARE_FAT;
+        w->len = room_kit ? SC55_PCM_SNARE_ROOM_LEN : SC55_PCM_SNARE_FAT_LEN;
+        w->pitch = 1.00f; w->gain = room_kit ? 1.55f : 1.48f; return true;
     case 39: w->data = SC55_PCM_CLAP;      w->len = SC55_PCM_CLAP_LEN;      w->pitch = 1.00f; w->gain = 1.17f; return true;
-    case 40: w->data = SC55_PCM_SNARE;     w->len = SC55_PCM_SNARE_LEN;     w->pitch = 1.00f; w->gain = 1.55f; return true;
+    case 40:
+        w->data = room_kit ? SC55_PCM_SNARE_ROOM : SC55_PCM_SNARE;
+        w->len = room_kit ? SC55_PCM_SNARE_ROOM_LEN : SC55_PCM_SNARE_LEN;
+        w->pitch = 1.00f; w->gain = room_kit ? 1.60f : 1.55f; return true;
     case 41: w->data = SC55_PCM_TOM41;     w->len = SC55_PCM_TOM41_LEN;     w->pitch = 1.00f; w->gain = 2.75f; return true;
     case 42: w->data = SC55_PCM_HAT_C;     w->len = SC55_PCM_HAT_C_LEN;     w->pitch = 1.00f; w->gain = 1.06f; return true;
     case 43: w->data = SC55_PCM_TOM43;     w->len = SC55_PCM_TOM43_LEN;     w->pitch = 1.00f; w->gain = 2.82f; return true;
@@ -745,7 +759,7 @@ static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
 {
     opl4_drum_wave_t w = { NULL, 0, 1.0f, 1.0f };
     bool sc55 = (s_sound_bank == SYNTH_BANK_ROLAND_SC55);
-    if (sc55 && make_sc55_wave(note, &w)) {
+    if (sc55 && make_sc55_wave(note, kit_prog, &w)) {
         return w;
     }
     const int16_t *p_kick    = sc55 ? SC55_PCM_KICK    : OPL4_PCM_KICK;
@@ -800,6 +814,9 @@ static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
         w.len = OPL4_PCM_COWBELL_LEN;
         w.pitch = (note == 67) ? 1.35f : 1.10f;
         break;
+    case 69: case 70: case 73: case 74: case 80: case 81: case 82:
+        /* Maracas, Shaker, Cabasa, Guiro, and Triangle use dedicated noise/tone recipes without hi-hat sample */
+        break;
     default:
         w.data = p_hat_c;
         w.len = OPL4_PCM_HAT_C_LEN;
@@ -811,6 +828,9 @@ static opl4_drum_wave_t make_opl4_wave(uint8_t note, uint8_t kit_prog)
         w.pitch *= 0.95f; /* Power kit: deeper tuning */
     } else if (kit_prog >= 24 && kit_prog <= 31) {
         w.pitch *= 1.06f; /* Electronic kit: snappy attack */
+    } else if (kit_prog >= 8 && kit_prog <= 15) {
+        w.pitch *= 0.94f; /* Room kit: deeper, wider room ambiance */
+        w.gain *= 1.15f;
     }
     return w;
 }

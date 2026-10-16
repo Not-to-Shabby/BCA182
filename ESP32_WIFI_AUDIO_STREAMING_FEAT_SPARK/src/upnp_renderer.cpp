@@ -332,7 +332,7 @@ static void push_meta(const char *format)
     send_spark_packet(WIFI_MSG_TRACK_META, (const uint8_t *)&m, sizeof(m));
 }
 
-static bool read_exact(WiFiClient *c, uint8_t *dst, size_t n)
+static bool read_exact(WiFiClient *c, uint8_t *dst, size_t n, uint32_t idle_ms = 5000)
 {
     uint32_t t = millis();
     size_t got = 0;
@@ -349,7 +349,7 @@ static bool read_exact(WiFiClient *c, uint8_t *dst, size_t n)
                 t = millis();
             }
         } else {
-            if (!c->connected() || millis() - t > 5000) {
+            if (!c->connected() || millis() - t > idle_ms) {
                 return false;
             }
             delay(1);
@@ -371,12 +371,25 @@ static bool skip_bytes(WiFiClient *c, uint32_t n)
     return true;
 }
 
+static inline int16_t rd16(const uint8_t *p, bool big_endian)
+{
+    return big_endian ? (int16_t)((p[0] << 8) | p[1]) : (int16_t)(p[0] | (p[1] << 8));
+}
+
+static int param_int(const String &s, const char *key, int fallback)
+{
+    int p = s.indexOf(key);
+    return p < 0 ? fallback : s.substring(p + strlen(key)).toInt();
+}
+
 static void stream_once(void)
 {
     HTTPClient http;
     http.setConnectTimeout(5000);
     http.setTimeout(5000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    const char *hdr_keys[] = {"Content-Type"};
+    http.collectHeaders(hdr_keys, 1);
     if (!http.begin(s_uri)) {
         Serial.println("[UPnP] Bad stream URL");
         return;
@@ -389,46 +402,76 @@ static void stream_once(void)
     }
     WiFiClient *c = http.getStreamPtr();
 
+    String ctype = http.header("Content-Type");
+    ctype.toLowerCase();
+    Serial.printf("[UPnP] Stream HTTP 200, Content-Type '%s', length %d\n", ctype.c_str(), http.getSize());
+
+    uint8_t inbuf[1024];
+    size_t in_len = 0, in_pos = 0;
     uint8_t hdr[12];
-    if (!read_exact(c, hdr, 12) || memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0) {
-        Serial.println("[UPnP] Unsupported stream: only PCM WAV is decoded (MP3/AAC/FLAC not yet supported)");
+    if (!read_exact(c, hdr, 12, 20000)) {
+        Serial.println("[UPnP] No audio arrived within 20 s (is something playing on the phone?)");
         http.end();
         return;
     }
 
     uint16_t ch = 0, bits = 0, tag = 0;
     uint32_t rate = 0, data_size = 0;
-    bool have_fmt = false, have_data = false;
-    while (!have_data) {
-        uint8_t ck[8];
-        if (!read_exact(c, ck, 8)) {
-            break;
-        }
-        uint32_t sz = ck[4] | (ck[5] << 8) | (ck[6] << 16) | ((uint32_t)ck[7] << 24);
-        if (memcmp(ck, "fmt ", 4) == 0 && sz >= 16) {
-            uint8_t f[16];
-            if (!read_exact(c, f, 16)) {
+    bool big_endian = false;
+    bool is_wav = memcmp(hdr, "RIFF", 4) == 0 && memcmp(hdr + 8, "WAVE", 4) == 0;
+
+    if (is_wav) {
+        bool have_fmt = false, have_data = false;
+        while (!have_data) {
+            uint8_t ck[8];
+            if (!read_exact(c, ck, 8, 20000)) {
                 break;
             }
-            tag = f[0] | (f[1] << 8);
-            ch = f[2] | (f[3] << 8);
-            rate = f[4] | (f[5] << 8) | (f[6] << 16) | ((uint32_t)f[7] << 24);
-            bits = f[14] | (f[15] << 8);
-            have_fmt = true;
-            if (!skip_bytes(c, (sz - 16) + (sz & 1U))) {
+            uint32_t sz = ck[4] | (ck[5] << 8) | (ck[6] << 16) | ((uint32_t)ck[7] << 24);
+            if (memcmp(ck, "fmt ", 4) == 0 && sz >= 16) {
+                uint8_t f[16];
+                if (!read_exact(c, f, 16)) {
+                    break;
+                }
+                tag = f[0] | (f[1] << 8);
+                ch = f[2] | (f[3] << 8);
+                rate = f[4] | (f[5] << 8) | (f[6] << 16) | ((uint32_t)f[7] << 24);
+                bits = f[14] | (f[15] << 8);
+                have_fmt = true;
+                if (!skip_bytes(c, (sz - 16) + (sz & 1U))) {
+                    break;
+                }
+            } else if (memcmp(ck, "data", 4) == 0) {
+                data_size = sz;
+                have_data = true;
+            } else if (!skip_bytes(c, sz + (sz & 1U))) {
                 break;
             }
-        } else if (memcmp(ck, "data", 4) == 0) {
-            data_size = sz;
-            have_data = true;
-        } else if (!skip_bytes(c, sz + (sz & 1U))) {
-            break;
         }
+        if (!have_fmt || !have_data) {
+            Serial.println("[UPnP] WAV header incomplete (no fmt/data chunk)");
+            http.end();
+            return;
+        }
+    } else if (ctype.indexOf("l16") >= 0 || ctype.indexOf("lpcm") >= 0) {
+        /* Headerless LPCM: DLNA audio/L16 is big-endian, rate and channels come from the MIME parameters. */
+        tag = 1;
+        bits = 16;
+        rate = (uint32_t)param_int(ctype, "rate=", 44100);
+        ch = (uint16_t)param_int(ctype, "channels=", 2);
+        big_endian = true;
+        memcpy(inbuf, hdr, sizeof(hdr));
+        in_len = sizeof(hdr);
+    } else {
+        Serial.printf("[UPnP] Unsupported stream (not RIFF/WAVE or L16). First bytes: "
+                      "%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                      hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5], hdr[6], hdr[7], hdr[8], hdr[9], hdr[10], hdr[11]);
+        http.end();
+        return;
     }
 
-    if (!have_fmt || !have_data || (tag != 1 && tag != 0xFFFE) || bits != 16 ||
-        (ch != 1 && ch != 2) || rate < 8000 || rate > 96000) {
-        Serial.printf("[UPnP] Unsupported WAV (tag %u, %u ch, %u-bit, %u Hz)\n", tag, ch, bits, (unsigned)rate);
+    if ((tag != 1 && tag != 0xFFFE) || bits != 16 || (ch != 1 && ch != 2) || rate < 8000 || rate > 96000) {
+        Serial.printf("[UPnP] Unsupported audio (tag %u, %u ch, %u-bit, %u Hz)\n", tag, ch, bits, (unsigned)rate);
         http.end();
         return;
     }
@@ -438,14 +481,12 @@ static void stream_once(void)
     s_pos_frames = 0;
 
     char fmt[16];
-    snprintf(fmt, sizeof(fmt), "WAV %uHz %uch", (unsigned)rate, ch);
+    snprintf(fmt, sizeof(fmt), "%s %uHz %uch", is_wav ? "WAV" : "LPCM", (unsigned)rate, ch);
     push_meta(fmt);
     Serial.printf("[UPnP] Streaming '%s' (%s)\n", s_title.c_str(), fmt);
 
     const uint32_t step = (uint32_t)(((uint64_t)rate << 16) / 44100U);
     const size_t fb = ch * 2U;
-    uint8_t inbuf[1024];
-    size_t in_len = 0, in_pos = 0;
     uint32_t phase = 0x10000U;
     int16_t pl = 0, pr = 0, cl = 0, cr = 0;
     int16_t out[AUDIO_CHUNK_SAMPLES * 2];
@@ -501,8 +542,8 @@ static void stream_once(void)
                 }
                 pl = cl;
                 pr = cr;
-                cl = (int16_t)(inbuf[in_pos] | (inbuf[in_pos + 1] << 8));
-                cr = (ch == 2) ? (int16_t)(inbuf[in_pos + 2] | (inbuf[in_pos + 3] << 8)) : cl;
+                cl = rd16(inbuf + in_pos, big_endian);
+                cr = (ch == 2) ? rd16(inbuf + in_pos + 2, big_endian) : cl;
                 in_pos += fb;
                 phase -= 0x10000U;
             }
@@ -791,7 +832,7 @@ static void handle_cm_control(void)
     if (act == "GetProtocolInfo") {
         soap_reply(SVC_CM, act,
                    "<Source></Source><Sink>http-get:*:audio/wav:*,http-get:*:audio/x-wav:*,"
-                   "http-get:*:audio/L16:*</Sink>");
+                   "http-get:*:audio/L16:*,http-get:*:audio/x-l16:*,http-get:*:audio/lpcm:*</Sink>");
     } else if (act == "GetCurrentConnectionIDs") {
         soap_reply(SVC_CM, act, "<ConnectionIDs>0</ConnectionIDs>");
     } else if (act == "GetCurrentConnectionInfo") {

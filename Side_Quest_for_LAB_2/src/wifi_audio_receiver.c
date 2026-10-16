@@ -41,6 +41,10 @@ static wifi_telemetry_t s_telem = {
 static bool s_esp32_connected = false;
 static int64_t s_last_ping_time = 0;
 static int64_t s_last_audio_time = 0;
+static volatile uint32_t s_stat_frames = 0;     /* valid audio frames received */
+static volatile uint32_t s_stat_bad = 0;        /* frames dropped for a bad checksum */
+static volatile uint32_t s_stat_underruns = 0;  /* times the DAC ran out of queued audio */
+static volatile uint32_t s_stat_overflow = 0;   /* samples dropped because the ring was full */
 static int16_t s_peak_l = 0;
 static int16_t s_peak_r = 0;
 
@@ -203,6 +207,7 @@ void wifi_audio_render(int16_t *out_pcm, size_t frames)
         } else {
             if (primed) {
                 primed = false;
+                s_stat_underruns++;
             }
             out_pcm[i] = 0;
             out_pcm[i + 1] = 0;
@@ -220,6 +225,25 @@ void wifi_audio_get_peaks(int16_t *peak_l, int16_t *peak_r)
 
 void wifi_audio_process(void)
 {
+    static int64_t last_report = 0;
+    static bool was_streaming = false;
+
+    bool streaming = wifi_audio_receiver_is_streaming();
+    if (streaming != was_streaming) {
+        was_streaming = streaming;
+        printk("[WiFi Audio] Stream %s (title '%s')\n", streaming ? "started" : "stopped", s_meta.title);
+    }
+    if (streaming && k_uptime_get() - last_report >= 2000) {
+        static uint32_t last_frames = 0;
+        last_report = k_uptime_get();
+        uint32_t frames = s_stat_frames;
+        uint32_t fill = (s_pcm_head + PCM_RING_SAMPLES - s_pcm_tail) % PCM_RING_SAMPLES / 2U;
+        printk("[WiFi Audio] %u frames/2s (need ~172), queued %u, underruns %u, bad %u, overflow %u\n",
+               (unsigned)(frames - last_frames), (unsigned)fill, (unsigned)s_stat_underruns,
+               (unsigned)s_stat_bad, (unsigned)s_stat_overflow);
+        last_frames = frames;
+    }
+
     if (s_esp32_connected && (k_uptime_get() - s_last_ping_time > 4000)) {
         s_esp32_connected = false;
     }
@@ -277,6 +301,7 @@ static void wifi_audio_rx_byte(uint8_t b)
                 usart2_send_packet(WIFI_MSG_PONG, NULL, 0);
             } else if (msg_type == WIFI_MSG_AUDIO_PCM) {
                 s_last_audio_time = k_uptime_get();
+                s_stat_frames++;
                 /* Push raw 16-bit PCM block into audio ring */
                 const int16_t *pcm = (const int16_t *)payload;
                 uint16_t sample_count = msg_len / 2U;
@@ -285,6 +310,8 @@ static void wifi_audio_rx_byte(uint8_t b)
                     if (next != s_pcm_tail) {
                         s_pcm_ring[s_pcm_head] = pcm[i];
                         s_pcm_head = next;
+                    } else {
+                        s_stat_overflow++;
                     }
                 }
             } else if (msg_type == WIFI_MSG_TRACK_META && msg_len >= sizeof(wifi_track_meta_t)) {
@@ -292,6 +319,8 @@ static void wifi_audio_rx_byte(uint8_t b)
             } else if (msg_type == WIFI_MSG_TELEMETRY && msg_len >= sizeof(wifi_telemetry_t)) {
                 memcpy(&s_telem, payload, sizeof(s_telem));
             }
+        } else {
+            s_stat_bad++;
         }
         state = 0;
         break;

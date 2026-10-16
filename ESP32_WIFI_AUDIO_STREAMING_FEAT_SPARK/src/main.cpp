@@ -27,11 +27,17 @@
 
 #define PIN_UART_TX             43  /* Header pin labeled "TX" */
 #define PIN_UART_RX             44  /* Header pin labeled "RX" */
+#define PIN_RGB_LED             48  /* Onboard WS2812 RGB LED */
 #define UART_BAUD_RATE          2000000
 
 #define UDP_AUDIO_PORT          44100
 #define SSDP_PORT               1900
 #define DNS_PORT                53
+
+static void set_led_color(uint8_t r, uint8_t g, uint8_t b)
+{
+    neopixelWrite(PIN_RGB_LED, r, g, b);
+}
 
 static WiFiUDP s_udp_audio;
 static WiFiUDP s_udp_ssdp;
@@ -114,6 +120,7 @@ static void setup_captive_portal(void)
 static void start_access_point(void)
 {
     Serial.println("[WiFi] Starting Access Point 'RT-Spark-Audio'...");
+    set_led_color(40, 20, 0); /* Orange/Yellow: Captive Portal AP mode */
     WiFi.mode(WIFI_AP);
     WiFi.softAP(CONFIG_WIFI_DEFAULT_AP_SSID, CONFIG_WIFI_DEFAULT_AP_PASS);
     IPAddress ip = WiFi.softAPIP();
@@ -129,6 +136,7 @@ static void start_access_point(void)
 static void connect_station(const char *ssid, const char *pass)
 {
     Serial.printf("[WiFi] Connecting to Station '%s'...\n", ssid);
+    set_led_color(30, 30, 0); /* Yellow: Connecting... */
     s_portal_active = false;
     s_dns_server.stop();
     s_web_server.stop();
@@ -149,12 +157,15 @@ static void connect_station(const char *ssid, const char *pass)
         snprintf(s_telem.ip_addr, sizeof(s_telem.ip_addr), "%s", ip.toString().c_str());
         s_telem.rssi_dbm = (int8_t)WiFi.RSSI();
         Serial.printf("[WiFi] Connected! IP Address: %s (RSSI %d dBm)\n", s_telem.ip_addr, s_telem.rssi_dbm);
+        set_led_color(0, 40, 0); /* Solid Green: Connected to Home Wi-Fi! */
 
         /* Save successful credentials to NVS */
         s_prefs.putString("ssid", ssid);
         s_prefs.putString("pass", pass);
     } else {
         Serial.println("[WiFi] Connection failed! Falling back to Captive Portal...");
+        set_led_color(40, 0, 0); /* Red: Failed, starting AP */
+        delay(500);
         start_access_point();
     }
 }

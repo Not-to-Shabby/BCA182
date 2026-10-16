@@ -1,0 +1,17 @@
+/*
+ * DeviceTree Overlay for ESP32-S3 Wi-Fi Audio Streaming Co-Processor
+ * Maps High-Speed UART1 to GPIO 17 (TX) and GPIO 18 (RX) for RT-Spark link.
+ */
+
+/ {
+	chosen {
+		spark_comm_uart = &uart1;
+	};
+};
+
+&uart1 {
+	status = "okay";
+	current-speed = <2000000>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+};

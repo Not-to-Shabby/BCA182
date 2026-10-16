@@ -251,7 +251,7 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
             wifi_audio_receiver_get_telemetry(&telem);
             wifi_audio_get_peaks(&pk_l, &pk_r);
             karaoke_ui_render_wifi_audio(meta.title, meta.artist, telem.ip_addr, meta.format, pk_l, pk_r, audio_get_volume());
-            led_matrix_update_instruments(-1, pk_l, pk_r);
+            /* No LED refresh here: it blocks every interrupt for about 0.6 ms and would drop UART audio bytes. */
         } else if (mode == UI_VIEW_SENSME) {
             karaoke_ui_render_sensme(s_app.sensme_cursor, sensme_get_active_channel(), s_app.current_song_index);
         } else if (mode == UI_VIEW_MIXER) {
@@ -308,7 +308,7 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
             update_status_led(status.is_playing && !status.is_paused);
         }
 
-        if (mode != UI_VIEW_PLAYING) {
+        if (mode != UI_VIEW_PLAYING && mode != UI_VIEW_WIFI_AUDIO) {
             const audio_diagnostics_t *diag = audio_get_diagnostics();
             led_matrix_update_instruments(yamaha_fm_get_lead_channel(), diag->peak_left, diag->peak_right);
         }

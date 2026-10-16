@@ -44,6 +44,8 @@ static int64_t s_last_audio_time = 0;
 static volatile uint32_t s_stat_frames = 0;     /* valid audio frames received */
 static volatile uint32_t s_stat_bad = 0;        /* frames dropped for a bad checksum */
 static volatile uint32_t s_stat_underruns = 0;  /* times the DAC ran out of queued audio */
+static volatile uint32_t s_stat_overrun = 0;    /* UART overrun errors: a byte arrived before the last was read */
+static volatile uint32_t s_stat_fifo_full = 0;  /* bytes dropped because the receive FIFO was full */
 static volatile uint32_t s_stat_overflow = 0;   /* samples dropped because the ring was full */
 static int16_t s_peak_l = 0;
 static int16_t s_peak_r = 0;
@@ -51,6 +53,17 @@ static int16_t s_peak_r = 0;
 static void wifi_audio_rx_byte(uint8_t b);
 
 #if defined(__arm__)
+
+/* The F4 USART has no RX FIFO: at 2 Mbps a byte must be read within about 5 us. The interrupt is
+ * zero-latency (it runs even while the LED driver or synth hold irq_lock) and so may not call any
+ * kernel API; it only stores the byte, and a thread parses the frames. */
+#define UART_RX_FIFO_SIZE   2048U
+#define RX_THREAD_PRIORITY  2
+static volatile uint8_t s_uart_rx_fifo[UART_RX_FIFO_SIZE];
+static volatile uint32_t s_uart_rx_head = 0;
+static volatile uint32_t s_uart_rx_tail = 0;
+K_THREAD_STACK_DEFINE(s_rx_stack, 1024);
+static struct k_thread s_rx_thread_data;
 
 static void usart2_send_byte(uint8_t b)
 {
@@ -80,14 +93,37 @@ static void usart2_send_packet(uint8_t type, const uint8_t *payload, uint16_t le
     usart2_send_byte(cks);
 }
 
-static void usart2_isr(const void *arg)
+ISR_DIRECT_DECLARE(usart2_isr)
 {
-    ARG_UNUSED(arg);
     uint32_t sr = USART2->SR;
     while (sr & (USART_SR_RXNE | USART_SR_ORE)) {
-        /* Reading DR clears both RXNE and ORE. At 178 KB/s the stream cannot wait for a polling thread. */
-        wifi_audio_rx_byte((uint8_t)USART2->DR);
+        if (sr & USART_SR_ORE) {
+            s_stat_overrun++;
+        }
+        /* Reading DR clears both RXNE and ORE. */
+        uint8_t b = (uint8_t)USART2->DR;
+        uint32_t next = (s_uart_rx_head + 1U) % UART_RX_FIFO_SIZE;
+        if (next != s_uart_rx_tail) {
+            s_uart_rx_fifo[s_uart_rx_head] = b;
+            s_uart_rx_head = next;
+        } else {
+            s_stat_fifo_full++;
+        }
         sr = USART2->SR;
+    }
+    return 0;
+}
+
+static void rx_thread(void *a, void *b, void *c)
+{
+    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+    while (true) {
+        while (s_uart_rx_head != s_uart_rx_tail) {
+            uint8_t byte = s_uart_rx_fifo[s_uart_rx_tail];
+            s_uart_rx_tail = (s_uart_rx_tail + 1U) % UART_RX_FIFO_SIZE;
+            wifi_audio_rx_byte(byte);
+        }
+        k_msleep(1);
     }
 }
 
@@ -120,7 +156,11 @@ int wifi_audio_receiver_init(void)
     USART2->CR1 |= (USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE);
     USART2->CR1 |= USART_CR1_UE;
 
-    IRQ_CONNECT(USART2_IRQn, 4, usart2_isr, NULL, 0);
+    k_thread_create(&s_rx_thread_data, s_rx_stack, K_THREAD_STACK_SIZEOF(s_rx_stack),
+                    rx_thread, NULL, NULL, NULL, RX_THREAD_PRIORITY, 0, K_NO_WAIT);
+    k_thread_name_set(&s_rx_thread_data, "wifi_rx");
+
+    IRQ_DIRECT_CONNECT(USART2_IRQn, 0, usart2_isr, IRQ_ZERO_LATENCY);
     irq_enable(USART2_IRQn);
 
     printk("[WiFi Audio] USART2 Link Initialized @ 2.0 Mbps (PA2 TX / PA3 RX)\n");
@@ -238,9 +278,11 @@ void wifi_audio_process(void)
         last_report = k_uptime_get();
         uint32_t frames = s_stat_frames;
         uint32_t fill = (s_pcm_head + PCM_RING_SAMPLES - s_pcm_tail) % PCM_RING_SAMPLES / 2U;
-        printk("[WiFi Audio] %u frames/2s (need ~172), queued %u, underruns %u, bad %u, overflow %u\n",
+        printk("[WiFi Audio] %u good frames/2s (need ~689), queued %u, underruns %u, bad %u, "
+               "overrun %u, fifo-full %u, ring-overflow %u\n",
                (unsigned)(frames - last_frames), (unsigned)fill, (unsigned)s_stat_underruns,
-               (unsigned)s_stat_bad, (unsigned)s_stat_overflow);
+               (unsigned)s_stat_bad, (unsigned)s_stat_overrun, (unsigned)s_stat_fifo_full,
+               (unsigned)s_stat_overflow);
         last_frames = frames;
     }
 

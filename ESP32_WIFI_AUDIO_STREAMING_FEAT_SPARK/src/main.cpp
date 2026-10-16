@@ -24,6 +24,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include "wifi_protocol.h"
+#include "upnp_renderer.h"
 
 #define PIN_UART_TX             43  /* Header pin labeled "TX" */
 #define PIN_UART_RX             44  /* Header pin labeled "RX" */
@@ -40,7 +41,6 @@ static void set_led_color(uint8_t r, uint8_t g, uint8_t b)
 }
 
 static WiFiUDP s_udp_audio;
-static WiFiUDP s_udp_ssdp;
 static DNSServer s_dns_server;
 static WebServer s_web_server(80);
 static Preferences s_prefs;
@@ -55,18 +55,10 @@ static bool s_sta_connect_requested = false;
 static String s_target_ssid = "";
 static String s_target_pass = "";
 
-static const char *SSDP_NOTIFY =
-    "NOTIFY * HTTP/1.1\r\n"
-    "HOST: 239.255.255.250:1900\r\n"
-    "CACHE-CONTROL: max-age=1800\r\n"
-    "LOCATION: http://192.168.4.1:8080/description.xml\r\n"
-    "NT: urn:schemas-upnp-org:device:MediaRenderer:1\r\n"
-    "NTS: ssdp:alive\r\n"
-    "SERVER: ESP32-S3/1.0 UPnP/1.1 RT-Spark-Audio/1.0\r\n"
-    "USN: uuid:12345678-1234-1234-1234-123456789abc::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
+static SemaphoreHandle_t s_uart_mutex = nullptr;
 
-/* Send structured packet to RT-Spark over High-Speed Serial1 */
-static void send_spark_packet(uint8_t type, const uint8_t *payload, uint16_t len)
+/* Send structured packet to RT-Spark over High-Speed Serial1 (callable from any task) */
+void send_spark_packet(uint8_t type, const uint8_t *payload, uint16_t len)
 {
     uint8_t hdr[5];
     hdr[0] = WIFI_PROTO_SYNC1;
@@ -76,11 +68,27 @@ static void send_spark_packet(uint8_t type, const uint8_t *payload, uint16_t len
     hdr[4] = (uint8_t)((len >> 8) & 0xFFU);
     uint8_t cks = wifi_protocol_checksum(type, len, payload);
 
+    if (s_uart_mutex != nullptr) {
+        xSemaphoreTake(s_uart_mutex, portMAX_DELAY);
+    }
     Serial1.write(hdr, 5);
     if (payload != nullptr && len > 0) {
         Serial1.write(payload, len);
     }
     Serial1.write(cks);
+    if (s_uart_mutex != nullptr) {
+        xSemaphoreGive(s_uart_mutex);
+    }
+}
+
+void spark_set_stream_state(uint8_t state)
+{
+    s_telem.stream_state = state;
+}
+
+void spark_set_volume(uint8_t percent)
+{
+    s_telem.volume_percent = percent;
 }
 
 /* Forward declarations */
@@ -264,8 +272,15 @@ static void audio_network_task(void *param)
                     send_spark_packet(WIFI_MSG_TRACK_META, (const uint8_t *)&s_meta, sizeof(s_meta));
                     Serial.printf("[Audio] Track Meta: '%s' by '%s'\n", s_meta.title, s_meta.artist);
                 } else {
-                    /* Forward uncompressed 16-bit 44.1kHz stereo PCM block to RT-Spark */
-                    send_spark_packet(WIFI_MSG_AUDIO_PCM, packet_buffer, (uint16_t)len);
+                    /* Forward 16-bit 44.1kHz stereo PCM to RT-Spark in frames of at most 512 bytes */
+                    len &= ~3;
+                    for (int off = 0; off < len; off += AUDIO_CHUNK_BYTES) {
+                        int n = len - off;
+                        if (n > (int)AUDIO_CHUNK_BYTES) {
+                            n = (int)AUDIO_CHUNK_BYTES;
+                        }
+                        send_spark_packet(WIFI_MSG_AUDIO_PCM, packet_buffer + off, (uint16_t)n);
+                    }
                     s_telem.stream_state = STREAM_STATE_PLAYING;
                 }
             }
@@ -328,9 +343,7 @@ static void process_spark_input(void)
                 } else if (msg_type == WIFI_CMD_BUTTON && msg_len >= 1) {
                     uint8_t cmd = payload[0];
                     Serial.printf("[Control] Button Command from RT-Spark: 0x%02X\n", cmd);
-                    if (cmd == BTN_CMD_PLAY_PAUSE) {
-                        s_telem.stream_state = (s_telem.stream_state == STREAM_STATE_PLAYING) ? STREAM_STATE_PAUSED : STREAM_STATE_PLAYING;
-                    }
+                    upnp_button(cmd);
                 } else if (msg_type == WIFI_CMD_SET_WIFI && msg_len >= 1) {
                     if (payload[0] == 1) {
                         start_access_point();
@@ -364,6 +377,8 @@ void setup()
     s_telem.rssi_dbm = 0;
     s_telem.stream_state = STREAM_STATE_STOPPED;
     s_telem.volume_percent = 80;
+
+    s_uart_mutex = xSemaphoreCreateMutex();
 
     /* Native USB CDC Serial for PC Monitor & Debugging */
     Serial.begin(115200);
@@ -408,8 +423,8 @@ void setup()
         start_access_point();
     }
 
-    /* Start SSDP UPnP Advertiser */
-    s_udp_ssdp.begin(SSDP_PORT);
+    /* Start UPnP/DLNA MediaRenderer (SSDP + SOAP control on port 8080) */
+    upnp_begin();
 
     /* Spawn High-Priority Dedicated Network Audio Task on Core 0 */
     xTaskCreatePinnedToCore(audio_network_task, "audio_net", 4096, nullptr, 5, nullptr, 0);
@@ -429,9 +444,12 @@ void loop()
     if (s_sta_connect_requested) {
         s_sta_connect_requested = false;
         connect_station(s_target_ssid.c_str(), s_target_pass.c_str());
+        upnp_begin();
     }
 
-    /* Send telemetry and SSDP announcements periodically */
+    upnp_loop();
+
+    /* Send telemetry periodically */
     static uint32_t last_telem_ms = 0;
     if (millis() - last_telem_ms >= 1000) {
         last_telem_ms = millis();
@@ -442,11 +460,6 @@ void loop()
 
         /* Forward telemetry to RT-Spark ST7789 screen */
         send_spark_packet(WIFI_MSG_TELEMETRY, (const uint8_t *)&s_telem, sizeof(s_telem));
-
-        /* SSDP Broadcast for DLNA auto-discovery */
-        s_udp_ssdp.beginPacket("239.255.255.250", 1900);
-        s_udp_ssdp.write((const uint8_t *)SSDP_NOTIFY, strlen(SSDP_NOTIFY));
-        s_udp_ssdp.endPacket();
     }
 
     delay(5);

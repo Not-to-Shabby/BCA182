@@ -1,8 +1,15 @@
 /**
  * @file main.cpp
- * @brief ESP32-S3 Super Mini Wi-Fi Audio Streaming & DLNA Co-Processor.
+ * @brief ESP32-S3 Super Mini Wi-Fi Audio Streaming & DLNA Co-Processor with Captive Portal.
  *
  * Board: ESP32-S3 Super Mini (ESP32-S3FH4R2, 4MB Flash, 2MB PSRAM)
+ * Features:
+ *   - Auto Hotspot with Captive Portal (DNS redirect & Web config interface)
+ *   - Persistent NVS storage for Home Wi-Fi credentials (survives power off)
+ *   - UPnP / DLNA MediaRenderer SSDP discovery
+ *   - UDP Low-Latency 44.1 kHz 16-bit stereo PCM audio receiver on port 44100
+ *   - High-Speed UART1 output to RT-Spark (GPIO 43 TX / GPIO 44 RX @ 2.0 Mbps)
+ *
  * Connections:
  *   - Pin labeled "TX" (GPIO 43) -> RT-Spark Pin 10 (PA3: USART2_RX)
  *   - Pin labeled "RX" (GPIO 44) -> RT-Spark Pin 8  (PA2: USART2_TX)
@@ -13,6 +20,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <DNSServer.h>
+#include <WebServer.h>
+#include <Preferences.h>
 #include "wifi_protocol.h"
 
 #define PIN_UART_TX             43  /* Header pin labeled "TX" */
@@ -21,15 +31,23 @@
 
 #define UDP_AUDIO_PORT          44100
 #define SSDP_PORT               1900
+#define DNS_PORT                53
 
 static WiFiUDP s_udp_audio;
 static WiFiUDP s_udp_ssdp;
+static DNSServer s_dns_server;
+static WebServer s_web_server(80);
+static Preferences s_prefs;
 
 static wifi_track_meta_t s_meta = {};
 static wifi_telemetry_t s_telem = {};
 
 static bool s_spark_detected = false;
 static uint32_t s_last_pong_ms = 0;
+static bool s_portal_active = false;
+static bool s_sta_connect_requested = false;
+static String s_target_ssid = "";
+static String s_target_pass = "";
 
 static const char *SSDP_NOTIFY =
     "NOTIFY * HTTP/1.1\r\n"
@@ -59,7 +77,40 @@ static void send_spark_packet(uint8_t type, const uint8_t *payload, uint16_t len
     Serial1.write(cks);
 }
 
-/* Wi-Fi Setup Functions */
+/* Forward declarations */
+static void start_access_point(void);
+static void connect_station(const char *ssid, const char *pass);
+static void handle_portal_root(void);
+static void handle_portal_save(void);
+static void handle_portal_scan(void);
+
+static void setup_captive_portal(void)
+{
+    /* Start DNS redirect server: maps every domain to 192.168.4.1 */
+    s_dns_server.setErrorReplyCode(DNSReplyCode::NoError);
+    s_dns_server.start(DNS_PORT, "*", WiFi.softAPIP());
+
+    /* Web Server routing */
+    s_web_server.on("/", HTTP_GET, handle_portal_root);
+    s_web_server.on("/save", HTTP_POST, handle_portal_save);
+    s_web_server.on("/scan", HTTP_GET, handle_portal_scan);
+
+    /* Captive portal detection hooks for Android, iOS, Windows */
+    s_web_server.on("/generate_204", HTTP_GET, handle_portal_root);
+    s_web_server.on("/gen_204", HTTP_GET, handle_portal_root);
+    s_web_server.on("/hotspot-detect.html", HTTP_GET, handle_portal_root);
+    s_web_server.on("/canonical.html", HTTP_GET, handle_portal_root);
+    s_web_server.on("/ncsi.txt", HTTP_GET, handle_portal_root);
+    s_web_server.onNotFound([]() {
+        s_web_server.sendHeader("Location", "http://192.168.4.1/", true);
+        s_web_server.send(302, "text/plain", "Redirecting to Captive Portal...");
+    });
+
+    s_web_server.begin();
+    s_portal_active = true;
+    Serial.println("[Portal] Captive Portal & DNS redirect server running on port 80/53!");
+}
+
 static void start_access_point(void)
 {
     Serial.println("[WiFi] Starting Access Point 'RT-Spark-Audio'...");
@@ -72,11 +123,16 @@ static void start_access_point(void)
     s_telem.rssi_dbm = 0;
 
     Serial.printf("[WiFi] AP Started! IP Address: %s\n", s_telem.ip_addr);
+    setup_captive_portal();
 }
 
 static void connect_station(const char *ssid, const char *pass)
 {
     Serial.printf("[WiFi] Connecting to Station '%s'...\n", ssid);
+    s_portal_active = false;
+    s_dns_server.stop();
+    s_web_server.stop();
+
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, pass);
 
@@ -93,10 +149,89 @@ static void connect_station(const char *ssid, const char *pass)
         snprintf(s_telem.ip_addr, sizeof(s_telem.ip_addr), "%s", ip.toString().c_str());
         s_telem.rssi_dbm = (int8_t)WiFi.RSSI();
         Serial.printf("[WiFi] Connected! IP Address: %s (RSSI %d dBm)\n", s_telem.ip_addr, s_telem.rssi_dbm);
+
+        /* Save successful credentials to NVS */
+        s_prefs.putString("ssid", ssid);
+        s_prefs.putString("pass", pass);
     } else {
-        Serial.println("[WiFi] Connection failed! Falling back to Access Point...");
+        Serial.println("[WiFi] Connection failed! Falling back to Captive Portal...");
         start_access_point();
     }
+}
+
+/* Captive Portal HTML UI */
+static void handle_portal_root(void)
+{
+    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<title>RT-Spark Wi-Fi Audio Setup</title><style>";
+    html += "body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:20px;text-align:center;}";
+    html += ".card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;max-width:380px;margin:auto;box-shadow:0 8px 24px rgba(0,0,0,0.5);}";
+    html += "h1{color:#ffd33d;font-size:20px;margin-bottom:6px;}";
+    html += "p{color:#8b949e;font-size:14px;margin-top:0;}";
+    html += ".status{background:#1f242c;padding:8px;border-radius:6px;font-size:13px;color:#58a6ff;margin-bottom:18px;}";
+    html += "input,select{width:100%;box-sizing:border-box;padding:12px;margin:8px 0;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#fff;font-size:15px;}";
+    html += "button{width:100%;padding:13px;margin-top:14px;background:#238636;border:none;border-radius:6px;color:#fff;font-weight:bold;font-size:16px;cursor:pointer;}";
+    html += "button:hover{background:#2ea043;}";
+    html += ".net-list{text-align:left;max-height:160px;overflow-y:auto;border:1px solid #30363d;border-radius:6px;padding:4px;margin-bottom:12px;background:#0d1117;}";
+    html += ".net-item{padding:8px 10px;cursor:pointer;border-bottom:1px solid #21262d;font-size:14px;display:flex;justify-content:space-between;}";
+    html += ".net-item:hover{background:#1f242c;color:#ffd33d;}";
+    html += "</style></head><body><div class='card'>";
+    html += "<h1>RT-Spark Wi-Fi Audio</h1>";
+    html += "<p>ESP32-S3 Super Mini Co-Processor</p>";
+    html += "<div class='status'>IP: " + String(s_telem.ip_addr) + "</div>";
+    
+    html += "<div class='net-list'>";
+    int n = WiFi.scanNetworks();
+    if (n == 0) {
+        html += "<div style='padding:10px;color:#8b949e;'>No Wi-Fi networks found</div>";
+    } else {
+        for (int i = 0; i < n; ++i) {
+            String s = WiFi.SSID(i);
+            int r = WiFi.RSSI(i);
+            html += "<div class='net-item' onclick='selectSSID(\"" + s + "\")'>";
+            html += "<span>" + s + "</span><span style='color:#8b949e;'>" + String(r) + " dBm</span></div>";
+        }
+    }
+    html += "</div>";
+
+    html += "<form action='/save' method='POST'>";
+    html += "<input type='text' id='ssid' name='ssid' placeholder='Wi-Fi Network Name' required>";
+    html += "<input type='password' id='pass' name='password' placeholder='Wi-Fi Password'>";
+    html += "<button type='submit'>Connect & Save</button>";
+    html += "</form>";
+
+    html += "<script>";
+    html += "function selectSSID(s){document.getElementById('ssid').value=s;document.getElementById('pass').focus();}";
+    html += "</script>";
+
+    html += "</div></body></html>";
+    s_web_server.send(200, "text/html", html);
+}
+
+static void handle_portal_scan(void)
+{
+    WiFi.scanNetworks(true);
+    s_web_server.sendHeader("Location", "/", true);
+    s_web_server.send(302, "text/plain", "Scanning...");
+}
+
+static void handle_portal_save(void)
+{
+    String ssid = s_web_server.arg("ssid");
+    String pass = s_web_server.arg("password");
+
+    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;padding:40px;text-align:center;}</style></head>";
+    html += "<body><h2>Connecting to " + ssid + "...</h2>";
+    html += "<p>Credentials saved. The ESP32 is now connecting to your home Wi-Fi network.</p>";
+    html += "<p>You can now reconnect your phone to <b>" + ssid + "</b> and stream music!</p></body></html>";
+
+    s_web_server.send(200, "text/html", html);
+    delay(500);
+
+    s_target_ssid = ssid;
+    s_target_pass = pass;
+    s_sta_connect_requested = true;
 }
 
 /* Core 0 FreeRTOS Thread for UDP Audio Packet Receiving */
@@ -229,7 +364,13 @@ void setup()
     Serial.println("\n=======================================================");
     Serial.println(" ESP32-S3 Super Mini Wi-Fi Audio Streaming Co-Processor");
     Serial.println(" Output: High-Speed UART1 @ 2.0 Mbps (GPIO43 TX/GPIO44 RX)");
+    Serial.println(" Captive Portal: Auto-detect & DNS redirect on 192.168.4.1");
     Serial.println("=======================================================");
+
+    /* Initialize persistent NVS memory for Home Wi-Fi credentials */
+    s_prefs.begin("wifi_cfg", false);
+    String saved_ssid = s_prefs.getString("ssid", "");
+    String saved_pass = s_prefs.getString("pass", "");
 
     /* Boot Handshake: Ping RT-Spark for up to 2 seconds */
     Serial.println("[Boot] Sending Handshake Ping to RT-Spark...");
@@ -245,8 +386,14 @@ void setup()
 
     if (s_spark_detected) {
         Serial.println("[Boot] RT-Spark Board Detected! Synchronized.");
+    }
+
+    /* Check if we have saved home Wi-Fi credentials */
+    if (saved_ssid.length() > 0) {
+        Serial.printf("[Boot] Found saved home Wi-Fi credentials for '%s'. Connecting...\n", saved_ssid.c_str());
+        connect_station(saved_ssid.c_str(), saved_pass.c_str());
     } else {
-        Serial.println("[Boot] Standalone / Auto Mode: Launching Hotspot...");
+        Serial.println("[Boot] No saved credentials. Starting Captive Portal Hotspot...");
         start_access_point();
     }
 
@@ -260,6 +407,18 @@ void setup()
 void loop()
 {
     process_spark_input();
+
+    /* Handle Captive Portal DNS and HTTP requests if AP mode is active */
+    if (s_portal_active) {
+        s_dns_server.processNextRequest();
+        s_web_server.handleClient();
+    }
+
+    /* Process pending connection request from web portal */
+    if (s_sta_connect_requested) {
+        s_sta_connect_requested = false;
+        connect_station(s_target_ssid.c_str(), s_target_pass.c_str());
+    }
 
     /* Send telemetry and SSDP announcements periodically */
     static uint32_t last_telem_ms = 0;
@@ -279,5 +438,5 @@ void loop()
         s_udp_ssdp.endPacket();
     }
 
-    delay(10);
+    delay(5);
 }

@@ -358,11 +358,33 @@ static void close_mixer(void)
     karaoke_ui_set_view(UI_VIEW_PLAYING);
 }
 
+/* True while the song was paused on entering Wi-Fi audio, so leaving resumes it. A running sequencer
+ * and the SD card reads of the next song steal enough CPU time to make the stream drop out. */
+static bool s_midi_paused_for_wifi;
+
 static void open_wifi_audio(void)
 {
+    midi_player_status_t st;
+
+    midi_karaoke_get_status(&st);
+    if (st.is_playing && !st.is_paused) {
+        midi_karaoke_pause();
+        s_midi_paused_for_wifi = true;
+    }
     s_app.ui_mode = UI_VIEW_WIFI_AUDIO;
     karaoke_ui_set_view(UI_VIEW_WIFI_AUDIO);
     printk("[Nav] Entered WIFI AUDIO mode!\n");
+}
+
+static void close_wifi_audio(void)
+{
+    if (s_midi_paused_for_wifi) {
+        s_midi_paused_for_wifi = false;
+        midi_karaoke_pause();
+    }
+    s_app.ui_mode = UI_VIEW_PLAYING;
+    karaoke_ui_set_view(UI_VIEW_PLAYING);
+    printk("[Nav] Exited WIFI AUDIO mode!\n");
 }
 
 static void audio_master_render_callback(int16_t *buf, size_t samples)
@@ -527,9 +549,7 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 } else if (s_app.ui_mode == UI_VIEW_MIXER) {
                     close_mixer();
                 } else if (s_app.ui_mode == UI_VIEW_WIFI_AUDIO) {
-                    s_app.ui_mode = UI_VIEW_PLAYING;
-                    karaoke_ui_set_view(UI_VIEW_PLAYING);
-                    printk("[Nav] Exited WIFI AUDIO mode!\n");
+                    close_wifi_audio();
                 } else if (s_app.ui_mode == UI_VIEW_NUMBER_SELECT) {
                     /* Cancel: back to the song that is playing */
                     s_app.ui_mode = UI_VIEW_PLAYING;
@@ -876,7 +896,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
 
         /* 5. Nobody has touched a button for a while and the song is over: play another. */
         uint32_t now = k_uptime_get_32();
-        if (random_play_idle_due(now, s_app.last_input_ms, true) &&
+        if (s_app.ui_mode != UI_VIEW_WIFI_AUDIO &&
+            random_play_idle_due(now, s_app.last_input_ms, true) &&
             (uint32_t)(now - s_app.last_auto_ms) >= AUTO_PICK_MIN_GAP_MS) {
             midi_player_status_t st;
             midi_karaoke_get_status(&st);

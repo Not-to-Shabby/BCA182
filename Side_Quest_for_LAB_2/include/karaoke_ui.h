@@ -25,7 +25,8 @@ typedef enum {
     UI_VIEW_NUMBER_SELECT,
     UI_VIEW_SETTINGS,
     UI_VIEW_MIXER,
-    UI_VIEW_SENSME
+    UI_VIEW_SENSME,
+    UI_VIEW_WIFI_AUDIO
 } ui_view_mode_t;
 
 typedef struct {
@@ -131,6 +132,20 @@ void karaoke_ui_render_mixer(uint8_t cursor, const mix_view_t *view, const karao
  * @param current_song_index Catalog index of the currently playing song.
  */
 void karaoke_ui_render_sensme(uint8_t cursor, uint8_t active_filter, uint32_t current_song_index);
+
+/**
+ * @brief Render the live Wi-Fi Audio Streaming screen from ESP32-S3.
+ *
+ * @param title Track title.
+ * @param artist Track artist.
+ * @param ip Wi-Fi IP address string.
+ * @param format Audio stream format.
+ * @param peak_l Left channel peak amplitude for VU meter.
+ * @param peak_r Right channel peak amplitude for VU meter.
+ * @param volume Master volume percent (0..100).
+ */
+void karaoke_ui_render_wifi_audio(const char *title, const char *artist, const char *ip,
+                                  const char *format, int16_t peak_l, int16_t peak_r, uint8_t volume);
 
 #ifdef __cplusplus
 }

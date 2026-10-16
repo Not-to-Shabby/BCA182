@@ -519,15 +519,16 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
         y += 21;
     }
 
-    /* 4. Rows 4..7: Sound Bank, SensMe, Mixer, Done */
-    for (uint8_t r = 4; r < 8; r++) {
+    /* 4. Rows 4..8: Sound Bank, SensMe, Mixer, Wi-Fi Audio, Done */
+    y = 117;
+    for (uint8_t r = 4; r < 9; r++) {
         bool sel = (cursor == r);
         uint16_t bg = sel ? LCD_COLOR_DARKCYAN : LCD_COLOR_DARKGREY;
         uint16_t fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_WHITE;
         char buf[36];
 
-        lcd_fill_rect(8, y, 231, y + 19, bg);
-        lcd_draw_rect(8, y, 231, y + 19, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
+        lcd_fill_rect(8, y, 231, y + 17, bg);
+        lcd_draw_rect(8, y, 231, y + 17, sel ? LCD_COLOR_YELLOW : LCD_COLOR_GRAY);
         if (r == 4) {
             const char *bname = (bank == 2) ? "Pure FM OPL3" :
                                 ((bank == 1) ? "Roland SC-55" : "Yamaha OPL4");
@@ -538,20 +539,24 @@ void karaoke_ui_render_settings(uint8_t cursor, uint8_t vol, uint8_t inst, uint8
             if (!sel) fg = sensme_channel_color(ach);
         } else if (r == 6) {
             snprintf(buf, sizeof(buf), "Mixer: sections/channels >");
+        } else if (r == 7) {
+            snprintf(buf, sizeof(buf), "Wi-Fi Audio: <Stream> >");
+            if (!sel) fg = LCD_COLOR_CYAN;
         } else {
             snprintf(buf, sizeof(buf), "Done  (save & return) >");
             fg = sel ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN;
         }
-        lcd_show_string(14, y + 2, buf, fg, bg);
-        y += 21;
+        lcd_show_string(14, y + 1, buf, fg, bg);
+        y += 18;
     }
 
     /* 5. Footer */
     const char *hint = "UP+DN together: Save & Exit";
     if (cursor == 5) hint = "RIGHT: SensMe Mood Radar";
     if (cursor == 6) hint = "RIGHT: Open the mixer";
-    if (cursor == 7) hint = "RIGHT: Save & return";
-    lcd_fill_rect(0, 206, 239, 239, LCD_COLOR_DARKGREY);
+    if (cursor == 7) hint = "RIGHT: Wi-Fi Audio Mode";
+    if (cursor == 8) hint = "RIGHT: Save & return";
+    lcd_fill_rect(0, 207, 239, 239, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 214, hint, LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
@@ -855,6 +860,73 @@ void karaoke_ui_render_sensme(uint8_t cursor, uint8_t active_filter, uint32_t cu
     lcd_fill_rect(0, 206, 239, 239, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 208, "RIGHT: Apply Mood Filter", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
     lcd_show_string(8, 224, "UP+DN: Save & Exit to Song", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+
+    k_mutex_unlock(&s_ui_lcd_mutex);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Wi-Fi Audio Streaming View                                                 */
+/* -------------------------------------------------------------------------- */
+void karaoke_ui_render_wifi_audio(const char *title, const char *artist, const char *ip,
+                                  const char *format, int16_t peak_l, int16_t peak_r, uint8_t volume)
+{
+    if (s_view_mode != UI_VIEW_WIFI_AUDIO) return;
+
+    if (k_mutex_lock(&s_ui_lcd_mutex, K_MSEC(50)) != 0) {
+        return;
+    }
+
+    /* 1. Header (y: 0 to 22) */
+    lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
+    char hdr_buf[32];
+    snprintf(hdr_buf, sizeof(hdr_buf), "[WIFI] %s", (ip && strlen(ip) > 0) ? ip : "Offline");
+    lcd_show_string(4, 3, hdr_buf, LCD_COLOR_WHITE, LCD_COLOR_NAVY);
+    char vol_buf[10];
+    snprintf(vol_buf, sizeof(vol_buf), "V:%u%%", (unsigned)volume);
+    lcd_show_string(190, 3, vol_buf, LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+
+    /* 2. Track Title (y: 35) & Artist (y: 58) */
+    char t_buf[30];
+    pad_string(t_buf, (title && strlen(title) > 0) ? title : "Waiting for audio...", 26);
+    lcd_show_string(8, 35, t_buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+
+    char a_buf[30];
+    pad_string(a_buf, (artist && strlen(artist) > 0) ? artist : "Cast from phone", 26);
+    lcd_show_string(8, 58, a_buf, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+
+    /* 3. Stream Format Info Box (y: 86 to 110) */
+    lcd_fill_rect(8, 86, 231, 110, 0x18E3);
+    lcd_draw_rect(8, 86, 231, 110, LCD_COLOR_DARKCYAN);
+    char fmt_buf[30];
+    snprintf(fmt_buf, sizeof(fmt_buf), "Stream: %s", (format && strlen(format) > 0) ? format : "PCM 16-bit 44.1k");
+    lcd_show_string(14, 91, fmt_buf, LCD_COLOR_GREEN, 0x18E3);
+
+    /* 4. Center Audio Reactive Indicator (y: 122 to 142) */
+    lcd_draw_line(8, 118, 231, 118, LCD_COLOR_DARKGREY);
+    lcd_show_string(14, 126, "Wireless Audio Streaming", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+    lcd_draw_line(8, 148, 231, 148, LCD_COLOR_DARKGREY);
+
+    /* 5. Stereo VU Meters (y: 160 to 184) */
+    lcd_show_string(12, 160, "L:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+    int vu_l = (peak_l * 180) / 32767;
+    if (vu_l > 180) vu_l = 180;
+    if (vu_l < 0) vu_l = 0;
+    uint16_t col_l = (vu_l > 150) ? LCD_COLOR_RED : ((vu_l > 110) ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN);
+    if (vu_l > 0) lcd_fill_rect(34, 162, 34 + vu_l, 170, col_l);
+    if (vu_l < 180) lcd_fill_rect(34 + vu_l + 1, 162, 214, 170, LCD_COLOR_DARKGREY);
+
+    lcd_show_string(12, 176, "R:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+    int vu_r = (peak_r * 180) / 32767;
+    if (vu_r > 180) vu_r = 180;
+    if (vu_r < 0) vu_r = 0;
+    uint16_t col_r = (vu_r > 150) ? LCD_COLOR_RED : ((vu_r > 110) ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN);
+    if (vu_r > 0) lcd_fill_rect(34, 178, 34 + vu_r, 186, col_r);
+    if (vu_r < 180) lcd_fill_rect(34 + vu_r + 1, 178, 214, 186, LCD_COLOR_DARKGREY);
+
+    /* 6. Footer (y: 204 to 239) */
+    lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 208, "UP+DN: Play/Pause  L/R: Vol", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 224, "HOLD UP+DN: Exit to Karaoke", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }

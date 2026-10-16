@@ -14,6 +14,7 @@
 #include <string.h>
 #include "../../src/synth_dsp.c"
 #include "../../src/yamaha_fm_synth.c"
+#include "../../src/wifi_audio_receiver.c"
 
 #define RATE        44100
 #define BLOCK       256         /* 128 stereo frames, the block the audio thread asks for */
@@ -1628,6 +1629,32 @@ void test_upgraded_multibank_wavetable_instruments(void)
     yamaha_fm_set_sound_bank(SYNTH_BANK_YAMAHA_OPL4);
 }
 
+void test_wifi_audio_streaming_protocol_and_render(void)
+{
+    /* 1. Protocol Checksum Verification */
+    uint8_t payload[4] = {0x12, 0x34, 0x56, 0x78};
+    uint8_t cks = wifi_protocol_checksum(WIFI_MSG_AUDIO_PCM, sizeof(payload), payload);
+    uint8_t expected = WIFI_MSG_AUDIO_PCM ^ 4U ^ 0U ^ 0x12 ^ 0x34 ^ 0x56 ^ 0x78;
+    TEST_ASSERT_EQUAL_UINT8(expected, cks);
+
+    /* 2. Wi-Fi Audio Render & Peak Extraction */
+    int16_t out[128 * 2];
+    wifi_audio_render(out, 128);
+    int16_t pl = 0, pr = 0;
+    wifi_audio_get_peaks(&pl, &pr);
+    TEST_ASSERT_EQUAL_INT16(0, pl);
+    TEST_ASSERT_EQUAL_INT16(0, pr);
+
+    /* 3. Telemetry and Metadata Retrieval */
+    wifi_track_meta_t meta;
+    wifi_audio_receiver_get_metadata(&meta);
+    TEST_ASSERT_TRUE(strlen(meta.title) > 0);
+
+    wifi_telemetry_t telem;
+    wifi_audio_receiver_get_telemetry(&telem);
+    TEST_ASSERT_TRUE(strlen(telem.ip_addr) > 0);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1705,5 +1732,6 @@ int main(void)
     RUN_TEST(test_guitars_have_natural_acoustic_harmonic_series_and_proper_pitch);
     RUN_TEST(test_retuned_plucked_and_sc55_instruments_are_in_tune);
     RUN_TEST(test_upgraded_multibank_wavetable_instruments);
+    RUN_TEST(test_wifi_audio_streaming_protocol_and_render);
     return UNITY_END();
 }

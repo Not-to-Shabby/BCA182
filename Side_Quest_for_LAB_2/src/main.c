@@ -18,6 +18,7 @@
 #include "sd_card_reader.h"
 #include "random_play.h"
 #include "led_matrix.h"
+#include "wifi_audio_receiver.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
@@ -242,7 +243,16 @@ static void ui_refresh_thread(void *p1, void *p2, void *p3)
         mix_view_t mix_view = *karaoke_mixer_view();
         k_mutex_unlock(&s_app.lock);
 
-        if (mode == UI_VIEW_SENSME) {
+        if (mode == UI_VIEW_WIFI_AUDIO) {
+            wifi_track_meta_t meta;
+            wifi_telemetry_t telem;
+            int16_t pk_l = 0, pk_r = 0;
+            wifi_audio_receiver_get_metadata(&meta);
+            wifi_audio_receiver_get_telemetry(&telem);
+            wifi_audio_get_peaks(&pk_l, &pk_r);
+            karaoke_ui_render_wifi_audio(meta.title, meta.artist, telem.ip_addr, meta.format, pk_l, pk_r, audio_get_volume());
+            led_matrix_update_instruments(-1, pk_l, pk_r);
+        } else if (mode == UI_VIEW_SENSME) {
             karaoke_ui_render_sensme(s_app.sensme_cursor, sensme_get_active_channel(), s_app.current_song_index);
         } else if (mode == UI_VIEW_MIXER) {
             uint8_t programs[16];
@@ -346,6 +356,22 @@ static void close_mixer(void)
     karaoke_mixer_leave();
     s_app.ui_mode = UI_VIEW_PLAYING;
     karaoke_ui_set_view(UI_VIEW_PLAYING);
+}
+
+static void open_wifi_audio(void)
+{
+    s_app.ui_mode = UI_VIEW_WIFI_AUDIO;
+    karaoke_ui_set_view(UI_VIEW_WIFI_AUDIO);
+    printk("[Nav] Entered WIFI AUDIO mode!\n");
+}
+
+static void audio_master_render_callback(int16_t *buf, size_t samples)
+{
+    if (s_app.ui_mode == UI_VIEW_WIFI_AUDIO) {
+        wifi_audio_render(buf, samples / 2U);
+    } else {
+        yamaha_fm_synth_render(buf, samples);
+    }
 }
 
 
@@ -473,6 +499,8 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
             s_mixer_latch = false;      /* every direction released: the mixer takes input again */
         }
 
+        wifi_audio_process();
+
         /* 1. Simultaneous UP + DOWN Detection -> Enter NUMBER SELECT Mode */
         if (up && dn) {
             s_mixer_latch = true;
@@ -490,6 +518,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     karaoke_ui_set_view(UI_VIEW_PLAYING);
                 } else if (s_app.ui_mode == UI_VIEW_MIXER) {
                     close_mixer();
+                } else if (s_app.ui_mode == UI_VIEW_WIFI_AUDIO) {
+                    s_app.ui_mode = UI_VIEW_PLAYING;
+                    karaoke_ui_set_view(UI_VIEW_PLAYING);
+                    printk("[Nav] Exited WIFI AUDIO mode!\n");
                 } else if (s_app.ui_mode == UI_VIEW_NUMBER_SELECT) {
                     /* Cancel: back to the song that is playing */
                     s_app.ui_mode = UI_VIEW_PLAYING;
@@ -655,10 +687,10 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                 uint8_t cur_mel  = cfg->melody_gain;
 
                 if (up && !last_up) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 7) % 8;
+                    s_app.settings_cursor = (s_app.settings_cursor + 8) % 9;
                 }
                 if (dn && !last_dn) {
-                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 8;
+                    s_app.settings_cursor = (s_app.settings_cursor + 1) % 9;
                 }
 
                 if (lt && !last_lt) {
@@ -691,10 +723,34 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
                     } else if (s_app.settings_cursor == 6) {
                         open_mixer();
                     } else if (s_app.settings_cursor == 7) {
+                        open_wifi_audio();
+                    } else if (s_app.settings_cursor == 8) {
                         karaoke_settings_save();
                         s_app.ui_mode = UI_VIEW_PLAYING;
                         karaoke_ui_set_view(UI_VIEW_PLAYING);
                     }
+                }
+            } else if (mode == UI_VIEW_WIFI_AUDIO) {
+                /* Wi-Fi Audio Streaming mode */
+                const karaoke_settings_t *cfg = karaoke_settings_get();
+                if (lt && !last_lt) {
+                    uint8_t v = cfg->master_volume;
+                    karaoke_settings_set_volume(v >= 5 ? v - 5 : 0);
+                    wifi_audio_send_command(BTN_CMD_VOL_DOWN);
+                }
+                if (rt && !last_rt) {
+                    uint8_t v = cfg->master_volume;
+                    karaoke_settings_set_volume(v <= 95 ? v + 5 : 100);
+                    wifi_audio_send_command(BTN_CMD_VOL_UP);
+                }
+                if (dn && !last_dn) {
+                    wifi_audio_send_command(BTN_CMD_NEXT);
+                }
+                if (up && !last_up) {
+                    wifi_audio_send_command(BTN_CMD_PREV);
+                }
+                if (press && !last_press) {
+                    wifi_audio_send_command(BTN_CMD_PLAY_PAUSE);
                 }
             } else if (mode == UI_VIEW_SENSME) {
                 /* SensMe: UP/DOWN navigate 12 mood channels, RIGHT applies filter, saves, and plays a matching song */
@@ -890,14 +946,15 @@ int main(void)
 #endif
     midi_karaoke_init(yamaha_fm_get_callbacks());
 
-    /* 3. Initialize ES8388 Audio Codec & Hook FM Synthesizer Callback */
-    audio_set_pcm_callback(yamaha_fm_synth_render);
+    /* 3. Initialize ES8388 Audio Codec & Hook Master Audio Callback */
+    audio_set_pcm_callback(audio_master_render_callback);
     audio_hardware_init();
     audio_set_volume(80);
 
-    /* 4. Initialize SD Card & Song Catalog */
+    /* 4. Initialize SD Card, Song Catalog & Wi-Fi Audio Receiver */
     sd_card_reader_init();
     karaoke_catalog_init();
+    wifi_audio_receiver_init();
 
     /* 5. Initialize Persistent Audio Settings (survives reset & shutdown) */
     karaoke_settings_init();

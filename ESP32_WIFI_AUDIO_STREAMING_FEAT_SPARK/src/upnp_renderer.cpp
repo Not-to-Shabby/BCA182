@@ -45,6 +45,22 @@ static volatile bool s_mute = false;
 static volatile uint32_t s_pos_frames = 0;
 static volatile uint32_t s_dur_ms = 0;
 static TaskHandle_t s_task = nullptr;
+static TaskHandle_t s_send_task = nullptr;
+
+/* Jitter buffer between the network reader and the paced sender (about 370 ms of 44.1 kHz stereo). */
+#define RING_BYTES       (64U * 1024U)
+#define RING_MASK        (RING_BYTES - 1U)
+#define PREBUFFER_BYTES  (24U * 1024U)
+static uint8_t *s_ring = nullptr;
+static volatile uint32_t s_ring_head = 0;
+static volatile uint32_t s_ring_tail = 0;
+static volatile bool s_eof = false;
+static volatile bool s_flush = false;
+
+static inline uint32_t ring_fill(void)
+{
+    return (s_ring_head - s_ring_tail) & RING_MASK;
+}
 
 static const char *const NT_LIST[] = {
     "upnp:rootdevice",
@@ -431,22 +447,21 @@ static void stream_once(void)
     uint8_t inbuf[1024];
     size_t in_len = 0, in_pos = 0;
     uint32_t phase = 0x10000U;
-    int16_t cl = 0, cr = 0;
+    int16_t pl = 0, pr = 0, cl = 0, cr = 0;
     int16_t out[AUDIO_CHUNK_SAMPLES * 2];
-    const int64_t chunk_us = (int64_t)AUDIO_CHUNK_SAMPLES * 1000000LL / 44100LL;
-    int64_t t_next = esp_timer_get_time();
-    int sent = 0;
     bool ended = false;
 
     while (!s_stop_req && !ended) {
-        if (s_state == TS_PAUSED) {
-            delay(20);
-            t_next = esp_timer_get_time();
-            sent = 0;
-            continue;
+        while (s_flush && !s_stop_req) {
+            delay(1);
+        }
+        while (ring_fill() >= RING_BYTES - AUDIO_CHUNK_BYTES && !s_stop_req) {
+            delay(2);
+        }
+        if (s_stop_req) {
+            break;
         }
 
-        const uint32_t gain = s_mute ? 0U : s_volume;
         for (size_t i = 0; i < AUDIO_CHUNK_SAMPLES && !ended; i++) {
             while (phase >= 0x10000U) {
                 if (in_pos + fb > in_len) {
@@ -484,6 +499,8 @@ static void stream_once(void)
                         break;
                     }
                 }
+                pl = cl;
+                pr = cr;
                 cl = (int16_t)(inbuf[in_pos] | (inbuf[in_pos + 1] << 8));
                 cr = (ch == 2) ? (int16_t)(inbuf[in_pos + 2] | (inbuf[in_pos + 3] << 8)) : cl;
                 in_pos += fb;
@@ -492,26 +509,21 @@ static void stream_once(void)
             if (ended) {
                 break;
             }
-            out[2 * i] = (int16_t)(((int32_t)cl * (int32_t)gain) / 100);
-            out[2 * i + 1] = (int16_t)(((int32_t)cr * (int32_t)gain) / 100);
+            const int32_t frac = (int32_t)(phase >> 1);
+            out[2 * i] = (int16_t)(pl + (((int32_t)cl - pl) * frac >> 15));
+            out[2 * i + 1] = (int16_t)(pr + (((int32_t)cr - pr) * frac >> 15));
             phase += step;
+            if (i == 0 && pl == 0 && pr == 0 && s_pos_frames == 0 && cl != 0) {
+                pl = cl;
+                pr = cr;
+            }
         }
         if (ended) {
             break;
         }
 
-        send_spark_packet(WIFI_MSG_AUDIO_PCM, (const uint8_t *)out, sizeof(out));
-        s_pos_frames += AUDIO_CHUNK_SAMPLES;
-
-        if (++sent > 4) {
-            t_next += chunk_us;
-            int64_t wait = t_next - esp_timer_get_time();
-            if (wait > 1000) {
-                delay((uint32_t)(wait / 1000));
-            } else if (wait < -50000) {
-                t_next = esp_timer_get_time();
-            }
-        }
+        memcpy(s_ring + s_ring_head, out, AUDIO_CHUNK_BYTES);
+        s_ring_head = (s_ring_head + AUDIO_CHUNK_BYTES) & RING_MASK;
     }
 
     http.end();
@@ -525,8 +537,66 @@ static void stream_task(void *param)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         s_busy = true;
         stream_once();
-        set_state(TS_STOPPED);
+        s_eof = true;
         s_busy = false;
+    }
+}
+
+static void sender_task(void *param)
+{
+    (void)param;
+    const int64_t chunk_us = (int64_t)AUDIO_CHUNK_SAMPLES * 1000000LL / 44100LL;
+    int16_t out[AUDIO_CHUNK_SAMPLES * 2];
+    bool primed = false;
+    int64_t t_next = 0;
+
+    for (;;) {
+        if (s_flush) {
+            s_ring_tail = s_ring_head;
+            primed = false;
+            s_flush = false;
+        }
+        if (s_state != TS_PLAYING) {
+            primed = false;
+            delay(10);
+            continue;
+        }
+
+        uint32_t fill = ring_fill();
+        if (!primed) {
+            if (fill >= PREBUFFER_BYTES || (s_eof && fill >= AUDIO_CHUNK_BYTES)) {
+                primed = true;
+                t_next = esp_timer_get_time();
+            } else {
+                if (s_eof && fill < AUDIO_CHUNK_BYTES) {
+                    s_eof = false;
+                    set_state(TS_STOPPED);
+                }
+                delay(5);
+                continue;
+            }
+        }
+        if (fill < AUDIO_CHUNK_BYTES) {
+            primed = false;
+            continue;
+        }
+
+        const int16_t *src = (const int16_t *)(s_ring + s_ring_tail);
+        const int32_t gain = s_mute ? 0 : (int32_t)s_volume;
+        for (size_t i = 0; i < AUDIO_CHUNK_SAMPLES * 2U; i++) {
+            out[i] = (int16_t)(((int32_t)src[i] * gain) / 100);
+        }
+        s_ring_tail = (s_ring_tail + AUDIO_CHUNK_BYTES) & RING_MASK;
+        send_spark_packet(WIFI_MSG_AUDIO_PCM, (const uint8_t *)out, sizeof(out));
+        s_pos_frames += AUDIO_CHUNK_SAMPLES;
+
+        t_next += chunk_us;
+        int64_t wait = t_next - esp_timer_get_time();
+        if (wait > 1000) {
+            delay((uint32_t)(wait / 1000));
+        } else if (wait < -50000) {
+            t_next = esp_timer_get_time();
+        }
     }
 }
 
@@ -543,6 +613,8 @@ static void start_stream(void)
         }
     }
     s_stop_req = false;
+    s_eof = false;
+    s_flush = true;
     set_state(TS_PLAYING);
     xTaskNotifyGive(s_task);
 }
@@ -550,6 +622,7 @@ static void start_stream(void)
 static void stop_stream(void)
 {
     s_stop_req = true;
+    s_flush = true;
     set_state(TS_STOPPED);
 }
 
@@ -768,8 +841,15 @@ static void setup_routes(void)
 
 void upnp_begin(void)
 {
+    WiFi.setSleep(false);
+    if (s_ring == nullptr) {
+        s_ring = (uint8_t *)malloc(RING_BYTES);
+    }
     if (s_task == nullptr) {
         xTaskCreatePinnedToCore(stream_task, "upnp_stream", 8192, nullptr, 4, &s_task, 0);
+    }
+    if (s_send_task == nullptr) {
+        xTaskCreatePinnedToCore(sender_task, "upnp_send", 4096, nullptr, 6, &s_send_task, 1);
     }
     if (!s_routes_ready) {
         setup_routes();

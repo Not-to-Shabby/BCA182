@@ -384,6 +384,7 @@ void setup()
     Serial.begin(115200);
 
     /* Hardware High-Speed UART1 to RT-Spark (GPIO 43 TX / GPIO 44 RX @ 2.0 Mbps) */
+    Serial1.setTxBufferSize(2048);
     Serial1.begin(UART_BAUD_RATE, SERIAL_8N1, PIN_UART_RX, PIN_UART_TX);
 
     delay(500);

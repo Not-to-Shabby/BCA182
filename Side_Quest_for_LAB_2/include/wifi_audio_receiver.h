@@ -26,6 +26,11 @@ int wifi_audio_receiver_init(void);
 bool wifi_audio_receiver_is_connected(void);
 
 /**
+ * @brief Check if audio PCM stream is actively arriving over Wi-Fi.
+ */
+bool wifi_audio_receiver_is_streaming(void);
+
+/**
  * @brief Get latest track metadata (Title, Artist, Format) sent by phone.
  */
 void wifi_audio_receiver_get_metadata(wifi_track_meta_t *out);

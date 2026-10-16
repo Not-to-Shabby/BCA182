@@ -39,6 +39,7 @@ static wifi_telemetry_t s_telem = {
 
 static bool s_esp32_connected = false;
 static int64_t s_last_ping_time = 0;
+static int64_t s_last_audio_time = 0;
 static int16_t s_peak_l = 0;
 static int16_t s_peak_r = 0;
 
@@ -138,6 +139,11 @@ static void usart2_send_packet(uint8_t type, const uint8_t *payload, uint16_t le
 bool wifi_audio_receiver_is_connected(void)
 {
     return s_esp32_connected;
+}
+
+bool wifi_audio_receiver_is_streaming(void)
+{
+    return (s_esp32_connected && (k_uptime_get() - s_last_audio_time < 1500));
 }
 
 void wifi_audio_receiver_get_metadata(wifi_track_meta_t *out)
@@ -266,6 +272,7 @@ void wifi_audio_process(void)
                     /* Respond with PONG handshake */
                     usart2_send_packet(WIFI_MSG_PONG, NULL, 0);
                 } else if (msg_type == WIFI_MSG_AUDIO_PCM) {
+                    s_last_audio_time = k_uptime_get();
                     /* Push raw 16-bit PCM block into audio ring */
                     const int16_t *pcm = (const int16_t *)payload;
                     uint16_t sample_count = msg_len / 2U;

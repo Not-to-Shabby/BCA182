@@ -28,6 +28,8 @@ static inline void k_sem_give(struct k_sem *s) { (void)s; }
 static inline uint32_t k_cycle_get_32(void) { return 0; }
 static inline uint32_t k_cyc_to_us_floor32(uint32_t c) { return c; }
 static inline int64_t k_uptime_ticks(void) { return 0; }
+static inline int64_t k_uptime_get(void) { return 0; }
+static inline uint32_t k_uptime_get_32(void) { return 0; }
 static inline int64_t k_ticks_to_us_floor64(int64_t ticks) { return ticks * 100; }
 
 #endif /* STUB_ZEPHYR_KERNEL_H_ */

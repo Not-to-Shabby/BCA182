@@ -501,6 +501,14 @@ static void button_poll_thread(void *p1, void *p2, void *p3)
 
         wifi_audio_process();
 
+        if (wifi_audio_receiver_is_streaming()) {
+            k_mutex_lock(&s_app.lock, K_FOREVER);
+            if (s_app.ui_mode == UI_VIEW_PLAYING) {
+                open_wifi_audio();
+            }
+            k_mutex_unlock(&s_app.lock);
+        }
+
         /* 1. Simultaneous UP + DOWN Detection -> Enter NUMBER SELECT Mode */
         if (up && dn) {
             s_mixer_latch = true;

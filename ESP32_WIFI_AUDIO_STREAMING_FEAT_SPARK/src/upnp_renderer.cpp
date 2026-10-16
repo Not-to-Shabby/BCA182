@@ -13,6 +13,8 @@
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <esp_timer.h>
+#include <MP3DecoderHelix.h>
+#include <AACDecoderHelix.h>
 #include "upnp_renderer.h"
 #include "wifi_protocol.h"
 
@@ -332,38 +334,136 @@ static void push_meta(const char *format)
     send_spark_packet(WIFI_MSG_TRACK_META, (const uint8_t *)&m, sizeof(m));
 }
 
-static bool read_exact(WiFiClient *c, uint8_t *dst, size_t n, uint32_t idle_ms = 5000)
-{
-    uint32_t t = millis();
-    size_t got = 0;
-    while (got < n) {
-        if (s_stop_req) {
-            return false;
-        }
-        int a = c->available();
-        if (a > 0) {
-            size_t want = (size_t)a < (n - got) ? (size_t)a : (n - got);
-            int r = c->read(dst + got, want);
-            if (r > 0) {
-                got += (size_t)r;
-                t = millis();
+/* ---------------------------------------------------------------- Stream input */
+
+/* Reads the HTTP body and undoes chunked transfer encoding when the server uses it. */
+struct ByteSource {
+    WiFiClient *c = nullptr;
+    bool chunked = false;
+    uint32_t chunk_left = 0;
+    bool finished = false;
+
+    bool wait_byte(uint8_t *b, uint32_t idle_ms)
+    {
+        uint32_t t = millis();
+        for (;;) {
+            if (s_stop_req) {
+                return false;
             }
-        } else {
+            if (c->available() > 0) {
+                int r = c->read();
+                if (r < 0) {
+                    return false;
+                }
+                *b = (uint8_t)r;
+                return true;
+            }
             if (!c->connected() || millis() - t > idle_ms) {
                 return false;
             }
             delay(1);
         }
     }
+
+    /* Returns the bytes read (> 0), 0 when nothing has arrived yet, or -1 at the end of the stream. */
+    int read(uint8_t *dst, size_t n)
+    {
+        if (finished) {
+            return -1;
+        }
+        if (chunked && chunk_left == 0) {
+            uint32_t size = 0;
+            bool digits = false, ext = false;
+            for (;;) {
+                uint8_t b;
+                if (!wait_byte(&b, 5000)) {
+                    finished = true;
+                    return -1;
+                }
+                if (b == '\n') {
+                    if (digits) {
+                        break;
+                    }
+                    ext = false;
+                    continue;
+                }
+                if (ext || b == '\r' || b == ' ') {
+                    continue;
+                }
+                if (b == ';') {
+                    ext = true;
+                    continue;
+                }
+                int v = (b >= '0' && b <= '9') ? b - '0' :
+                        (b >= 'a' && b <= 'f') ? b - 'a' + 10 :
+                        (b >= 'A' && b <= 'F') ? b - 'A' + 10 : -1;
+                if (v < 0) {
+                    finished = true;
+                    return -1;
+                }
+                size = (size << 4) | (uint32_t)v;
+                digits = true;
+            }
+            if (size == 0) {
+                finished = true;
+                return -1;
+            }
+            chunk_left = size;
+        }
+
+        int avail = c->available();
+        if (avail <= 0) {
+            if (!c->connected()) {
+                finished = true;
+                return -1;
+            }
+            return 0;
+        }
+        size_t want = n;
+        if (chunked && want > chunk_left) {
+            want = chunk_left;
+        }
+        if ((size_t)avail < want) {
+            want = (size_t)avail;
+        }
+        int r = c->read(dst, want);
+        if (r <= 0) {
+            return 0;
+        }
+        if (chunked) {
+            chunk_left -= (uint32_t)r;
+        }
+        return r;
+    }
+};
+
+static bool read_exact(ByteSource &src, uint8_t *dst, size_t n, uint32_t idle_ms = 5000)
+{
+    size_t got = 0;
+    uint32_t t = millis();
+    while (got < n) {
+        if (s_stop_req) {
+            return false;
+        }
+        int r = src.read(dst + got, n - got);
+        if (r > 0) {
+            got += (size_t)r;
+            t = millis();
+        } else if (r < 0 || millis() - t > idle_ms) {
+            return false;
+        } else {
+            delay(1);
+        }
+    }
     return true;
 }
 
-static bool skip_bytes(WiFiClient *c, uint32_t n)
+static bool skip_bytes(ByteSource &src, uint32_t n)
 {
     uint8_t tmp[64];
     while (n > 0) {
         size_t k = n < sizeof(tmp) ? n : sizeof(tmp);
-        if (!read_exact(c, tmp, k)) {
+        if (!read_exact(src, tmp, k)) {
             return false;
         }
         n -= (uint32_t)k;
@@ -382,14 +482,146 @@ static int param_int(const String &s, const char *key, int fallback)
     return p < 0 ? fallback : s.substring(p + strlen(key)).toInt();
 }
 
+/* ---------------------------------------------------------------- Resampler into the jitter ring */
+
+/* Takes decoded stereo frames at any rate, linearly interpolates them to 44.1 kHz and appends them to
+ * the ring in 128-frame blocks. It blocks while the ring is full, which holds back the HTTP download. */
+struct PcmSink {
+    uint32_t step = 0x10000U;
+    uint32_t phase = 0x10000U;
+    int16_t pl = 0, pr = 0, cl = 0, cr = 0;
+    bool first = true;
+    bool aborted = false;
+    size_t n = 0;
+    int16_t chunk[AUDIO_CHUNK_SAMPLES * 2];
+
+    void reset(uint32_t rate)
+    {
+        step = (uint32_t)(((uint64_t)rate << 16) / 44100U);
+        phase = 0x10000U;
+        pl = pr = cl = cr = 0;
+        first = true;
+        aborted = false;
+        n = 0;
+    }
+
+    bool flush_chunk()
+    {
+        while (s_flush || ring_fill() >= RING_BYTES - AUDIO_CHUNK_BYTES) {
+            if (s_stop_req) {
+                return false;
+            }
+            delay(2);
+        }
+        memcpy(s_ring + s_ring_head, chunk, AUDIO_CHUNK_BYTES);
+        s_ring_head = (s_ring_head + AUDIO_CHUNK_BYTES) & RING_MASK;
+        n = 0;
+        return true;
+    }
+
+    bool frame(int16_t l, int16_t r)
+    {
+        pl = cl;
+        pr = cr;
+        cl = l;
+        cr = r;
+        if (first) {
+            pl = l;
+            pr = r;
+            first = false;
+        }
+        phase -= 0x10000U;
+        while (phase < 0x10000U) {
+            const int32_t frac = (int32_t)(phase >> 1);
+            chunk[2 * n] = (int16_t)(pl + (((int32_t)cl - pl) * frac >> 15));
+            chunk[2 * n + 1] = (int16_t)(pr + (((int32_t)cr - pr) * frac >> 15));
+            phase += step;
+            if (++n == AUDIO_CHUNK_SAMPLES && !flush_chunk()) {
+                aborted = true;
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+static PcmSink s_sink;
+static int s_sink_rate = 0;
+static bool s_meta_sent = false;
+
+/* Called by the MP3 and AAC decoders for every decoded frame. */
+static void sink_decoded(const short *pcm, size_t samples, int ch, int rate, const char *name)
+{
+    if (s_sink.aborted || ch < 1 || ch > 2 || rate < 8000 || rate > 96000) {
+        return;
+    }
+    if (rate != s_sink_rate) {
+        s_sink_rate = rate;
+        s_sink.step = (uint32_t)(((uint64_t)rate << 16) / 44100U);
+    }
+    if (!s_meta_sent) {
+        s_meta_sent = true;
+        char fmt[16];
+        snprintf(fmt, sizeof(fmt), "%s %dHz %dch", name, rate, ch);
+        push_meta(fmt);
+        Serial.printf("[UPnP] Streaming '%s' (%s)\n", s_title.c_str(), fmt);
+    }
+    const size_t frames = samples / (size_t)ch;
+    for (size_t i = 0; i < frames; i++) {
+        short l = pcm[i * ch];
+        short r = (ch == 2) ? pcm[i * ch + 1] : l;
+        if (!s_sink.frame(l, r)) {
+            return;
+        }
+    }
+}
+
+static void on_mp3_frame(MP3FrameInfo &info, short *pcm, size_t len, void *ref)
+{
+    (void)ref;
+    sink_decoded(pcm, len, info.nChans, info.samprate, "MP3");
+}
+
+static void on_aac_frame(_AACFrameInfo &info, short *pcm, size_t len, void *ref)
+{
+    (void)ref;
+    sink_decoded(pcm, len, info.nChans, info.sampRateOut, "AAC");
+}
+
+enum Codec { CODEC_NONE, CODEC_WAV, CODEC_L16, CODEC_MP3, CODEC_AAC };
+
+static Codec detect_codec(const String &ctype, const uint8_t *h)
+{
+    if (memcmp(h, "RIFF", 4) == 0 && memcmp(h + 8, "WAVE", 4) == 0) {
+        return CODEC_WAV;
+    }
+    if (ctype.indexOf("l16") >= 0 || ctype.indexOf("lpcm") >= 0) {
+        return CODEC_L16;
+    }
+    if (memcmp(h, "ID3", 3) == 0) {
+        return CODEC_MP3;
+    }
+    if (h[0] == 0xFF && (h[1] & 0xE0) == 0xE0) {
+        /* The layer bits are 00 in an AAC ADTS header and non-zero in an MPEG audio header. */
+        return (h[1] & 0x06) == 0 ? CODEC_AAC : CODEC_MP3;
+    }
+    if (ctype.indexOf("mpeg") >= 0 || ctype.indexOf("mp3") >= 0) {
+        return CODEC_MP3;
+    }
+    if (ctype.indexOf("aac") >= 0 || ctype.indexOf("adts") >= 0) {
+        return CODEC_AAC;
+    }
+    return CODEC_NONE;
+}
+
 static void stream_once(void)
 {
     HTTPClient http;
     http.setConnectTimeout(5000);
     http.setTimeout(5000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    const char *hdr_keys[] = {"Content-Type"};
-    http.collectHeaders(hdr_keys, 1);
+    const char *hdr_keys[] = {"Content-Type", "Transfer-Encoding"};
+    http.collectHeaders(hdr_keys, 2);
     if (!http.begin(s_uri)) {
         Serial.println("[UPnP] Bad stream URL");
         return;
@@ -400,37 +632,46 @@ static void stream_once(void)
         http.end();
         return;
     }
-    WiFiClient *c = http.getStreamPtr();
+
+    ByteSource src;
+    src.c = http.getStreamPtr();
+    String te = http.header("Transfer-Encoding");
+    te.toLowerCase();
+    src.chunked = te.indexOf("chunked") >= 0;
 
     String ctype = http.header("Content-Type");
     ctype.toLowerCase();
-    Serial.printf("[UPnP] Stream HTTP 200, Content-Type '%s', length %d\n", ctype.c_str(), http.getSize());
+    Serial.printf("[UPnP] Stream HTTP 200, Content-Type '%s', length %d%s\n", ctype.c_str(), http.getSize(),
+                  src.chunked ? ", chunked" : "");
 
-    uint8_t inbuf[1024];
-    size_t in_len = 0, in_pos = 0;
+    uint8_t buf[1024];
+    size_t have = 0;
     uint8_t hdr[12];
-    if (!read_exact(c, hdr, 12, 20000)) {
+    if (!read_exact(src, hdr, sizeof(hdr), 20000)) {
         Serial.println("[UPnP] No audio arrived within 20 s (is something playing on the phone?)");
         http.end();
         return;
     }
 
-    uint16_t ch = 0, bits = 0, tag = 0;
-    uint32_t rate = 0, data_size = 0;
+    const Codec codec = detect_codec(ctype, hdr);
+    uint16_t ch = 2;
+    uint32_t rate = 44100, data_size = 0;
     bool big_endian = false;
-    bool is_wav = memcmp(hdr, "RIFF", 4) == 0 && memcmp(hdr + 8, "WAVE", 4) == 0;
 
-    if (is_wav) {
+    if (codec == CODEC_WAV) {
+        uint16_t bits = 0, tag = 0;
         bool have_fmt = false, have_data = false;
+        ch = 0;
+        rate = 0;
         while (!have_data) {
             uint8_t ck[8];
-            if (!read_exact(c, ck, 8, 20000)) {
+            if (!read_exact(src, ck, 8, 20000)) {
                 break;
             }
             uint32_t sz = ck[4] | (ck[5] << 8) | (ck[6] << 16) | ((uint32_t)ck[7] << 24);
             if (memcmp(ck, "fmt ", 4) == 0 && sz >= 16) {
                 uint8_t f[16];
-                if (!read_exact(c, f, 16)) {
+                if (!read_exact(src, f, 16)) {
                     break;
                 }
                 tag = f[0] | (f[1] << 8);
@@ -438,13 +679,13 @@ static void stream_once(void)
                 rate = f[4] | (f[5] << 8) | (f[6] << 16) | ((uint32_t)f[7] << 24);
                 bits = f[14] | (f[15] << 8);
                 have_fmt = true;
-                if (!skip_bytes(c, (sz - 16) + (sz & 1U))) {
+                if (!skip_bytes(src, (sz - 16) + (sz & 1U))) {
                     break;
                 }
             } else if (memcmp(ck, "data", 4) == 0) {
                 data_size = sz;
                 have_data = true;
-            } else if (!skip_bytes(c, sz + (sz & 1U))) {
+            } else if (!skip_bytes(src, sz + (sz & 1U))) {
                 break;
             }
         }
@@ -453,120 +694,136 @@ static void stream_once(void)
             http.end();
             return;
         }
-    } else if (ctype.indexOf("l16") >= 0 || ctype.indexOf("lpcm") >= 0) {
+        if ((tag != 1 && tag != 0xFFFE) || bits != 16 || (ch != 1 && ch != 2) || rate < 8000 || rate > 96000) {
+            Serial.printf("[UPnP] Unsupported WAV (tag %u, %u ch, %u-bit, %u Hz)\n", tag, ch, bits, (unsigned)rate);
+            http.end();
+            return;
+        }
+    } else if (codec == CODEC_L16) {
         /* Headerless LPCM: DLNA audio/L16 is big-endian, rate and channels come from the MIME parameters. */
-        tag = 1;
-        bits = 16;
         rate = (uint32_t)param_int(ctype, "rate=", 44100);
         ch = (uint16_t)param_int(ctype, "channels=", 2);
         big_endian = true;
-        memcpy(inbuf, hdr, sizeof(hdr));
-        in_len = sizeof(hdr);
-    } else {
-        Serial.printf("[UPnP] Unsupported stream (not RIFF/WAVE or L16). First bytes: "
+        memcpy(buf, hdr, sizeof(hdr));
+        have = sizeof(hdr);
+        if ((ch != 1 && ch != 2) || rate < 8000 || rate > 96000) {
+            Serial.printf("[UPnP] Unsupported LPCM (%u ch, %u Hz)\n", ch, (unsigned)rate);
+            http.end();
+            return;
+        }
+    } else if (codec == CODEC_NONE) {
+        Serial.printf("[UPnP] Unsupported stream (not WAV, LPCM, MP3 or AAC-ADTS). First bytes: "
                       "%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
                       hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5], hdr[6], hdr[7], hdr[8], hdr[9], hdr[10], hdr[11]);
         http.end();
         return;
     }
 
-    if ((tag != 1 && tag != 0xFFFE) || bits != 16 || (ch != 1 && ch != 2) || rate < 8000 || rate > 96000) {
-        Serial.printf("[UPnP] Unsupported audio (tag %u, %u ch, %u-bit, %u Hz)\n", tag, ch, bits, (unsigned)rate);
-        http.end();
-        return;
-    }
-
-    uint32_t remaining = (data_size == 0 || data_size >= 0x7FFFFFFFU) ? 0xFFFFFFFFU : data_size;
-    s_dur_ms = (remaining == 0xFFFFFFFFU) ? 0 : (uint32_t)(((uint64_t)remaining * 1000ULL) / ((uint64_t)rate * ch * 2U));
     s_pos_frames = 0;
+    s_meta_sent = false;
+    s_sink_rate = 0;
+    s_sink.reset(rate);
+    uint32_t t_data = millis();
+    bool stalled = false;
 
-    char fmt[16];
-    snprintf(fmt, sizeof(fmt), "%s %uHz %uch", is_wav ? "WAV" : "LPCM", (unsigned)rate, ch);
-    push_meta(fmt);
-    Serial.printf("[UPnP] Streaming '%s' (%s)\n", s_title.c_str(), fmt);
+    if (codec == CODEC_WAV || codec == CODEC_L16) {
+        uint32_t remaining = (data_size == 0 || data_size >= 0x7FFFFFFFU) ? 0xFFFFFFFFU : data_size;
+        s_dur_ms = (remaining == 0xFFFFFFFFU) ? 0 :
+                   (uint32_t)(((uint64_t)remaining * 1000ULL) / ((uint64_t)rate * ch * 2U));
+        char fmt[16];
+        snprintf(fmt, sizeof(fmt), "%s %uHz %uch", codec == CODEC_WAV ? "WAV" : "LPCM", (unsigned)rate, ch);
+        push_meta(fmt);
+        Serial.printf("[UPnP] Streaming '%s' (%s)\n", s_title.c_str(), fmt);
 
-    const uint32_t step = (uint32_t)(((uint64_t)rate << 16) / 44100U);
-    const size_t fb = ch * 2U;
-    uint32_t phase = 0x10000U;
-    int16_t pl = 0, pr = 0, cl = 0, cr = 0;
-    int16_t out[AUDIO_CHUNK_SAMPLES * 2];
-    bool ended = false;
-
-    while (!s_stop_req && !ended) {
-        while (s_flush && !s_stop_req) {
-            delay(1);
-        }
-        while (ring_fill() >= RING_BYTES - AUDIO_CHUNK_BYTES && !s_stop_req) {
-            delay(2);
-        }
-        if (s_stop_req) {
-            break;
-        }
-
-        for (size_t i = 0; i < AUDIO_CHUNK_SAMPLES && !ended; i++) {
-            while (phase >= 0x10000U) {
-                if (in_pos + fb > in_len) {
-                    size_t left = in_len - in_pos;
-                    memmove(inbuf, inbuf + in_pos, left);
-                    in_len = left;
-                    in_pos = 0;
-                    uint32_t t = millis();
-                    while (in_len < fb && !ended) {
-                        int a = c->available();
-                        if (s_stop_req) {
-                            ended = true;
-                        } else if (a > 0) {
-                            size_t want = (size_t)a < (sizeof(inbuf) - in_len) ? (size_t)a : (sizeof(inbuf) - in_len);
-                            if (want > remaining) {
-                                want = remaining;
-                            }
-                            if (want == 0) {
-                                ended = true;
-                            } else {
-                                int r = c->read(inbuf + in_len, want);
-                                if (r > 0) {
-                                    in_len += (size_t)r;
-                                    remaining -= (uint32_t)r;
-                                    t = millis();
-                                }
-                            }
-                        } else if (!c->connected() || millis() - t > 5000) {
-                            ended = true;
-                        } else {
-                            delay(1);
-                        }
-                    }
-                    if (ended) {
-                        break;
-                    }
-                }
-                pl = cl;
-                pr = cr;
-                cl = rd16(inbuf + in_pos, big_endian);
-                cr = (ch == 2) ? rd16(inbuf + in_pos + 2, big_endian) : cl;
-                in_pos += fb;
-                phase -= 0x10000U;
+        const size_t fb = ch * 2U;
+        while (!s_stop_req && !s_sink.aborted && remaining > 0) {
+            size_t want = sizeof(buf) - have;
+            if (want > remaining) {
+                want = remaining;
             }
-            if (ended) {
+            int r = src.read(buf + have, want);
+            if (r < 0) {
                 break;
             }
-            const int32_t frac = (int32_t)(phase >> 1);
-            out[2 * i] = (int16_t)(pl + (((int32_t)cl - pl) * frac >> 15));
-            out[2 * i + 1] = (int16_t)(pr + (((int32_t)cr - pr) * frac >> 15));
-            phase += step;
-            if (i == 0 && pl == 0 && pr == 0 && s_pos_frames == 0 && cl != 0) {
-                pl = cl;
-                pr = cr;
+            if (r == 0) {
+                if (millis() - t_data > 5000) {
+                    stalled = true;
+                    break;
+                }
+                delay(1);
+                continue;
+            }
+            t_data = millis();
+            have += (size_t)r;
+            remaining -= (uint32_t)r;
+
+            size_t off = 0;
+            while (off + fb <= have) {
+                int16_t l = rd16(buf + off, big_endian);
+                int16_t rr = (ch == 2) ? rd16(buf + off + 2, big_endian) : l;
+                if (!s_sink.frame(l, rr)) {
+                    break;
+                }
+                off += fb;
+            }
+            memmove(buf, buf + off, have - off);
+            have -= off;
+        }
+    } else {
+        const bool is_aac = (codec == CODEC_AAC);
+        s_dur_ms = 0;
+        libhelix::MP3DecoderHelix mp3;
+        libhelix::AACDecoderHelix aac;
+        bool ok;
+        if (is_aac) {
+            aac.setDataCallback(on_aac_frame);
+            ok = aac.begin();
+        } else {
+            mp3.setDataCallback(on_mp3_frame);
+            ok = mp3.begin();
+        }
+        if (!ok) {
+            Serial.println("[UPnP] Could not allocate the audio decoder (out of memory)");
+            http.end();
+            return;
+        }
+        Serial.printf("[UPnP] Decoding %s\n", is_aac ? "AAC (ADTS)" : "MP3");
+
+        if (is_aac) {
+            aac.write(hdr, sizeof(hdr));
+        } else {
+            mp3.write(hdr, sizeof(hdr));
+        }
+        while (!s_stop_req && !s_sink.aborted) {
+            int r = src.read(buf, sizeof(buf));
+            if (r < 0) {
+                break;
+            }
+            if (r == 0) {
+                if (millis() - t_data > 5000) {
+                    stalled = true;
+                    break;
+                }
+                delay(1);
+                continue;
+            }
+            t_data = millis();
+            if (is_aac) {
+                aac.write(buf, (size_t)r);
+            } else {
+                mp3.write(buf, (size_t)r);
             }
         }
-        if (ended) {
-            break;
+        if (is_aac) {
+            aac.end();
+        } else {
+            mp3.end();
         }
-
-        memcpy(s_ring + s_ring_head, out, AUDIO_CHUNK_BYTES);
-        s_ring_head = (s_ring_head + AUDIO_CHUNK_BYTES) & RING_MASK;
     }
 
+    if (stalled) {
+        Serial.println("[UPnP] Stream stalled for 5 s");
+    }
     http.end();
     Serial.println("[UPnP] Stream finished");
 }
@@ -832,7 +1089,9 @@ static void handle_cm_control(void)
     if (act == "GetProtocolInfo") {
         soap_reply(SVC_CM, act,
                    "<Source></Source><Sink>http-get:*:audio/wav:*,http-get:*:audio/x-wav:*,"
-                   "http-get:*:audio/L16:*,http-get:*:audio/x-l16:*,http-get:*:audio/lpcm:*</Sink>");
+                   "http-get:*:audio/L16:*,http-get:*:audio/mpeg:*,http-get:*:audio/mp3:*,"
+                   "http-get:*:audio/aac:*,http-get:*:audio/x-aac:*,http-get:*:audio/aacp:*,"
+                   "http-get:*:audio/vnd.dlna.adts:*</Sink>");
     } else if (act == "GetCurrentConnectionIDs") {
         soap_reply(SVC_CM, act, "<ConnectionIDs>0</ConnectionIDs>");
     } else if (act == "GetCurrentConnectionInfo") {
@@ -887,7 +1146,7 @@ void upnp_begin(void)
         s_ring = (uint8_t *)malloc(RING_BYTES);
     }
     if (s_task == nullptr) {
-        xTaskCreatePinnedToCore(stream_task, "upnp_stream", 8192, nullptr, 4, &s_task, 0);
+        xTaskCreatePinnedToCore(stream_task, "upnp_stream", 14336, nullptr, 4, &s_task, 0);
     }
     if (s_send_task == nullptr) {
         xTaskCreatePinnedToCore(sender_task, "upnp_send", 4096, nullptr, 6, &s_send_task, 1);

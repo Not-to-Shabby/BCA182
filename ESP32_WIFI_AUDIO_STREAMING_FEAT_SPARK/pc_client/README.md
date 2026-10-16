@@ -9,7 +9,11 @@ renderer (UPnP AVTransport) to fetch the stream from it. The PC and the ESP32 mu
 
 Add `--ip 192.168.1.44` to skip discovery. Ctrl+C stops playback.
 
-- `play` sends 16-bit PCM WAV files unchanged. Other formats (MP3, FLAC, ...) need `ffmpeg` on the PATH.
+Add `--codec mp3` or `--codec aac` (with optional `--kbps 192`) to send a compressed stream. The ESP32
+decodes it and forwards 16-bit PCM to the Spark, and Wi-Fi traffic drops from about 1.4 Mbps to 0.2-0.3 Mbps.
+This needs ffmpeg: `pip install imageio-ffmpeg` is enough.
+
+- `play` sends 16-bit PCM WAV files unchanged. Other formats are converted with ffmpeg.
 - `live` needs `pip install pyaudiowpatch numpy`. It captures the default playback device with WASAPI
   loopback, so set that device to 44100 or 48000 Hz. Silence is sent while nothing is playing.
 - Live audio arrives about a third of a second late because the ESP32 buffers it; do not use it for video.

@@ -155,6 +155,26 @@ class Renderer:
 
 # ----------------------------------------------------------------------------- audio sources
 
+def find_ffmpeg():
+    """ffmpeg on the PATH, or the copy bundled with `pip install imageio-ffmpeg`."""
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        return "ffmpeg"
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        return None
+
+
+CODECS = {  # name -> (ffmpeg output args, Content-Type)
+    "mp3": (["-c:a", "libmp3lame", "-b:a", "{kbps}k", "-f", "mp3"], "audio/mpeg"),
+    "aac": (["-c:a", "aac", "-b:a", "{kbps}k", "-f", "adts"], "audio/aac"),
+}
+
+
 def wav_header(rate, channels, data_size):
     block = channels * 2
     riff = UNKNOWN_SIZE if data_size == UNKNOWN_SIZE else 36 + data_size
@@ -165,11 +185,19 @@ def wav_header(rate, channels, data_size):
 class FileSource:
     """A WAV file sent as it is when it is 16-bit PCM, anything else decoded by ffmpeg to 44.1 kHz."""
 
-    def __init__(self, path):
+    def __init__(self, path, codec="wav", kbps=192):
         self.path = path
+        self.codec = codec
+        self.kbps = kbps
+        self.content_type = CODECS[codec][1] if codec in CODECS else "audio/wav"
         self.proc = None
         self.title = path.replace("\\", "/").rsplit("/", 1)[-1]
         self.wav = None
+        self.ffmpeg = find_ffmpeg()
+        if codec in CODECS:
+            if not self.ffmpeg:
+                raise SystemExit("MP3/AAC output needs ffmpeg:  pip install imageio-ffmpeg")
+            return
         try:
             w = wave.open(path, "rb")
             if w.getsampwidth() == 2 and w.getnchannels() in (1, 2) and 8000 <= w.getframerate() <= 96000:
@@ -178,20 +206,24 @@ class FileSource:
                 w.close()
         except (wave.Error, EOFError):
             pass
-        if self.wav is None and not self._ffmpeg_ok():
+        if self.wav is None and not self.ffmpeg:
             raise SystemExit("This file is not 16-bit PCM WAV and ffmpeg was not found to convert it.\n"
-                             "Install ffmpeg (winget install ffmpeg) or convert the file to WAV first.")
-
-    @staticmethod
-    def _ffmpeg_ok():
-        try:
-            subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-            return True
-        except (OSError, subprocess.CalledProcessError):
-            return False
+                             "Install it with:  pip install imageio-ffmpeg")
 
     def stream(self):
-        if self.wav is not None:
+        if self.codec in CODECS:
+            args = [a.format(kbps=self.kbps) for a in CODECS[self.codec][0]]
+            self.proc = subprocess.Popen([self.ffmpeg, "-v", "error", "-i", self.path, "-ac", "2",
+                                          "-ar", "44100"] + args + ["-"], stdout=subprocess.PIPE)
+            try:
+                while True:
+                    block = self.proc.stdout.read(4096)
+                    if not block:
+                        return
+                    yield block
+            finally:
+                self.proc.kill()
+        elif self.wav is not None:
             self.wav.rewind()
             size = self.wav.getnframes() * self.wav.getnchannels() * 2
             yield wav_header(self.wav.getframerate(), self.wav.getnchannels(), size)
@@ -203,7 +235,7 @@ class FileSource:
         else:
             yield wav_header(44100, 2, UNKNOWN_SIZE)
             self.proc = subprocess.Popen(
-                ["ffmpeg", "-v", "error", "-i", self.path, "-f", "s16le", "-ac", "2", "-ar", "44100", "-"],
+                [self.ffmpeg, "-v", "error", "-i", self.path, "-f", "s16le", "-ac", "2", "-ar", "44100", "-"],
                 stdout=subprocess.PIPE)
             try:
                 while True:
@@ -216,11 +248,17 @@ class FileSource:
 
 
 class LiveSource:
-    """Captures what the PC is playing (WASAPI loopback) and serves it as an endless WAV."""
+    """Captures what the PC is playing (WASAPI loopback) and serves it as an endless stream."""
 
     MAX_BUFFER_SECONDS = 0.3
 
-    def __init__(self):
+    def __init__(self, codec="wav", kbps=192):
+        self.codec = codec
+        self.kbps = kbps
+        self.content_type = CODECS[codec][1] if codec in CODECS else "audio/wav"
+        self.ffmpeg = find_ffmpeg()
+        if codec in CODECS and not self.ffmpeg:
+            raise SystemExit("MP3/AAC output needs ffmpeg:  pip install imageio-ffmpeg")
         import numpy as np
         import pyaudiowpatch as pyaudio
         self.np = np
@@ -267,6 +305,9 @@ class LiveSource:
     def stream(self):
         """Real-time paced: WASAPI loopback delivers nothing while the PC is silent, so silence is
         inserted to keep the renderer's connection alive."""
+        if self.codec in CODECS:
+            yield from self._encoded_stream()
+            return
         yield wav_header(self.rate, 2, UNKNOWN_SIZE)
         need = (self.rate // 50) * 4
         next_t = time.monotonic()
@@ -283,6 +324,45 @@ class LiveSource:
                 time.sleep(delay)
             elif delay < -0.5:
                 next_t = time.monotonic()
+
+    def _encoded_stream(self):
+        args = [a.format(kbps=self.kbps) for a in CODECS[self.codec][0]]
+        proc = subprocess.Popen([self.ffmpeg, "-v", "error", "-f", "s16le", "-ar", str(self.rate), "-ac", "2",
+                                 "-i", "-", "-ar", "44100"] + args + ["-"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        stop = threading.Event()
+
+        def feed():
+            need = (self.rate // 50) * 4
+            next_t = time.monotonic()
+            try:
+                while not stop.is_set():
+                    with self.lock:
+                        block = bytes(self.buf[:need])
+                        del self.buf[:len(block)]
+                    if len(block) < need:
+                        block += bytes(need - len(block))
+                    proc.stdin.write(block)
+                    proc.stdin.flush()
+                    next_t += 0.02
+                    delay = next_t - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                    elif delay < -0.5:
+                        next_t = time.monotonic()
+            except (OSError, ValueError):
+                pass
+
+        threading.Thread(target=feed, daemon=True).start()
+        try:
+            while True:
+                block = proc.stdout.read(1024)
+                if not block:
+                    return
+                yield block
+        finally:
+            stop.set()
+            proc.kill()
 
     def close(self):
         self.stream_in.stop_stream()
@@ -301,7 +381,7 @@ def make_server(source, port):
 
         def _headers(self):
             self.send_response(200)
-            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Type", getattr(source, "content_type", "audio/wav"))
             self.send_header("Accept-Ranges", "none")
             self.send_header("transferMode.dlna.org", "Streaming")
             self.end_headers()
@@ -363,7 +443,8 @@ def run(args, source, artist):
     print(f"Renderer: {r.name} at {r.host}")
     server = make_server(source, args.port)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://{local_ip_towards(r.host)}:{args.port}/stream.wav"
+    ext = args.codec if args.codec in CODECS else "wav"
+    url = f"http://{local_ip_towards(r.host)}:{args.port}/stream.{ext}"
     print("Serving", url)
 
     r.set_uri(url, source.title, artist)
@@ -394,12 +475,12 @@ def run(args, source, artist):
 
 
 def cmd_play(args):
-    run(args, FileSource(args.file), "PC")
+    run(args, FileSource(args.file, args.codec, args.kbps), "PC")
 
 
 def cmd_live(args):
     try:
-        source = LiveSource()
+        source = LiveSource(args.codec, args.kbps)
     except ImportError:
         raise SystemExit("Live mode needs:  pip install pyaudiowpatch numpy")
     print(f"Capturing '{source.device_name}' ({source.rate} Hz)")
@@ -421,6 +502,9 @@ def main():
         p.add_argument("--ip", help="renderer IP (skips discovery)")
         p.add_argument("--port", type=int, default=8099, help="local HTTP port (default 8099)")
         p.add_argument("--volume", type=int, help="renderer volume 0-100")
+        p.add_argument("--codec", choices=["wav", "mp3", "aac"], default="wav",
+                       help="stream format (mp3/aac need ffmpeg and use far less Wi-Fi bandwidth)")
+        p.add_argument("--kbps", type=int, default=192, help="MP3/AAC bitrate (default 192)")
         p.set_defaults(fn=fn)
     args = ap.parse_args()
     args.fn(args)

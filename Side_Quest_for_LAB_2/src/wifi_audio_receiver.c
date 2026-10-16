@@ -77,8 +77,9 @@ static void usart2_send_packet(uint8_t type, const uint8_t *payload, uint16_t le
     usart2_send_byte(cks);
 }
 
-void USART2_IRQHandler(void)
+static void usart2_isr(const void *arg)
 {
+    ARG_UNUSED(arg);
     uint32_t sr = USART2->SR;
     if (sr & USART_SR_RXNE) {
         uint8_t b = (uint8_t)USART2->DR;
@@ -122,8 +123,8 @@ int wifi_audio_receiver_init(void)
     USART2->CR1 |= (USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE);
     USART2->CR1 |= USART_CR1_UE;
 
-    NVIC_SetPriority(USART2_IRQn, 4);
-    NVIC_EnableIRQ(USART2_IRQn);
+    IRQ_CONNECT(USART2_IRQn, 4, usart2_isr, NULL, 0);
+    irq_enable(USART2_IRQn);
 
     printk("[WiFi Audio] USART2 Link Initialized @ 2.0 Mbps (PA2 TX / PA3 RX)\n");
     return 0;

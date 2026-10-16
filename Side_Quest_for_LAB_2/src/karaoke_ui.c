@@ -34,6 +34,7 @@ static int s_last_vu_r = -1;
 static bool s_frame_initialized = false;
 static uint32_t s_title_song_id = 0xFFFFFFFFU;     /* song whose artist and title are on the LCD */
 static bool s_mixer_redraw = true;      /* the whole mixer screen must be drawn again */
+static bool s_wifi_redraw;              /* the Wi-Fi audio frame must be drawn again */
 
 static void pad_string(char *dst, const char *src, size_t max_len)
 {
@@ -116,6 +117,7 @@ void karaoke_ui_set_view(ui_view_mode_t mode)
     memset(s_last_prev_lyric, 0, sizeof(s_last_prev_lyric));
     memset(s_last_up_lyric, 0, sizeof(s_last_up_lyric));
     s_mixer_redraw = true;
+    s_wifi_redraw = true;
     k_mutex_unlock(&s_ui_lcd_mutex);
 }
 
@@ -867,6 +869,61 @@ void karaoke_ui_render_sensme(uint8_t cursor, uint8_t active_filter, uint32_t cu
 /* -------------------------------------------------------------------------- */
 /* Wi-Fi Audio Streaming View                                                 */
 /* -------------------------------------------------------------------------- */
+/* Wi-Fi audio screen: the frame is drawn once, then only text and VU pixels that changed are redrawn. */
+#define WIFI_VU_X0      34
+#define WIFI_VU_WIDTH   180
+#define WIFI_VU_L_Y0    162
+#define WIFI_VU_R_Y0    178
+
+static char s_wifi_hdr[24];
+static char s_wifi_vol[8];
+static char s_wifi_title[28];
+static char s_wifi_artist[28];
+static char s_wifi_format[28];
+static int s_wifi_vu_l;
+static int s_wifi_vu_r;
+
+/* Moves one bar from old_v to new_v lit pixels; only the pixels that change are painted. */
+static void wifi_draw_vu(int y0, int old_v, int new_v)
+{
+    static const struct { int lo; int hi; uint16_t color; } zones[] = {
+        {0, 110, LCD_COLOR_GREEN}, {110, 150, LCD_COLOR_YELLOW}, {150, WIFI_VU_WIDTH, LCD_COLOR_RED},
+    };
+
+    if (new_v > old_v) {
+        for (unsigned i = 0; i < sizeof(zones) / sizeof(zones[0]); i++) {
+            int a = old_v > zones[i].lo ? old_v : zones[i].lo;
+            int b = new_v < zones[i].hi ? new_v : zones[i].hi;
+            if (a < b) {
+                lcd_fill_rect(WIFI_VU_X0 + a, y0, WIFI_VU_X0 + b - 1, y0 + 8, zones[i].color);
+            }
+        }
+    } else if (new_v < old_v) {
+        lcd_fill_rect(WIFI_VU_X0 + new_v, y0, WIFI_VU_X0 + old_v - 1, y0 + 8, LCD_COLOR_DARKGREY);
+    }
+}
+
+static void wifi_draw_frame(void)
+{
+    lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
+    lcd_fill_rect(8, 86, 231, 110, 0x18E3);
+    lcd_draw_rect(8, 86, 231, 110, LCD_COLOR_DARKCYAN);
+    lcd_draw_line(8, 118, 231, 118, LCD_COLOR_DARKGREY);
+    lcd_show_string(14, 126, "Wireless Audio Streaming", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+    lcd_draw_line(8, 148, 231, 148, LCD_COLOR_DARKGREY);
+    lcd_show_string(12, 160, "L:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+    lcd_show_string(12, 176, "R:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+    lcd_fill_rect(WIFI_VU_X0, WIFI_VU_L_Y0, WIFI_VU_X0 + WIFI_VU_WIDTH - 1, WIFI_VU_L_Y0 + 8, LCD_COLOR_DARKGREY);
+    lcd_fill_rect(WIFI_VU_X0, WIFI_VU_R_Y0, WIFI_VU_X0 + WIFI_VU_WIDTH - 1, WIFI_VU_R_Y0 + 8, LCD_COLOR_DARKGREY);
+    lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 208, "UP+DN: Play/Pause  L/R: Vol", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
+    lcd_show_string(8, 224, "HOLD UP+DN: Exit to Karaoke", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+
+    s_wifi_hdr[0] = s_wifi_vol[0] = s_wifi_title[0] = s_wifi_artist[0] = s_wifi_format[0] = '\0';
+    s_wifi_vu_l = 0;
+    s_wifi_vu_r = 0;
+}
+
 void karaoke_ui_render_wifi_audio(const char *title, const char *artist, const char *ip,
                                   const char *format, int16_t peak_l, int16_t peak_r, uint8_t volume)
 {
@@ -876,57 +933,58 @@ void karaoke_ui_render_wifi_audio(const char *title, const char *artist, const c
         return;
     }
 
-    /* 1. Header (y: 0 to 22) */
-    lcd_fill_rect(0, 0, 239, 22, LCD_COLOR_NAVY);
-    char hdr_buf[32];
-    snprintf(hdr_buf, sizeof(hdr_buf), "[WIFI] %s", (ip && strlen(ip) > 0) ? ip : "Offline");
-    lcd_show_string(4, 3, hdr_buf, LCD_COLOR_WHITE, LCD_COLOR_NAVY);
-    char vol_buf[10];
-    snprintf(vol_buf, sizeof(vol_buf), "V:%u%%", (unsigned)volume);
-    lcd_show_string(190, 3, vol_buf, LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+    if (s_wifi_redraw) {
+        s_wifi_redraw = false;
+        wifi_draw_frame();
+    }
 
-    /* 2. Track Title (y: 35) & Artist (y: 58) */
-    char t_buf[30];
-    pad_string(t_buf, (title && strlen(title) > 0) ? title : "Waiting for audio...", 26);
-    lcd_show_string(8, 35, t_buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    char buf[32];
+    char line[28];
 
-    char a_buf[30];
-    pad_string(a_buf, (artist && strlen(artist) > 0) ? artist : "Cast from phone", 26);
-    lcd_show_string(8, 58, a_buf, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    snprintf(line, sizeof(line), "[WIFI] %s", (ip && ip[0]) ? ip : "Offline");
+    pad_string(buf, line, 24);
+    if (strcmp(buf, s_wifi_hdr) != 0) {
+        memcpy(s_wifi_hdr, buf, sizeof(s_wifi_hdr));
+        lcd_show_string(4, 3, buf, LCD_COLOR_WHITE, LCD_COLOR_NAVY);
+    }
 
-    /* 3. Stream Format Info Box (y: 86 to 110) */
-    lcd_fill_rect(8, 86, 231, 110, 0x18E3);
-    lcd_draw_rect(8, 86, 231, 110, LCD_COLOR_DARKCYAN);
-    char fmt_buf[30];
-    snprintf(fmt_buf, sizeof(fmt_buf), "Stream: %s", (format && strlen(format) > 0) ? format : "PCM 16-bit 44.1k");
-    lcd_show_string(14, 91, fmt_buf, LCD_COLOR_GREEN, 0x18E3);
+    snprintf(line, sizeof(line), "V:%u%%", (unsigned)volume);
+    pad_string(buf, line, 7);
+    if (strcmp(buf, s_wifi_vol) != 0) {
+        memcpy(s_wifi_vol, buf, sizeof(s_wifi_vol));
+        lcd_show_string(190, 3, buf, LCD_COLOR_YELLOW, LCD_COLOR_NAVY);
+    }
 
-    /* 4. Center Audio Reactive Indicator (y: 122 to 142) */
-    lcd_draw_line(8, 118, 231, 118, LCD_COLOR_DARKGREY);
-    lcd_show_string(14, 126, "Wireless Audio Streaming", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
-    lcd_draw_line(8, 148, 231, 148, LCD_COLOR_DARKGREY);
+    pad_string(buf, (title && title[0]) ? title : "Waiting for audio...", 27);
+    if (strcmp(buf, s_wifi_title) != 0) {
+        memcpy(s_wifi_title, buf, sizeof(s_wifi_title));
+        lcd_show_string(8, 35, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    }
 
-    /* 5. Stereo VU Meters (y: 160 to 184) */
-    lcd_show_string(12, 160, "L:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
-    int vu_l = (peak_l * 180) / 32767;
-    if (vu_l > 180) vu_l = 180;
-    if (vu_l < 0) vu_l = 0;
-    uint16_t col_l = (vu_l > 150) ? LCD_COLOR_RED : ((vu_l > 110) ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN);
-    if (vu_l > 0) lcd_fill_rect(34, 162, 34 + vu_l, 170, col_l);
-    if (vu_l < 180) lcd_fill_rect(34 + vu_l + 1, 162, 214, 170, LCD_COLOR_DARKGREY);
+    pad_string(buf, (artist && artist[0]) ? artist : "Cast from phone", 27);
+    if (strcmp(buf, s_wifi_artist) != 0) {
+        memcpy(s_wifi_artist, buf, sizeof(s_wifi_artist));
+        lcd_show_string(8, 58, buf, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    }
 
-    lcd_show_string(12, 176, "R:", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
-    int vu_r = (peak_r * 180) / 32767;
-    if (vu_r > 180) vu_r = 180;
-    if (vu_r < 0) vu_r = 0;
-    uint16_t col_r = (vu_r > 150) ? LCD_COLOR_RED : ((vu_r > 110) ? LCD_COLOR_YELLOW : LCD_COLOR_GREEN);
-    if (vu_r > 0) lcd_fill_rect(34, 178, 34 + vu_r, 186, col_r);
-    if (vu_r < 180) lcd_fill_rect(34 + vu_r + 1, 178, 214, 186, LCD_COLOR_DARKGREY);
+    snprintf(line, sizeof(line), "Stream: %s", (format && format[0]) ? format : "PCM 16-bit 44.1k");
+    pad_string(buf, line, 27);
+    if (strcmp(buf, s_wifi_format) != 0) {
+        memcpy(s_wifi_format, buf, sizeof(s_wifi_format));
+        lcd_show_string(14, 91, buf, LCD_COLOR_GREEN, 0x18E3);
+    }
 
-    /* 6. Footer (y: 204 to 239) */
-    lcd_fill_rect(0, 204, 239, 239, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 208, "UP+DN: Play/Pause  L/R: Vol", LCD_COLOR_WHITE, LCD_COLOR_DARKGREY);
-    lcd_show_string(8, 224, "HOLD UP+DN: Exit to Karaoke", LCD_COLOR_YELLOW, LCD_COLOR_DARKGREY);
+    /* Fast attack and slow release keep the bars from flickering on every audio block. */
+    int vu_l = (peak_l * WIFI_VU_WIDTH) / 32767;
+    int vu_r = (peak_r * WIFI_VU_WIDTH) / 32767;
+    vu_l = vu_l > WIFI_VU_WIDTH ? WIFI_VU_WIDTH : (vu_l < 0 ? 0 : vu_l);
+    vu_r = vu_r > WIFI_VU_WIDTH ? WIFI_VU_WIDTH : (vu_r < 0 ? 0 : vu_r);
+    if (vu_l < s_wifi_vu_l - 12) vu_l = s_wifi_vu_l - 12;
+    if (vu_r < s_wifi_vu_r - 12) vu_r = s_wifi_vu_r - 12;
+    wifi_draw_vu(WIFI_VU_L_Y0, s_wifi_vu_l, vu_l);
+    wifi_draw_vu(WIFI_VU_R_Y0, s_wifi_vu_r, vu_r);
+    s_wifi_vu_l = vu_l;
+    s_wifi_vu_r = vu_r;
 
     k_mutex_unlock(&s_ui_lcd_mutex);
 }

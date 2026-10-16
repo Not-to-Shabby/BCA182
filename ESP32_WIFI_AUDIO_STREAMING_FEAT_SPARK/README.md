@@ -26,15 +26,18 @@ This standalone firmware enables the **Espressif ESP32-S3** running **Zephyr RTO
 
 ---
 
-## 2. Hardware Wiring
+## 2. Hardware Wiring (ESP32-S3 Super Mini)
 
-Connect the ESP32-S3 development board to the RT-Spark's **40-Pin Header (`P2`)**:
+Connect the **ESP32-S3 Super Mini** side header pins directly to the RT-Spark's **40-Pin Header (`P2`)**:
 
-| ESP32-S3 Pin | Function | RT-Spark Board Pin | Header `P2` Pin |
-| :--- | :--- | :--- | :---: |
-| **`GPIO 17`** | UART1 TX (Audio PCM + Metadata) | **`PA3`** (`USART2_RX`) | **Pin 10** |
-| **`GPIO 18`** | UART1 RX (Button Playback Controls) | **`PA2`** (`USART2_TX`) | **Pin 8** |
-| **`GND`** | Common Ground | **`GND`** | **Pin 4, 6, or 9** |
+| ESP32-S3 Super Mini Pin | Header Location | Function | RT-Spark Board Pin | Header `P2` Pin |
+| :--- | :--- | :--- | :--- | :---: |
+| **`TX` (GPIO 43)** | Right Header | UART1 TX (Audio PCM + Metadata) | **`PA3`** (`USART2_RX`) | **Pin 10** |
+| **`RX` (GPIO 44)** | Right Header | UART1 RX (Button Playback Controls) | **`PA2`** (`USART2_TX`) | **Pin 8** |
+| **`GND`** | Left Header | Common Ground | **`GND`** | **Pin 4, 6, or 9** |
+| **`5V` (VBUS)** | Left Header | Board Power (Powers the Super Mini) | **`+5V_SYS`** | **Pin 2** |
+
+*Note: You do NOT need to solder to the tiny pads on the underside of the Super Mini! The pins labeled `TX` and `RX` on the outer breadboard headers are `GPIO 43` and `GPIO 44`, which connect directly with female-to-female jumper wires.*
 
 ---
 

@@ -1194,6 +1194,9 @@ extern "C" bool audio_producer_acquire(const char *name)
     s_stop_req = false;
     s_flush = true;
     s_eof = false;
+    s_sink.reset(44100);
+    s_sink_rate = 44100;
+    s_meta_sent = false;
     s_title = "AirPlay Audio";
     s_artist = "Apple Device";
     set_state(TS_PLAYING);
@@ -1236,42 +1239,11 @@ extern "C" void airplay_notify_metadata(const char *title, const char *artist, c
 
 extern "C" size_t audio_play_pcm(const int16_t *pcm, size_t frames)
 {
-    if (pcm == nullptr || frames == 0) return 0;
+    if (pcm == nullptr || frames == 0 || s_stop_req) return 0;
     if (s_ring == nullptr) {
         s_ring = (uint8_t *)malloc(RING_BYTES);
     }
-
-    const uint8_t *raw = (const uint8_t *)pcm;
-    size_t total_bytes = frames * 4U; // 2 channels * 2 bytes/sample
-    size_t written = 0;
-
-    while (written < total_bytes && !s_stop_req) {
-        while (s_flush && !s_stop_req) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
-        uint32_t fill = ring_fill();
-        if (fill >= RING_BYTES - AUDIO_CHUNK_BYTES * 2) {
-            vTaskDelay(pdMS_TO_TICKS(2));
-            continue;
-        }
-
-        uint32_t space = RING_BYTES - 1U - fill;
-        uint32_t to_write = (uint32_t)(total_bytes - written);
-        if (to_write > space) to_write = space;
-        if (to_write > AUDIO_CHUNK_BYTES) to_write = AUDIO_CHUNK_BYTES;
-
-        uint32_t head = s_ring_head;
-        uint32_t first = RING_BYTES - head;
-        if (first > to_write) first = to_write;
-
-        memcpy(s_ring + head, raw + written, first);
-        if (to_write > first) {
-            memcpy(s_ring, raw + written + first, to_write - first);
-        }
-        s_ring_head = (s_ring_head + to_write) & RING_MASK;
-        written += to_write;
-    }
-
+    sink_decoded(pcm, frames * 2U, 2, 44100, "AirPlay");
     return frames;
 }
 

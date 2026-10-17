@@ -251,29 +251,37 @@ static void maybe_request_resend(void) {
 static void handle_audio(void) {
     struct sockaddr_in src;
     socklen_t sl = sizeof src;
-    int n = recvfrom(s_audio_fd, s_rx, sizeof s_rx, 0, (struct sockaddr *)&src, &sl);
-    if (n <= 0) return;
+    int packets_processed = 0;
 
-    rtp_header_t h;
-    if (rtp_parse(s_rx, (size_t)n, &h) != 0) return;
-    if (h.payload_type != RTP_PT_AUDIO) return;
+    while (packets_processed < 16) {
+        int n = recvfrom(s_audio_fd, s_rx, sizeof s_rx, MSG_DONTWAIT, (struct sockaddr *)&src, &sl);
+        if (n <= 0) break;
 
-    // Anchor the reorder buffer on the first audio packet (independent of the peer:
-    // the peer is normally seeded from the RTSP sender at RECORD).
-    if (!s_reorder.started) {
-        rtp_reorder_anchor(&s_reorder, h.seq);   // authoritative anchor
-        ESP_LOGI(TAG, "anchor seq=%u ctrl=%d timing=%d",
-                 h.seq, s_client_control_port, s_client_timing_port);
+        rtp_header_t h;
+        if (rtp_parse(s_rx, (size_t)n, &h) != 0) continue;
+        if (h.payload_type != RTP_PT_AUDIO) continue;
+
+        // Anchor the reorder buffer on the first audio packet (independent of the peer:
+        // the peer is normally seeded from the RTSP sender at RECORD).
+        if (!s_reorder.started) {
+            rtp_reorder_anchor(&s_reorder, h.seq);   // authoritative anchor
+            ESP_LOGI(TAG, "anchor seq=%u ctrl=%d timing=%d",
+                     h.seq, s_client_control_port, s_client_timing_port);
+        }
+        // Fallback only: if RECORD had no sender IP, learn the peer from the audio source.
+        if (!s_peer_known) {
+            s_peer = src;
+            s_peer_known = true;
+        }
+
+        insert_audio(h.seq, h.payload, h.payload_len);
+        packets_processed++;
     }
-    // Fallback only: if RECORD had no sender IP, learn the peer from the audio source.
-    if (!s_peer_known) {
-        s_peer = src;
-        s_peer_known = true;
-    }
 
-    insert_audio(h.seq, h.payload, h.payload_len);
-    drain_decode();
-    maybe_request_resend();
+    if (packets_processed > 0) {
+        drain_decode();
+        maybe_request_resend();
+    }
 }
 
 // control_fd ready: inject 0xd6 resend responses by seq; ignore sync (0x54) and any
@@ -463,12 +471,12 @@ int raop_rtp_start(raop_session_t *s) {
     s_slots = (rtp_reorder_slot_t *)heap_caps_malloc((size_t)window * sizeof(rtp_reorder_slot_t),
                                MALLOC_CAP_SPIRAM);
     if (s_slots == NULL) {
-        // Fallback: 32 slots (~49 KB) fits easily in internal RAM
-        window = 32;
-        hold = 24;
+        // Fallback: 40 slots (~61 KB) fits in internal RAM; hold=3 (24 ms) prevents huge silence stalls
+        window = 40;
+        hold = 3;
         s_slots = (rtp_reorder_slot_t *)malloc((size_t)window * sizeof(rtp_reorder_slot_t));
         if (s_slots != NULL) {
-            ESP_LOGI(TAG, "reorder buffer using internal RAM (%u slots)", (unsigned)window);
+            ESP_LOGI(TAG, "reorder buffer using internal RAM (%u slots, hold=%u)", (unsigned)window, (unsigned)hold);
         }
     } else {
         ESP_LOGI(TAG, "reorder buffer allocated in PSRAM (%u slots)", (unsigned)window);

@@ -20,7 +20,12 @@ rtp_ins_t rtp_reorder_insert(rtp_reorder_t *rb, uint16_t seq,
     if (len == 0 || len > RTP_REORDER_MAX_PKT) return RTP_INS_BADLEN;
     if (!rb->started){ rb->next = rb->head = seq; rb->started = true; }
     if (seq_lt(seq, rb->next)) return RTP_INS_TOO_OLD;      // already past it
-    if (seq_diff(seq, rb->next) >= rb->window) return RTP_INS_TOO_NEW;
+    if (seq_diff(seq, rb->next) >= rb->window) {
+        // Fast-forward cursor on large gap / burst overflow instead of dropping future packets
+        rb->next = seq;
+        for (uint16_t i = 0; i < rb->window; i++) rb->slots[i].valid = false;
+        rb->count = 0;
+    }
     rtp_reorder_slot_t *sl = &rb->slots[seq % rb->window];
     if (sl->valid && sl->seq == seq) return RTP_INS_DUP;    // retransmit we already hold
     if (!sl->valid) rb->count++;

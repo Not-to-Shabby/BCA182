@@ -1180,3 +1180,92 @@ void upnp_loop(void)
         ssdp_send_alive();
     }
 }
+
+/* ---------------------------------------------------------------- AirPlay Audio & Volume Bridge */
+
+extern "C" bool audio_producer_acquire(const char *name)
+{
+    (void)name;
+    s_stop_req = false;
+    s_flush = true;
+    s_eof = false;
+    s_title = "AirPlay Audio";
+    s_artist = "Apple Device";
+    set_state(TS_PLAYING);
+    push_meta("AirPlay ALAC");
+    return true;
+}
+
+extern "C" void audio_producer_release(void)
+{
+    s_flush = true;
+    set_state(TS_STOPPED);
+}
+
+extern "C" void audio_set_volume(float db)
+{
+    if (db <= -30.0f) {
+        s_volume = 0;
+        s_mute = (db <= -140.0f);
+    } else if (db >= 0.0f) {
+        s_volume = 100;
+        s_mute = false;
+    } else {
+        s_volume = (uint8_t)((db + 30.0f) * (100.0f / 30.0f) + 0.5f);
+        s_mute = false;
+    }
+    spark_set_volume(s_volume);
+}
+
+extern "C" void airplay_notify_metadata(const char *title, const char *artist, const char *album)
+{
+    if (title && title[0]) s_title = title;
+    if (artist && artist[0]) s_artist = artist;
+    wifi_track_meta_t m = {};
+    strncpy(m.title, s_title.c_str(), sizeof(m.title) - 1);
+    strncpy(m.artist, s_artist.c_str(), sizeof(m.artist) - 1);
+    strncpy(m.album, (album && album[0]) ? album : "AirPlay Stream", sizeof(m.album) - 1);
+    strncpy(m.format, "AirPlay ALAC", sizeof(m.format) - 1);
+    send_spark_packet(WIFI_MSG_TRACK_META, (const uint8_t *)&m, sizeof(m));
+}
+
+extern "C" size_t audio_play_pcm(const int16_t *pcm, size_t frames)
+{
+    if (pcm == nullptr || frames == 0) return 0;
+    if (s_ring == nullptr) {
+        s_ring = (uint8_t *)malloc(RING_BYTES);
+    }
+
+    const uint8_t *raw = (const uint8_t *)pcm;
+    size_t total_bytes = frames * 4U; // 2 channels * 2 bytes/sample
+    size_t written = 0;
+
+    while (written < total_bytes && !s_stop_req) {
+        while (s_flush && !s_stop_req) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        uint32_t fill = ring_fill();
+        if (fill >= RING_BYTES - AUDIO_CHUNK_BYTES * 2) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+
+        uint32_t space = RING_BYTES - 1U - fill;
+        uint32_t to_write = (uint32_t)(total_bytes - written);
+        if (to_write > space) to_write = space;
+        if (to_write > AUDIO_CHUNK_BYTES) to_write = AUDIO_CHUNK_BYTES;
+
+        uint32_t head = s_ring_head;
+        uint32_t first = RING_BYTES - head;
+        if (first > to_write) first = to_write;
+
+        memcpy(s_ring + head, raw + written, first);
+        if (to_write > first) {
+            memcpy(s_ring, raw + written + first, to_write - first);
+        }
+        s_ring_head = (s_ring_head + to_write) & RING_MASK;
+        written += to_write;
+    }
+
+    return frames;
+}

@@ -25,6 +25,7 @@
 #include <Preferences.h>
 #include "wifi_protocol.h"
 #include "upnp_renderer.h"
+#include "airplay_bridge.h"
 
 #define PIN_UART_TX             43  /* Header pin labeled "TX" */
 #define PIN_UART_RX             44  /* Header pin labeled "RX" */
@@ -427,6 +428,9 @@ void setup()
     /* Start UPnP/DLNA MediaRenderer (SSDP + SOAP control on port 8080) */
     upnp_begin();
 
+    /* Start Apple AirPlay / RAOP Receiver (mDNS + RTSP control on port 5000) */
+    airplay_begin();
+
     /* Spawn High-Priority Dedicated Network Audio Task on Core 0 */
     xTaskCreatePinnedToCore(audio_network_task, "audio_net", 4096, nullptr, 5, nullptr, 0);
 }
@@ -446,6 +450,7 @@ void loop()
         s_sta_connect_requested = false;
         connect_station(s_target_ssid.c_str(), s_target_pass.c_str());
         upnp_begin();
+        airplay_begin();
     }
 
     upnp_loop();

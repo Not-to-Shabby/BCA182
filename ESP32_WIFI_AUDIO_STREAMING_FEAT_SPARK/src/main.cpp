@@ -139,7 +139,8 @@ static void start_access_point(void)
     snprintf(s_telem.ip_addr, sizeof(s_telem.ip_addr), "%s", ip.toString().c_str());
     s_telem.rssi_dbm = 0;
 
-    Serial.printf("[WiFi] AP Started! IP Address: %s\n", s_telem.ip_addr);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    Serial.printf("[WiFi] AP Started! IP Address: %s (TX Power: 19.5 dBm)\n", s_telem.ip_addr);
     setup_captive_portal();
 }
 
@@ -169,8 +170,8 @@ static void connect_station(const char *ssid, const char *pass)
         Serial.printf("[WiFi] Connected! IP Address: %s (RSSI %d dBm)\n", s_telem.ip_addr, s_telem.rssi_dbm);
         set_led_color(0, 40, 0); /* Solid Green: Connected to Home Wi-Fi! */
 
-        /* Thermal optimization: dial back RF TX power from 20dBm to 15dBm and allow modem light sleep */
-        WiFi.setTxPower(WIFI_POWER_15dBm);
+        /* Maximize RF output to 19.5 dBm for the small ceramic antenna while keeping modem sleep */
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
         WiFi.setSleep(WIFI_PS_MIN_MODEM);
 
         /* Save successful credentials to NVS */

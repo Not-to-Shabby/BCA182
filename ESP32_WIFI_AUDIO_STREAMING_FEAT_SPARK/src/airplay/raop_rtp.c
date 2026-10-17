@@ -471,9 +471,9 @@ int raop_rtp_start(raop_session_t *s) {
     s_slots = (rtp_reorder_slot_t *)heap_caps_malloc((size_t)window * sizeof(rtp_reorder_slot_t),
                                MALLOC_CAP_SPIRAM);
     if (s_slots == NULL) {
-        // Fallback: 40 slots (~61 KB) fits in internal RAM; hold=3 (24 ms) prevents huge silence stalls
-        window = 40;
-        hold = 3;
+        // Fallback: 16 slots (~24 KB) fits safely in internal RAM without exhausting heap
+        window = 16;
+        hold = 2;
         s_slots = (rtp_reorder_slot_t *)malloc((size_t)window * sizeof(rtp_reorder_slot_t));
         if (s_slots != NULL) {
             ESP_LOGI(TAG, "reorder buffer using internal RAM (%u slots, hold=%u)", (unsigned)window, (unsigned)hold);
@@ -525,11 +525,7 @@ int raop_rtp_start(raop_session_t *s) {
     }
     s_run  = true;
     s_done = false;
-    // 16 KB: per packet this task runs PSA AES-128-CBC decrypt + a full ALAC frame
-    // decode (Hammerton decoder uses sizable temp buffers), which overflows a
-    // smaller stack — same failure class as the RTSP-task RSA overflow. Sized to
-    // match the RTSP task.
-    if (xTaskCreatePinnedToCore(rtp_task, "raop_rtp", 16384, NULL, 6,
+    if (xTaskCreatePinnedToCore(rtp_task, "raop_rtp", 10240, NULL, 6,
                                 &s_task, audio_producer_core()) != pdPASS) {
         ESP_LOGE(TAG, "xTaskCreate(raop_rtp) failed");
         audio_producer_release();

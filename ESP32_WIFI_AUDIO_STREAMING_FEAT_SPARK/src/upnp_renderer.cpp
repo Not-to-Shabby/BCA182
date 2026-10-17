@@ -49,10 +49,10 @@ static volatile uint32_t s_dur_ms = 0;
 static TaskHandle_t s_task = nullptr;
 static TaskHandle_t s_send_task = nullptr;
 
-/* Jitter buffer between the network reader and the paced sender (about 370 ms of 44.1 kHz stereo). */
-#define RING_BYTES       (64U * 1024U)
+/* Jitter buffer between the network reader and the paced sender (about 185 ms of 44.1 kHz stereo). */
+#define RING_BYTES       (32U * 1024U)
 #define RING_MASK        (RING_BYTES - 1U)
-#define PREBUFFER_BYTES  (24U * 1024U)
+#define PREBUFFER_BYTES  (12U * 1024U)
 static uint8_t *s_ring = nullptr;
 static volatile uint32_t s_ring_head = 0;
 static volatile uint32_t s_ring_tail = 0;

@@ -26,12 +26,14 @@ void raop_session_reset(raop_session_t *s) {
 }
 
 // Bind one UDP socket to an ephemeral port; return the fd and its port (host order).
-static int bind_one(uint16_t *out_port) {
+static int bind_one(uint16_t *out_port, bool is_audio) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return -1;
 
-    int rcvbuf = 32768;
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    if (is_audio) {
+        int rcvbuf = 12288; // 12 KB holds ~8 packets without wasting heap
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -55,9 +57,9 @@ static int bind_one(uint16_t *out_port) {
 }
 
 int raop_session_bind_udp(raop_session_t *s) {
-    s->audio_fd   = bind_one(&s->audio_port);
-    s->control_fd = bind_one(&s->control_port);
-    s->timing_fd  = bind_one(&s->timing_port);
+    s->audio_fd   = bind_one(&s->audio_port, true);
+    s->control_fd = bind_one(&s->control_port, false);
+    s->timing_fd  = bind_one(&s->timing_port, false);
     if (s->audio_fd < 0 || s->control_fd < 0 || s->timing_fd < 0) {
         ESP_LOGE(TAG, "UDP bind failed (audio=%d control=%d timing=%d)",
                  s->audio_fd, s->control_fd, s->timing_fd);

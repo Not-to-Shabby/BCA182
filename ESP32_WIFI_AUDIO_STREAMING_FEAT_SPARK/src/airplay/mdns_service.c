@@ -75,5 +75,20 @@ esp_err_t mdns_advertise_raop(const char *hostname, const char *instance_name,
                  friendly_name, hostname, port, dev_id);
     }
 
+    // 3. Build and advertise _audiocast._tcp service on port 12889 for AriaCast
+    mdns_txt_item_t audiocast_txt[] = {
+        {(char *)"version", (char *)"1.0"},
+        {(char *)"samplerate", (char *)"48000"},
+        {(char *)"channels", (char *)"2"},
+        {(char *)"codecs", (char *)"pcm"},
+    };
+    err = mdns_service_add(friendly_name, "_audiocast", "_tcp", 12889, audiocast_txt,
+                           sizeof(audiocast_txt) / sizeof(audiocast_txt[0]));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "service_add _audiocast._tcp: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "advertising _audiocast._tcp '%s' on %s.local:12889", friendly_name, hostname);
+    }
+
     return ESP_OK;
 }

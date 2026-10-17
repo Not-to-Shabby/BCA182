@@ -1269,3 +1269,53 @@ extern "C" size_t audio_play_pcm(const int16_t *pcm, size_t frames)
 
     return frames;
 }
+
+/* ---------------------------------------------------------------- AriaCast Audio & Metadata Bridge */
+
+extern "C" void ariacast_start_stream(void)
+{
+    s_stop_req = false;
+    s_flush = true;
+    s_eof = false;
+    s_sink.reset(48000);
+    s_sink_rate = 48000;
+    s_meta_sent = false;
+    s_title = "AriaCast Audio";
+    s_artist = "Android Device";
+    set_state(TS_PLAYING);
+    push_meta("AriaCast PCM");
+}
+
+extern "C" void ariacast_stop_stream(void)
+{
+    s_flush = true;
+    set_state(TS_STOPPED);
+}
+
+extern "C" void ariacast_set_metadata(const char *title, const char *artist, const char *album)
+{
+    if (title && title[0]) s_title = title;
+    if (artist && artist[0]) s_artist = artist;
+    wifi_track_meta_t m = {};
+    strncpy(m.title, s_title.c_str(), sizeof(m.title) - 1);
+    strncpy(m.artist, s_artist.c_str(), sizeof(m.artist) - 1);
+    strncpy(m.album, (album && album[0]) ? album : "AriaCast Stream", sizeof(m.album) - 1);
+    strncpy(m.format, "AriaCast PCM", sizeof(m.format) - 1);
+    send_spark_packet(WIFI_MSG_TRACK_META, (const uint8_t *)&m, sizeof(m));
+}
+
+extern "C" void ariacast_set_volume(uint8_t volume)
+{
+    s_volume = volume > 100 ? 100 : volume;
+    s_mute = (volume == 0);
+    spark_set_volume(s_volume);
+}
+
+extern "C" void ariacast_feed_pcm(const int16_t *pcm, size_t samples, int ch, int rate)
+{
+    if (s_ring == nullptr) {
+        s_ring = (uint8_t *)malloc(RING_BYTES);
+    }
+    sink_decoded(pcm, samples, ch, rate, "AriaCast");
+}
+

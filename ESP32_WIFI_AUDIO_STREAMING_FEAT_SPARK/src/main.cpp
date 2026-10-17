@@ -26,6 +26,7 @@
 #include "wifi_protocol.h"
 #include "upnp_renderer.h"
 #include "airplay_bridge.h"
+#include "ariacast_server.h"
 
 #define PIN_UART_TX             43  /* Header pin labeled "TX" */
 #define PIN_UART_RX             44  /* Header pin labeled "RX" */
@@ -345,6 +346,13 @@ static void process_spark_input(void)
                     uint8_t cmd = payload[0];
                     Serial.printf("[Control] Button Command from RT-Spark: 0x%02X\n", cmd);
                     upnp_button(cmd);
+                    if (cmd == BTN_CMD_PLAY_PAUSE) {
+                        ariacast_server_button_action("play");
+                    } else if (cmd == BTN_CMD_NEXT) {
+                        ariacast_server_button_action("next");
+                    } else if (cmd == BTN_CMD_PREV) {
+                        ariacast_server_button_action("previous");
+                    }
                 } else if (msg_type == WIFI_CMD_SET_WIFI && msg_len >= 1) {
                     if (payload[0] == 1) {
                         start_access_point();
@@ -431,6 +439,9 @@ void setup()
     /* Start Apple AirPlay / RAOP Receiver (mDNS + RTSP control on port 5000) */
     airplay_begin();
 
+    /* Start AriaCast Native Receiver (UDP discovery on 12888 + WebSocket on 12889) */
+    ariacast_server_begin();
+
     /* Spawn High-Priority Dedicated Network Audio Task on Core 0 */
     xTaskCreatePinnedToCore(audio_network_task, "audio_net", 4096, nullptr, 5, nullptr, 0);
 }
@@ -451,6 +462,7 @@ void loop()
         connect_station(s_target_ssid.c_str(), s_target_pass.c_str());
         upnp_begin();
         airplay_begin();
+        ariacast_server_begin();
     }
 
     upnp_loop();

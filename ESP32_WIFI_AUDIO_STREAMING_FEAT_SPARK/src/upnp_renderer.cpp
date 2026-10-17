@@ -1168,7 +1168,10 @@ void upnp_begin(void)
 {
     WiFi.setSleep(WIFI_PS_MIN_MODEM);
     if (s_ring == nullptr) {
-        s_ring = (uint8_t *)malloc(RING_BYTES);
+        s_ring = (uint8_t *)heap_caps_malloc(RING_BYTES, MALLOC_CAP_SPIRAM);
+        if (s_ring == nullptr) {
+            s_ring = (uint8_t *)malloc(RING_BYTES);
+        }
     }
     if (s_task == nullptr) {
         xTaskCreatePinnedToCore(stream_task, "upnp_stream", 14336, nullptr, 4, &s_task, 0);

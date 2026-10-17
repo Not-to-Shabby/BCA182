@@ -489,7 +489,9 @@ void loop()
         if (millis() - last_temp_ms >= 5000) {
             last_temp_ms = millis();
             float chip_temp = temperatureRead();
-            Serial.printf("[System] Chip Temp: %.1f °C, Free Heap: %u bytes\n", chip_temp, (unsigned)esp_get_free_heap_size());
+            size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            Serial.printf("[System] Chip Temp: %.1f °C, Free Heap: %u bytes, PSRAM: %u bytes\n",
+                          chip_temp, (unsigned)esp_get_free_heap_size(), (unsigned)psram_free);
         }
     }
 

@@ -37,19 +37,7 @@ esp_err_t mdns_advertise_raop(const char *hostname, const char *instance_name,
                  instance_name, hostname, port, (unsigned) n);
     }
 
-    // 2. Build and advertise _airplay._tcp service on port 5000 for Apple Music / iTunes
-    // Format MAC with colons: "9C:13:9E:F2:3C:9C" from instance_name "9C139EF23C9C@..."
-    char dev_id[18] = "00:11:22:33:44:55";
-    if (strlen(instance_name) >= 12) {
-        snprintf(dev_id, sizeof(dev_id), "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c",
-                 instance_name[0], instance_name[1],
-                 instance_name[2], instance_name[3],
-                 instance_name[4], instance_name[5],
-                 instance_name[6], instance_name[7],
-                 instance_name[8], instance_name[9],
-                 instance_name[10], instance_name[11]);
-    }
-
+    // 2. Build and advertise _audiocast._tcp service on port 12889 for AriaCast
     const char *friendly_name = strchr(instance_name, '@');
     if (friendly_name != NULL) {
         friendly_name++; // skip '@'
@@ -57,25 +45,6 @@ esp_err_t mdns_advertise_raop(const char *hostname, const char *instance_name,
         friendly_name = instance_name;
     }
 
-    mdns_txt_item_t airplay_txt[] = {
-        {(char *)"deviceid", dev_id},
-        {(char *)"model", (char *)"AirPort4,107"},
-        {(char *)"features", (char *)"0x7"},
-        {(char *)"flags", (char *)"0x4"},
-        {(char *)"srcvers", (char *)"105.1"},
-        {(char *)"acl", (char *)"0"},
-    };
-
-    err = mdns_service_add(friendly_name, "_airplay", "_tcp", port, airplay_txt,
-                           sizeof(airplay_txt) / sizeof(airplay_txt[0]));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "service_add _airplay._tcp: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "advertising _airplay._tcp '%s' on %s.local:%u (deviceid=%s)",
-                 friendly_name, hostname, port, dev_id);
-    }
-
-    // 3. Build and advertise _audiocast._tcp service on port 12889 for AriaCast
     mdns_txt_item_t audiocast_txt[] = {
         {(char *)"version", (char *)"1.0"},
         {(char *)"samplerate", (char *)"48000"},

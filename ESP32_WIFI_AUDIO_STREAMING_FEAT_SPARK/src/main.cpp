@@ -169,6 +169,10 @@ static void connect_station(const char *ssid, const char *pass)
         Serial.printf("[WiFi] Connected! IP Address: %s (RSSI %d dBm)\n", s_telem.ip_addr, s_telem.rssi_dbm);
         set_led_color(0, 40, 0); /* Solid Green: Connected to Home Wi-Fi! */
 
+        /* Thermal optimization: dial back RF TX power from 20dBm to 15dBm and allow modem light sleep */
+        WiFi.setTxPower(WIFI_POWER_15dBm);
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+
         /* Save successful credentials to NVS */
         s_prefs.putString("ssid", ssid);
         s_prefs.putString("pass", pass);
@@ -287,7 +291,7 @@ static void audio_network_task(void *param)
                 }
             }
         } else {
-            vTaskDelay(pdMS_TO_TICKS(1));
+            vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
 }
@@ -478,6 +482,14 @@ void loop()
 
         /* Forward telemetry to RT-Spark ST7789 screen */
         send_spark_packet(WIFI_MSG_TELEMETRY, (const uint8_t *)&s_telem, sizeof(s_telem));
+
+        /* Thermal & health monitoring every 5 seconds */
+        static uint32_t last_temp_ms = 0;
+        if (millis() - last_temp_ms >= 5000) {
+            last_temp_ms = millis();
+            float chip_temp = temperatureRead();
+            Serial.printf("[System] Chip Temp: %.1f °C, Free Heap: %u bytes\n", chip_temp, (unsigned)esp_get_free_heap_size());
+        }
     }
 
     delay(5);

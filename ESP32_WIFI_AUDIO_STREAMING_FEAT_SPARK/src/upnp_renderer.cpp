@@ -876,6 +876,7 @@ static void sender_task(void *param)
         }
         if (fill < AUDIO_CHUNK_BYTES) {
             primed = false;
+            delay(2);
             continue;
         }
 
@@ -892,8 +893,12 @@ static void sender_task(void *param)
         int64_t wait = t_next - esp_timer_get_time();
         if (wait > 1000) {
             delay((uint32_t)(wait / 1000));
+        } else if (wait > 0) {
+            delay(1);
         } else if (wait < -50000) {
             t_next = esp_timer_get_time();
+        } else {
+            taskYIELD();
         }
     }
 }
@@ -1141,7 +1146,7 @@ static void setup_routes(void)
 
 void upnp_begin(void)
 {
-    WiFi.setSleep(false);
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
     if (s_ring == nullptr) {
         s_ring = (uint8_t *)malloc(RING_BYTES);
     }

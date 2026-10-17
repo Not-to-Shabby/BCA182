@@ -52,7 +52,7 @@
 #include "freertos/task.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
-#include "psa/crypto.h"
+#include "mbedtls/aes.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -83,7 +83,7 @@ static const char *TAG = "raop_rtp";
 
 // ---- module state (single session, spec §8) ------------------------------
 static alac_file           *s_alac        = NULL;
-static mbedtls_svc_key_id_t  s_aes_key;
+static mbedtls_aes_context   s_aes;
 static bool                  s_aes_key_ok  = false;
 static uint8_t               s_iv[16];             // constant session IV (per-packet reset)
 static uint8_t               s_num_channels = 2;
@@ -127,22 +127,21 @@ static uint64_t now_ntp64(void) {
 }
 
 // AES-128-CBC decrypt of `len` (multiple-of-16) ciphertext bytes with a fresh IV
-// per call. Returns 0 and *out_len on success, -1 on any PSA error.
+// per call using hardware-accelerated mbedtls_aes_crypt_cbc.
 static int aes_cbc_decrypt(const uint8_t *in, size_t len, const uint8_t iv[16],
                            uint8_t *out, size_t out_cap, size_t *out_len) {
-    psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
-    size_t o1 = 0, o2 = 0;
-    psa_status_t s;
-    if ((s = psa_cipher_decrypt_setup(&op, s_aes_key, PSA_ALG_CBC_NO_PADDING)) != PSA_SUCCESS) goto fail;
-    if ((s = psa_cipher_set_iv(&op, iv, 16)) != PSA_SUCCESS) goto fail;         // reset IV every packet
-    if ((s = psa_cipher_update(&op, in, len, out, out_cap, &o1)) != PSA_SUCCESS) goto fail;
-    if ((s = psa_cipher_finish(&op, out + o1, out_cap - o1, &o2)) != PSA_SUCCESS) goto fail;
-    *out_len = o1 + o2;
+    if (len > out_cap || !s_aes_key_ok) {
+        return -1;
+    }
+    uint8_t iv_copy[16];
+    memcpy(iv_copy, iv, 16);
+    int rc = mbedtls_aes_crypt_cbc(&s_aes, MBEDTLS_AES_DECRYPT, len, iv_copy, in, out);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "mbedtls_aes_crypt_cbc failed: %d", rc);
+        return -1;
+    }
+    *out_len = len;
     return 0;
-fail:
-    psa_cipher_abort(&op);
-    ESP_LOGW(TAG, "AES-CBC decrypt failed: %d", (int)s);
-    return -1;
 }
 
 // Backpressured feed of decoded PCM (a full ring yields+retries, like the diag
@@ -421,15 +420,10 @@ static int build_decoder(const char *fmtp) {
 }
 
 static int import_aes_key(const uint8_t key[16]) {
-    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
-    psa_set_key_algorithm(&attr, PSA_ALG_CBC_NO_PADDING);
-    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-    psa_set_key_bits(&attr, 128);
-    psa_status_t s = psa_import_key(&attr, key, 16, &s_aes_key);
-    psa_reset_key_attributes(&attr);
-    if (s != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "psa_import_key(AES): %d", (int)s);
+    mbedtls_aes_init(&s_aes);
+    int rc = mbedtls_aes_setkey_dec(&s_aes, key, 128);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "mbedtls_aes_setkey_dec failed: %d", rc);
         return -1;
     }
     s_aes_key_ok = true;
@@ -438,7 +432,7 @@ static int import_aes_key(const uint8_t key[16]) {
 
 static void teardown_crypto_decoder(void) {
     if (s_aes_key_ok) {
-        psa_destroy_key(s_aes_key);
+        mbedtls_aes_free(&s_aes);
         s_aes_key_ok = false;
     }
     if (s_alac) {

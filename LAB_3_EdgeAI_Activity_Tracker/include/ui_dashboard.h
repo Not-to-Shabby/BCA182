@@ -46,6 +46,29 @@ void ui_dashboard_update(
     float ay,
     float az);
 
+/**
+ * @brief Displays the Captive Portal setup screen with AP SSID and URL.
+ */
+void ui_dashboard_show_portal(const char *ap_ssid, const char *url);
+
+/**
+ * @brief Displays the interactive Wi-Fi reset confirmation screen.
+ * 
+ * @param current_ssid Name of the currently configured Wi-Fi network
+ * @param countdown_sec Remaining seconds before auto-cancellation
+ */
+void ui_dashboard_show_reset_confirm(const char *current_ssid, int countdown_sec);
+
+/**
+ * @brief Displays the connecting status notification screen on the ST7789 LCD.
+ * 
+ * @param ssid Name of the Wi-Fi network
+ * @param attempt Current attempt index (1..max_attempts, or 0 to reset state)
+ * @param max_attempts Total allowed attempts (e.g. 3)
+ * @param status_msg Informative status message (e.g. "Associating with AP...")
+ */
+void ui_dashboard_show_connecting(const char *ssid, int attempt, int max_attempts, const char *status_msg);
+
 #ifdef __cplusplus
 }
 #endif

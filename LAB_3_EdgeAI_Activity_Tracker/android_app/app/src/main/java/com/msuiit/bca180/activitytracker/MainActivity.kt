@@ -1,31 +1,26 @@
 package com.msuiit.bca180.activitytracker
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
-import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.google.android.material.card.MaterialCardView
 import java.text.SimpleDateFormat
 import java.util.*
 
 /**
  * ==============================================================================
- * Laboratory Activity 3: Mobile Dashboard Activity
+ * Laboratory Activity 3: Edge AI Mobile Activity Dashboard (Wi-Fi UDP)
  * ==============================================================================
  */
-class MainActivity : AppCompatActivity(), BleManager.BleListener {
+class MainActivity : AppCompatActivity(), UdpReceiver.UdpListener {
 
-    private lateinit var bleManager: BleManager
-    private var isConnected = false
+    private lateinit var udpReceiver: UdpReceiver
 
+    private lateinit var cardConnectionStatus: MaterialCardView
     private lateinit var tvConnectionStatus: TextView
-    private lateinit var btnScan: Button
     private lateinit var tvActivityName: TextView
     private lateinit var tvConfidenceLabel: TextView
     private lateinit var pbConfidence: ProgressBar
@@ -36,37 +31,30 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener {
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     private var lastRecordedActivity: ActivityPacket.ActivityType? = null
-
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.all { it.value }
-        if (allGranted) {
-            bleManager.startScan()
-        } else {
-            Toast.makeText(this, "Bluetooth permissions are required to connect.", Toast.LENGTH_LONG).show()
-        }
-    }
+    private var packetCount = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         initViews()
-        bleManager = BleManager(this, this)
+        udpReceiver = UdpReceiver(this, this)
 
-        btnScan.setOnClickListener {
-            if (isConnected) {
-                bleManager.disconnect()
-            } else {
-                checkPermissionsAndScan()
+        // Tap status badge to restart listener if stopped
+        cardConnectionStatus.setOnClickListener {
+            if (!udpReceiver.isListening()) {
+                udpReceiver.startListening(UdpReceiver.DEFAULT_PORT)
+                Toast.makeText(this, "Re-binding Wi-Fi UDP listener on :8888...", Toast.LENGTH_SHORT).show()
             }
         }
+
+        // Auto-start listening on UDP port 8888 on launch
+        udpReceiver.startListening(UdpReceiver.DEFAULT_PORT)
     }
 
     private fun initViews() {
+        cardConnectionStatus = findViewById(R.id.cardConnectionStatus)
         tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
-        btnScan = findViewById(R.id.btnScan)
         tvActivityName = findViewById(R.id.tvActivityName)
         tvConfidenceLabel = findViewById(R.id.tvConfidenceLabel)
         pbConfidence = findViewById(R.id.pbConfidence)
@@ -76,52 +64,27 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener {
         tvActivityLog = findViewById(R.id.tvActivityLog)
     }
 
-    private fun checkPermissionsAndScan() {
-        val permissions = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-
-        val missing = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (missing.isEmpty()) {
-            bleManager.startScan()
-        } else {
-            requestPermissionLauncher.launch(missing.toTypedArray())
-        }
-    }
-
-    override fun onScanningStateChanged(isScanning: Boolean) {
+    /* -------------------------------------------------------------------------- */
+    /* UdpReceiver Listener Callbacks                                             */
+    /* -------------------------------------------------------------------------- */
+    override fun onListeningStateChanged(isListening: Boolean, port: Int) {
         runOnUiThread {
-            if (isScanning) {
-                btnScan.text = "Stop"
-            } else if (!isConnected) {
-                btnScan.text = getString(R.string.btn_scan)
-            }
-        }
-    }
-
-    override fun onConnectionStateChanged(status: String, isConnected: Boolean) {
-        this.isConnected = isConnected
-        runOnUiThread {
-            tvConnectionStatus.text = status
-            if (isConnected) {
-                btnScan.text = getString(R.string.btn_disconnect)
-                tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.walking_green))
-            } else {
-                btnScan.text = getString(R.string.btn_scan)
+            if (isListening) {
+                tvConnectionStatus.text = "● Listening on :$port"
                 tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+            } else {
+                tvConnectionStatus.text = "○ Offline (Tap to Listen)"
+                tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.running_orange))
             }
         }
     }
 
-    override fun onPacketReceived(packet: ActivityPacket) {
+    override fun onPacketReceived(packet: ActivityPacket, senderIp: String) {
         runOnUiThread {
+            packetCount++
+            tvConnectionStatus.text = "● Live ($senderIp)"
+            tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.walking_green))
+
             val actStr = when (packet.activityType) {
                 ActivityPacket.ActivityType.WALKING -> getString(R.string.act_walking)
                 ActivityPacket.ActivityType.RUNNING -> getString(R.string.act_running)
@@ -145,31 +108,40 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener {
             pbConfidence.progress = packet.confidence
 
             tvStepCount.text = String.format("%,d", packet.stepCount)
-            tvCadence.text = "${packet.cadenceSpm} SPM"
-            tvAccelMag.text = String.format("%.2f g", packet.accelMagG)
+            tvCadence.text = "${packet.cadenceSpm}"
+            tvAccelMag.text = String.format("%.2fg", packet.accelMagG)
 
-            // Append state transition or periodic log
             val timeStr = timeFormat.format(Date())
             val logLine = "[$timeStr] $actStr (${packet.confidence}%) | ${packet.cadenceSpm} SPM | ${packet.stepCount} steps | ${String.format("%.2f", packet.accelMagG)}g\n"
-            
+
             if (lastRecordedActivity != packet.activityType) {
-                val transitionHeader = "----------------------------------------\n>>> ACTIVITY CHANGE: $actStr\n----------------------------------------\n"
+                val transitionHeader = "\n----------------------------------------\n>>> ACTIVITY CHANGE: $actStr\n----------------------------------------\n"
                 tvActivityLog.text = transitionHeader + logLine + tvActivityLog.text
                 lastRecordedActivity = packet.activityType
-            } else {
+            } else if (packetCount % 5 == 0) {
+                // Log periodically every 5 packets
                 tvActivityLog.text = logLine + tvActivityLog.text
             }
         }
     }
 
+    override fun onRawDataReceived(message: String) {
+        runOnUiThread {
+            val timeStr = timeFormat.format(Date())
+            tvActivityLog.text = "[$timeStr] [RAW] $message\n" + tvActivityLog.text
+        }
+    }
+
     override fun onError(message: String) {
         runOnUiThread {
+            tvConnectionStatus.text = "⚠ Error on :8888"
+            tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.running_orange))
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        bleManager.disconnect()
+        udpReceiver.stopListening()
     }
 }

@@ -32,7 +32,7 @@ void ui_dashboard_init(void)
     lcd_show_string(36, 5, "SPARK EDGE AI TRACKER", LCD_COLOR_WHITE, HEADER_BG);
 
     /* 4. Subheader Info */
-    lcd_show_string(36, 30, "BLE: 0xFEE7 | FPU: ON", LCD_COLOR_LIGHTGREY, BG_COLOR);
+    lcd_show_string(24, 30, "WIFI: RW007 | FPU: ON", LCD_COLOR_LIGHTGREY, BG_COLOR);
 
     /* 5. Hero Activity Box Outline */
     lcd_draw_rect(10, 48, 229, 110, LCD_COLOR_CYAN);
@@ -178,4 +178,145 @@ void ui_dashboard_update(
     snprintf(buf, sizeof(buf), "X:%+4.2f Y:%+4.2f Z:%+4.2f",
              (double)ax, (double)ay, (double)az);
     lcd_show_string(20, 204, buf, LCD_COLOR_CYAN, BG_COLOR);
+}
+
+/* 25x25 QR Code Matrix for 'WIFI:S:Spark-Setup;T:nopass;;' */
+static const uint32_t s_qr_wifi[25] = {
+    0x01FD507FU, 0x01058541U, 0x0175985DU, 0x0175AF5DU, 0x01757A5DU,
+    0x0104A341U, 0x01FD557FU, 0x0001DE00U, 0x00ABCBDFU, 0x01095D10U,
+    0x01E5C545U, 0x0187983BU, 0x003EA67EU, 0x016B698BU, 0x019DA3E1U,
+    0x00A01FA5U, 0x01DFE7CDU, 0x01F12B00U, 0x01F5E57FU, 0x01911641U,
+    0x009FF35DU, 0x01AE2D5DU, 0x0149775DU, 0x0131D541U, 0x01D2E37FU,
+};
+
+void ui_dashboard_show_portal(const char *ap_ssid, const char *url)
+{
+    (void)ap_ssid;
+    (void)url;
+    lcd_clear(LCD_COLOR_BLACK);
+
+    /* Top Banner */
+    lcd_fill_rect(0, 0, 239, 25, LCD_COLOR_NAVY);
+    lcd_show_string(32, 5, "WI-FI SETUP PORTAL", LCD_COLOR_WHITE, LCD_COLOR_NAVY);
+
+    /* Subheader instruction */
+    lcd_show_string(28, 32, "SCAN QR TO JOIN WI-FI", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+
+    /* Render 25x25 QR Code with 2-module white quiet zone (total 29 modules * 4 px = 116x116 px) */
+    int start_x = 62;
+    int start_y = 52;
+    lcd_fill_rect(start_x, start_y, start_x + 115, start_y + 115, LCD_COLOR_WHITE);
+
+    for (int r = 0; r < 25; r++) {
+        uint32_t row_bits = s_qr_wifi[r];
+        for (int c = 0; c < 25; c++) {
+            if (row_bits & (1U << c)) {
+                int mx = start_x + (c + 2) * 4;
+                int my = start_y + (r + 2) * 4;
+                lcd_fill_rect(mx, my, mx + 3, my + 3, LCD_COLOR_BLACK);
+            }
+        }
+    }
+
+    /* Outer Accent Border */
+    lcd_draw_rect(start_x - 4, start_y - 4, start_x + 119, start_y + 119, LCD_COLOR_CYAN);
+
+    /* Network Info Below QR Code */
+    lcd_show_string(48, 178, "SSID: Spark-Setup", LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+    lcd_show_string(32, 198, "URL: 192.168.4.1", LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    lcd_show_string(36, 222, "AUTONOMOUS ONBOARDING", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+}
+
+void ui_dashboard_show_reset_confirm(const char *current_ssid, int countdown_sec)
+{
+    static int s_last_drawn = -1;
+
+    if (countdown_sec != s_last_drawn) {
+        if (s_last_drawn < 0) {
+            /* Full screen layout */
+            lcd_clear(LCD_COLOR_BLACK);
+
+            /* Top Banner: Amber / Orange */
+            lcd_fill_rect(0, 0, 239, 25, LCD_COLOR_ORANGE);
+            lcd_show_string(36, 5, "RECONFIGURE WI-FI?", LCD_COLOR_BLACK, LCD_COLOR_ORANGE);
+
+            /* Card Outline */
+            lcd_draw_rect(10, 36, 229, 206, LCD_COLOR_ORANGE);
+            lcd_draw_rect(11, 37, 228, 205, LCD_COLOR_ORANGE);
+
+            /* Informative text */
+            lcd_show_string(24, 46, "Current Network:", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+            char sbuf[32];
+            snprintf(sbuf, sizeof(sbuf), "\"%.20s\"", (current_ssid && current_ssid[0]) ? current_ssid : "None");
+            lcd_show_string(24, 66, sbuf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+
+            lcd_show_string(24, 92, "Reset & enter setup?", LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+
+            /* Action Buttons Visual */
+            lcd_fill_rect(20, 118, 219, 148, LCD_COLOR_DARKGREEN);
+            lcd_draw_rect(20, 118, 219, 148, LCD_COLOR_GREEN);
+            lcd_show_string(28, 126, "[KEY0] CONFIRM & RESET", LCD_COLOR_WHITE, LCD_COLOR_DARKGREEN);
+
+            lcd_fill_rect(20, 158, 219, 188, LCD_COLOR_MAROON);
+            lcd_draw_rect(20, 158, 219, 188, LCD_COLOR_RED);
+            lcd_show_string(32, 166, "[KEY1] CANCEL & RESUME", LCD_COLOR_WHITE, LCD_COLOR_MAROON);
+        }
+
+        /* Dynamic Countdown Line */
+        char cbuf[32];
+        snprintf(cbuf, sizeof(cbuf), "Auto-cancelling in %ds...", countdown_sec);
+        lcd_fill_rect(24, 218, 220, 234, LCD_COLOR_BLACK);
+        lcd_show_string(28, 218, cbuf, LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+
+        s_last_drawn = countdown_sec;
+    }
+
+    if (countdown_sec <= 0) {
+        s_last_drawn = -1;
+    }
+}
+
+void ui_dashboard_show_connecting(const char *ssid, int attempt, int max_attempts, const char *status_msg)
+{
+    static int s_last_attempt = -1;
+
+    if (attempt <= 0) {
+        s_last_attempt = -1;
+        return;
+    }
+
+    if (attempt != s_last_attempt) {
+        lcd_clear(LCD_COLOR_BLACK);
+
+        /* Top Banner */
+        lcd_fill_rect(0, 0, 239, 25, LCD_COLOR_NAVY);
+        lcd_show_string(32, 5, "CONNECTING TO WI-FI", LCD_COLOR_WHITE, LCD_COLOR_NAVY);
+
+        /* Card Outline */
+        lcd_draw_rect(10, 36, 229, 206, LCD_COLOR_CYAN);
+        lcd_draw_rect(11, 37, 228, 205, LCD_COLOR_CYAN);
+
+        /* Network label & SSID */
+        lcd_show_string(24, 48, "Network SSID:", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
+        char sbuf[32];
+        snprintf(sbuf, sizeof(sbuf), "\"%.20s\"", (ssid && ssid[0]) ? ssid : "Unknown");
+        lcd_show_string(24, 68, sbuf, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+
+        /* Attempt indicator */
+        char abuf[32];
+        snprintf(abuf, sizeof(abuf), "Attempt %d of %d", attempt, max_attempts);
+        lcd_show_string(24, 100, abuf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+
+        s_last_attempt = attempt;
+    }
+
+    /* Update Status Message without full redraw to avoid flicker */
+    lcd_fill_rect(24, 130, 218, 175, LCD_COLOR_BLACK);
+    if (status_msg) {
+        lcd_show_string(24, 132, status_msg, LCD_COLOR_CYAN, LCD_COLOR_BLACK);
+    }
+    lcd_show_string(24, 155, "Please wait...", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
+
+    /* Footer */
+    lcd_show_string(30, 218, "WATCHDOG RETRY SYSTEM", LCD_COLOR_GRAY, LCD_COLOR_BLACK);
 }

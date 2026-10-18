@@ -3,3 +3,9 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Android build outputs & local properties
+android_app/.gradle/
+android_app/build/
+android_app/*/build/
+android_app/local.properties

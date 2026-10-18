@@ -8,7 +8,7 @@
 #include <string.h>
 #include <math.h>
 
-#define STEP_THRESHOLD_HIGH  1.40f  /* Minimum g-force magnitude to trigger step peak */
+#define STEP_THRESHOLD_HIGH  1.20f  /* Minimum g-force magnitude to trigger step peak */
 #define STEP_THRESHOLD_LOW   1.05f  /* Hysteresis reset threshold */
 #define MIN_STEP_INTERVAL_MS 220    /* Maximum realistic cadence ~270 spm */
 #define MAX_STEP_INTERVAL_MS 2000   /* Minimum realistic cadence ~30 spm */

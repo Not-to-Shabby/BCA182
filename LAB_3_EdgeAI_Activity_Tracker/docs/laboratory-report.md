@@ -92,6 +92,7 @@ graph TD
 | **REQ-09** | Non-Volatile Network Storage | Checksum-validated Flash persistence in STM32 Sector 11 with interrupt masking. | `src/wifi_storage.c` |
 | **REQ-10** | Physical Button Reconfiguration | Debounced KEY0 trigger with on-screen interactive confirmation countdown. | `src/main.c`, `src/ui_dashboard.c` |
 | **REQ-11** | Mobile Client Application | Native Android Kotlin app with live hero cards, step counters, and event log. | `android_app/` |
+| **REQ-12** | Connection Watchdog & Failover | 3-round retry watchdog with 15s DHCP guard, LCD progress, and SoftAP fallback. | `src/main.c`, `src/ui_dashboard.c` |
 
 ---
 
@@ -468,6 +469,16 @@ Value:        0xA5   0/1/2  0-100% SPM    Total Count   g * 100        XOR[0..9]
 
 * `ACT`: `0` = Walking, `1` = Running, `2` = Stationary.
 * `CKS`: Bitwise XOR sum across bytes 0 to 9. Corrupt packets are dropped by the mobile app.
+
+### 5.5 Three-Round Connection Watchdog and Fault Recovery Engine
+
+Wireless network associations can encounter transient packet loss from microwave interference, temporary router queue saturation, or delayed DHCP server responses. If an embedded wearable immediately abandons its stored network on the first failed attempt, the user is repeatedly forced into manual re-configuration.
+
+The firmware implements a dedicated 3-round connection watchdog manager (`connect_with_retries` in `src/main.c`):
+1. **Multi-Stage Retry Execution**: The watchdog enforces up to 3 discrete association rounds before declaring a failure.
+2. **Deterministic DHCP Timeout Guards**: Each round runs an isolated 15-second timer guard (`k_sem_take(&s_ip_sem, K_SECONDS(15))`). If no DHCP ACK is received, the network link is toggled down, allowing the RW007 radio to reset its internal MAC state before the next attempt.
+3. **Visual Real-Time Feedback**: For each round, the ST7789 LCD dynamically updates with the active network name, attempt index, and stage description (`Attempt 1 of 3: Associating with AP...`, `Requesting DHCP lease...`, `Retrying in 2s...`).
+4. **Flash Preservation Policy**: Stored credentials in Flash Sector 11 are never erased during transient drops. The system only opens the SoftAP setup portal if all 3 watchdog rounds are completely exhausted, or if the user explicitly triggers a manual reset via pushbutton KEY0.
 
 ---
 

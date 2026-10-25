@@ -1,7 +1,10 @@
 /**
  * @file ui_dashboard.c
- * @brief 240x240 ST7789 dashboard: product dashboard plus DIAG / COLLECT / BENCH
- *        service screens. Renders through the Lab 3-proven lcd_st7789 driver.
+ * @brief ST7789 240x240 dashboard in the Lab 3 design language: navy header
+ *        banner, boxed cards, a double-bordered hero box with the state word
+ *        rendered in a 3x scaled font, differential field updates (fields are
+ *        only redrawn when their content changes, so the display never flickers
+ *        or leaves residue), and a blinking full-width alert strip.
  */
 
 #include "ui_dashboard.h"
@@ -11,176 +14,333 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+
+/* lcd_st7789.c owns the font table (lcd_font.h defines it non-extern); a
+ * second include would duplicate the 1.5 KB array in Flash. */
+extern const uint8_t asc2_1608[];
 
 #define LCD_W 240
 #define LCD_H 240
 
-/* Palette (RGB565) */
-#define COL_BG      0x0000U
-#define COL_TITLE   0xFFFFU
-#define COL_TEXT    0xC638U /* dim grey-blue */
-#define COL_VALUE   0xFFFFU
-#define COL_IDLE    0x03FFU /* blue */
-#define COL_WASH    0x07FFU /* cyan */
-#define COL_SPIN    0xFD20U /* orange */
-#define COL_DONE    0x07E0U /* green */
-#define COL_ALERT   0xF800U /* red */
-#define COL_BAR     0x07E0U
-#define COL_BAR_BG  0x1863U
+#define BG          LCD_COLOR_BLACK
+#define CARD_BORDER LCD_COLOR_DARKGREY
 
-static const uint16_t STATE_COLORS[4] = { COL_IDLE, COL_WASH, COL_SPIN, COL_DONE };
+/* Hero layout: the big state word is 4 chars at 3x scale (96x48 px) */
+#define BIG_SCALE   3
+#define BIG_W       (8 * BIG_SCALE)
+#define BIG_H       (16 * BIG_SCALE)
+#define BIG_TEXT_Y  74
+#define HERO_LABEL_Y 54
 
-static char s_mode_char = 'R'; /* per-mode change detection for the static frame */
+static char s_mode_char;   /* current static frame ('R','D','C','B'), 0 = none */
+
+/* Differential-update caches (RUN screen) */
+static int8_t   s_last_state = -1;
+static int8_t   s_last_reason = -1;
+static bool     s_last_alert_phase;
+static uint16_t s_last_bar_w = 0xFFFF;
+static char     s_last_vib[20];
+static char     s_last_ml[24];
+static char     s_last_env[26];
+static char     s_last_age[12];
+
+/* DIAG event page cache: log grows monotonically, redraw when count changes */
+static uint32_t s_last_log_total;
 
 void ui_dashboard_init(void)
 {
     lcd_st7789_init();
     lcd_backlight_on();
-    lcd_clear(COL_BG);
     s_mode_char = 0;
 }
 
-static void draw_static_frame(char mode_char)
+/* ------------------------------------------------------- scaled font ------- */
+static void big_char(uint16_t x, uint16_t y, char c, uint16_t color)
 {
-    lcd_clear(COL_BG);
-    lcd_show_string(8, 6, "LAUNDRY SENTINEL", COL_TITLE, COL_BG);
-    lcd_draw_line(0, 22, LCD_W, 22, COL_TEXT);
-    lcd_draw_line(0, LCD_H - 18, LCD_W, LCD_H - 18, COL_TEXT);
-
-    switch (mode_char) {
-    case 'D':
-        lcd_show_string(8, 226, "KEY0: next page  KEY1: exit", COL_TEXT, COL_BG);
-        break;
-    case 'C':
-        lcd_show_string(8, 226, "KEY0: cycle label KEY1: exit", COL_TEXT, COL_BG);
-        break;
-    case 'B':
-        lcd_show_string(8, 226, "Timing 50 live inferences", COL_TEXT, COL_BG);
-        break;
-    default:
-        lcd_show_string(8, 226, "KEY1: service mode", COL_TEXT, COL_BG);
-        break;
+    if (c < ' ' || c > '~') {
+        c = ' ';
     }
-    s_mode_char = mode_char;
+    const uint8_t *glyph = &asc2_1608[(uint16_t)(c - ' ') * 16U];
+
+    for (uint8_t row = 0; row < 16; row++) {
+        uint8_t bits = glyph[row];
+        for (uint8_t col = 0; col < 8; col++) {
+            if (bits & 0x80U) {
+                lcd_fill_rect((uint16_t)(x + col * BIG_SCALE),
+                              (uint16_t)(y + row * BIG_SCALE),
+                              (uint16_t)(x + col * BIG_SCALE + BIG_SCALE - 1U),
+                              (uint16_t)(y + row * BIG_SCALE + BIG_SCALE - 1U),
+                              color);
+            }
+            bits <<= 1;
+        }
+    }
 }
+
+static void big_string_centered(uint16_t y, const char *str, uint16_t color)
+{
+    uint16_t x = (uint16_t)((LCD_W - (uint16_t)strlen(str) * BIG_W) / 2U);
+    while (*str != '\0') {
+        big_char(x, y, *str++, color);
+        x = (uint16_t)(x + BIG_W);
+    }
+}
+
+/* ------------------------------------------------------------ frames ------- */
+static void header_footer(const char *title, const char *hint)
+{
+    lcd_clear(BG);
+    lcd_fill_rect(0, 0, LCD_W - 1, 23, LCD_COLOR_NAVY);
+    lcd_show_string((uint16_t)((LCD_W - strlen(title) * 8) / 2), 4, title,
+                    LCD_COLOR_WHITE, LCD_COLOR_NAVY);
+    lcd_draw_line(0, 24, LCD_W - 1, 24, CARD_BORDER);
+
+    lcd_draw_line(0, 224, LCD_W - 1, 224, CARD_BORDER);
+    lcd_show_string(8, 228, hint, LCD_COLOR_GRAY, BG);
+    lcd_show_string(LCD_W - 56, 228, "BCA182", LCD_COLOR_DARKGREY, BG);
+}
+
+static void frame_run(void)
+{
+    header_footer("LAUNDRY SENTINEL", "K0:ACK DONE  K1 HOLD:MENU");
+
+    /* Alert strip (blinks in render_run) */
+    lcd_show_string(48, 30, "TWIN-TUB WASHER MONITOR", LCD_COLOR_DARKGREY, BG);
+
+    /* Hero box */
+    lcd_draw_rect(10, 46, 229, 130, LCD_COLOR_CYAN);
+    lcd_draw_rect(11, 47, 228, 129, LCD_COLOR_CYAN);
+    lcd_show_string(88, HERO_LABEL_Y, "ACTIVE TUB", LCD_COLOR_GRAY, BG);
+
+    /* Vibration card */
+    lcd_draw_rect(10, 136, 229, 178, CARD_BORDER);
+    lcd_show_string(18, 140, "VIBRATION", LCD_COLOR_LIGHTGREY, BG);
+    lcd_draw_rect(18, 158, 221, 168, CARD_BORDER);
+
+    /* Metrics card */
+    lcd_draw_rect(10, 182, 229, 220, CARD_BORDER);
+
+    /* Reset caches so the first render paints everything */
+    s_last_state = -1;
+    s_last_reason = -1;
+    s_last_alert_phase = false;
+    s_last_bar_w = 0xFFFF;
+    s_last_vib[0] = s_last_ml[0] = s_last_env[0] = s_last_age[0] = '\0';
+}
+
+static void frame_diag(void)
+{
+    header_footer("SERVICE: DIAGNOSTICS", "K0:PAGE   K1:NEXT MODE");
+    s_last_log_total = 0xFFFFFFFF;
+}
+
+static void frame_collect(void)
+{
+    header_footer("SERVICE: DATA CAPTURE", "K0:LABEL  K1 HOLD:BENCH");
+
+    lcd_draw_rect(10, 36, 229, 130, LCD_COLOR_CYAN);
+    lcd_draw_rect(11, 37, 228, 129, LCD_COLOR_CYAN);
+    lcd_show_string(100, 44, "LABEL", LCD_COLOR_GRAY, BG);
+
+    lcd_draw_rect(10, 136, 229, 214, CARD_BORDER);
+    lcd_show_string(18, 142, "100 Hz CSV streams on the", LCD_COLOR_LIGHTGREY, BG);
+    lcd_show_string(18, 158, "USB console. Run a real tub", LCD_COLOR_LIGHTGREY, BG);
+    lcd_show_string(18, 174, "phase per label, then train", LCD_COLOR_LIGHTGREY, BG);
+    lcd_show_string(18, 190, "with train_cycle_model.py", LCD_COLOR_LIGHTGREY, BG);
+}
+
+static void frame_bench(void)
+{
+    header_footer("SERVICE: INFERENCE BENCH", "K1:EXIT TO RUN");
+
+    lcd_draw_rect(10, 36, 229, 96, LCD_COLOR_CYAN);
+    lcd_draw_rect(11, 37, 228, 95, LCD_COLOR_CYAN);
+    lcd_show_string(88, 44, "PROGRESS", LCD_COLOR_GRAY, BG);
+    lcd_draw_rect(30, 76, 209, 86, CARD_BORDER);
+
+    lcd_draw_rect(10, 102, 229, 158, CARD_BORDER);
+    lcd_show_string(18, 110, "MEDIAN:", LCD_COLOR_LIGHTGREY, BG);
+    lcd_show_string(18, 134, "P95   :", LCD_COLOR_LIGHTGREY, BG);
+
+    lcd_draw_rect(10, 164, 229, 214, CARD_BORDER);
+    lcd_show_string(18, 172, "Times feature extraction", LCD_COLOR_GRAY, BG);
+    lcd_show_string(18, 190, "+ forest on live windows", LCD_COLOR_GRAY, BG);
+}
+
+/* ------------------------------------------------------------ renderers ---- */
+static const char *const STATE_WORDS[4] = { "IDLE", "WASH", "SPIN", "DONE" };
+static const uint16_t STATE_COLORS[4] = {
+    LCD_COLOR_CYAN, LCD_COLOR_CYAN, LCD_COLOR_ORANGE, LCD_COLOR_GREEN
+};
 
 static void render_run(const ui_snapshot_t *snap)
 {
-    static const uint16_t big_x = 40;
-    static const uint16_t big_y = 40;
+    char buf[32];
 
-    /* Big state name */
-    const char *name = cycle_state_name(snap->decision.state);
-    lcd_show_string(big_x, big_y, "      ", STATE_COLORS[snap->decision.state], COL_BG);
-    lcd_show_string(big_x, big_y, name, STATE_COLORS[snap->decision.state], COL_BG);
+    /* Alert strip: steady subtitle normally, red/maroon blink while alerting */
+    if (snap->alert || s_last_state >= 3) {
+        bool on = snap->alert;
+        const char *msg = (snap->decision.alert_reason == CYCLE_REASON_WASH)
+                              ? "WASH DONE! MOVE CLOTHES"
+                              : "SPIN DONE! HANG DRY";
+        uint16_t fill = on ? LCD_COLOR_RED : LCD_COLOR_MAROON;
+        uint16_t fg = on ? LCD_COLOR_WHITE : LCD_COLOR_LIGHTGREY;
+        lcd_fill_rect(0, 26, LCD_W - 1, 42, fill);
+        lcd_show_string((uint16_t)((LCD_W - strlen(msg) * 8) / 2), 28, msg, fg, fill);
+        s_last_alert_phase = on;
+    }
 
-    if (snap->alert) {
-        /* Twin-tub machine: name the tub that finished (blink comes from
-         * snap->alert alternating across 4 Hz frames). */
-        const char *banner = (snap->decision.alert_reason == CYCLE_REASON_WASH)
-                                 ? "WASH DONE! Move"
-                                 : (snap->decision.alert_reason == CYCLE_REASON_SPIN)
-                                       ? "SPIN DONE! Hang"
-                                       : "CYCLE DONE!";
-        lcd_fill_rect(0, 26, LCD_W, 8, COL_ALERT);
-        lcd_show_string(48, 120, banner, COL_ALERT, COL_BG);
+    /* Hero: big state word + border recolor, only on change */
+    if (snap->decision.state != s_last_state) {
+        int st = (int)snap->decision.state;
+        uint16_t border = STATE_COLORS[st];
+
+        lcd_fill_rect(14, 50, 225, 126, BG); /* clear old word (borders stay) */
+        lcd_draw_rect(10, 46, 229, 130, border);
+        lcd_draw_rect(11, 47, 228, 129, border);
+        big_string_centered(BIG_TEXT_Y, STATE_WORDS[st],
+                            (st == 0) ? LCD_COLOR_LIGHTGREY : border);
+        s_last_state = (int8_t)st;
+    }
+
+    /* Vibration bar (differential fill/erase) */
+    uint16_t fill_w = (uint16_t)(snap->rms_g * 400.0f);
+    if (fill_w > 200U) {
+        fill_w = 200U;
+    }
+    if (fill_w != s_last_bar_w) {
+        if (fill_w > 0U) {
+            lcd_fill_rect(20, 160, (uint16_t)(19 + fill_w), 166,
+                          (fill_w > 120U) ? LCD_COLOR_ORANGE : LCD_COLOR_GREEN);
+        }
+        if (fill_w < 200U) {
+            lcd_fill_rect((uint16_t)(20 + fill_w), 160, 219, 166, BG);
+        }
+        s_last_bar_w = fill_w;
+    }
+
+    snprintf(buf, sizeof(buf), "%5.3fg  %2uHz", (double)snap->rms_g,
+             (unsigned)snap->dom_hz);
+    if (strcmp(buf, s_last_vib) != 0) {
+        lcd_show_string(110, 140, buf, LCD_COLOR_CYAN, BG);
+        strcpy(s_last_vib, buf);
+    }
+
+    snprintf(buf, sizeof(buf), "ML:%-4s RULE:%-4s %s",
+             snap->decision.model_class == 1 ? "WASH" :
+             snap->decision.model_class == 2 ? "SPIN" : "IDLE",
+             snap->decision.baseline_class == 1 ? "WASH" :
+             snap->decision.baseline_class == 2 ? "SPIN" : "IDLE",
+             snap->decision.models_agree ? "OK" : "!!");
+    if (strcmp(buf, s_last_ml) != 0) {
+        lcd_show_string(18, 188, buf,
+                        snap->decision.models_agree ? LCD_COLOR_LIGHTGREY : LCD_COLOR_YELLOW,
+                        BG);
+        strcpy(s_last_ml, buf);
+    }
+
+    uint32_t age_s = snap->decision.state_age_ms / 1000U;
+    if (age_s > 5999U) age_s = 5999U;
+    if (isnan(snap->temperature_c) || isnan(snap->humidity_pct)) {
+        snprintf(buf, sizeof(buf), "UP %02u:%02u  T/RH: sensor absent",
+                 (unsigned)(age_s / 60U), (unsigned)(age_s % 60U));
     } else {
-        lcd_fill_rect(0, 26, LCD_W, 8, COL_BG);
-        lcd_show_string(48, 120, "                ", COL_TEXT, COL_BG);
+        snprintf(buf, sizeof(buf), "UP %02u:%02u  T:%2.0fC H:%2.0f%%",
+                 (unsigned)(age_s / 60U), (unsigned)(age_s % 60U),
+                 (double)snap->temperature_c, (double)snap->humidity_pct);
     }
-
-    /* Vibration gauge: rms 0..0.5 g across 200 px */
-    char line[24];
-    lcd_show_string(8, 150, "vib", COL_TEXT, COL_BG);
-    lcd_draw_rect(40, 148, 200, 160, COL_TEXT);
-    uint16_t fill = (uint16_t)(snap->rms_g * 320.0f);
-    if (fill > 156U) {
-        fill = 156U;
+    if (strcmp(buf, s_last_env) != 0) {
+        lcd_show_string(18, 204, buf, LCD_COLOR_LIGHTGREY, BG);
+        strcpy(s_last_env, buf);
     }
-    lcd_fill_rect(41, 149, (uint16_t)(41 + fill), 159, COL_BAR_BG);
-    if (fill > 1U) {
-        lcd_fill_rect(41, 149, (uint16_t)(41 + fill), 159, COL_BAR);
-    }
-    snprintf(line, sizeof(line), "%.3f g  %2u Hz   ", (double)snap->rms_g, (unsigned)snap->dom_hz);
-    lcd_show_string(8, 166, line, COL_VALUE, COL_BG);
-
-    /* Model vs baseline agreement marker */
-    snprintf(line, sizeof(line), "ML:%s  RULE:%s %s",
-             snap->decision.model_class == 0 ? "IDLE" :
-             snap->decision.model_class == 1 ? "WASH" : "SPIN",
-             snap->decision.baseline_class == 0 ? "IDLE" :
-             snap->decision.baseline_class == 1 ? "WASH" : "SPIN",
-             snap->decision.models_agree ? " ok" : " x");
-    lcd_show_string(8, 182, line, COL_TEXT, COL_BG);
-
-    /* Ambient context */
-    snprintf(line, sizeof(line), "T:%4.1fC H:%3.0f%% L:%4u",
-             (double)snap->temperature_c, (double)snap->humidity_pct,
-             snap->lux == 0xFFFFU ? 0U : snap->lux);
-    lcd_show_string(8, 198, line, COL_TEXT, COL_BG);
 }
 
 static void render_diag(const ui_snapshot_t *snap)
 {
-    int y = 32;
-
     if (snap->diag_page == 0) {
-        char line[32];
-        lcd_show_string(8, y, "ICM20608 IMU  primary", COL_VALUE, COL_BG); y += 18;
-        lcd_show_string(8, y, "vib ring live sampling", COL_TEXT, COL_BG); y += 22;
-        lcd_show_string(8, y, "AHT10 / AP3216C:", COL_VALUE, COL_BG); y += 18;
-        snprintf(line, sizeof(line), "T %.1fC  H %.0f%%  L %u",
-                 (double)snap->temperature_c, (double)snap->humidity_pct,
-                 snap->lux == 0xFFFFU ? 0U : snap->lux);
-        lcd_show_string(8, y, line, COL_TEXT, COL_BG); y += 22;
-        lcd_show_string(8, y, "Model:", COL_VALUE, COL_BG); y += 18;
-        lcd_show_string(8, y, cycle_model_training_set(), COL_TEXT, COL_BG); y += 18;
-        lcd_show_string(8, y, "(1/2) KEY0: event log", COL_TEXT, COL_BG);
-    } else {
-        char evbuf[40];
-        lcd_show_string(8, y, "Recent events:", COL_VALUE, COL_BG); y += 18;
-        for (uint32_t i = 0; i < 7; i++) {
-            if (data_logger_event_text(i, evbuf, sizeof(evbuf)) != NULL) {
-                lcd_show_string(8, y, evbuf, COL_TEXT, COL_BG);
-            } else {
-                lcd_show_string(8, y, "                     ", COL_TEXT, COL_BG);
-            }
-            y += 18;
+        char buf[32];
+        lcd_draw_rect(10, 32, 229, 218, CARD_BORDER);
+        lcd_show_string(18, 38, "SENSORS & MODEL", LCD_COLOR_WHITE, BG);
+
+        lcd_show_string(18, 60, "IMU  : ICM-20608 100Hz", LCD_COLOR_LIGHTGREY, BG);
+        snprintf(buf, sizeof(buf), "AHT10: %s",
+                 isnan(snap->temperature_c) ? "absent" : "fitted");
+        lcd_show_string(18, 78, buf, LCD_COLOR_LIGHTGREY, BG);
+        if (!isnan(snap->temperature_c)) {
+            snprintf(buf, sizeof(buf), "       %4.1fC  %2.0f%%RH",
+                     (double)snap->temperature_c, (double)snap->humidity_pct);
+            lcd_show_string(18, 96, buf, LCD_COLOR_CYAN, BG);
         }
-        lcd_show_string(8, y + 4, "(2/2) KEY0: sensors", COL_TEXT, COL_BG);
+        snprintf(buf, sizeof(buf), "LUX  : %u", snap->lux == 0xFFFFU ? 0U : snap->lux);
+        lcd_show_string(18, 114, buf, LCD_COLOR_CYAN, BG);
+
+        lcd_show_string(18, 140, "MODEL: RF 10 trees x 14 f", LCD_COLOR_WHITE, BG);
+        lcd_show_string(18, 158, "SET  :", LCD_COLOR_LIGHTGREY, BG);
+        lcd_show_string(66, 158, cycle_model_training_set(), LCD_COLOR_GRAY, BG);
+        lcd_show_string(18, 182, "Hysteresis: 2 windows", LCD_COLOR_GRAY, BG);
+        snprintf(buf, sizeof(buf), "State changes: %u", (unsigned)snap->decision.state_changes);
+        lcd_show_string(18, 200, buf, LCD_COLOR_GRAY, BG);
+    } else {
+        lcd_draw_rect(10, 32, 229, 218, CARD_BORDER);
+        lcd_show_string(18, 38, "EVENT LOG (newest first)", LCD_COLOR_WHITE, BG);
+
+        if (data_logger_count() != s_last_log_total) {
+            char ev[40];
+            for (int i = 0; i < 9; i++) {
+                int y = 60 + i * 16;
+                if (data_logger_event_text((uint32_t)i, ev, sizeof(ev)) != NULL) {
+                    lcd_show_string(18, (uint16_t)y, ev, LCD_COLOR_LIGHTGREY, BG);
+                } else {
+                    lcd_show_string(18, (uint16_t)y, "                        ",
+                                    LCD_COLOR_LIGHTGREY, BG);
+                }
+            }
+            s_last_log_total = data_logger_count();
+        }
     }
 }
 
 static void render_collect(const ui_snapshot_t *snap)
 {
-    char line[32];
-    static const char *LABELS[3] = { "IDLE", "WASH", "SPIN" };
-    const uint16_t label_color = STATE_COLORS[snap->collect_label];
+    static const char *const LABELS[3] = { "IDLE", "WASH", "SPIN" };
+    static int s_last_label = -1;
+    char buf[32];
 
-    lcd_show_string(8, 34, "Training capture", COL_TITLE, COL_BG);
-    lcd_show_string(8, 70, "label:", COL_TEXT, COL_BG);
-    lcd_show_string(64, 62, "     ", COL_BG, COL_BG);
-    lcd_show_string(64, 62, LABELS[snap->collect_label], label_color, COL_BG);
-    snprintf(line, sizeof(line), "samples: %u      ", (unsigned)snap->collect_samples);
-    lcd_show_string(8, 96, line, COL_VALUE, COL_BG);
-    lcd_show_string(8, 120, "100 Hz CSV on console", COL_TEXT, COL_BG);
-    lcd_show_string(8, 138, "run real appliance phases", COL_TEXT, COL_BG);
-    lcd_show_string(8, 156, "then retrain with", COL_TEXT, COL_BG);
-    lcd_show_string(8, 174, "ml_model/train_cycle_model.py", COL_TEXT, COL_BG);
+    if (snap->collect_label != s_last_label) {
+        lcd_fill_rect(14, 40, 225, 126, BG);
+        big_string_centered(BIG_TEXT_Y - 14, LABELS[snap->collect_label],
+                            STATE_COLORS[snap->collect_label]);
+        s_last_label = snap->collect_label;
+    }
+
+    snprintf(buf, sizeof(buf), "SAMPLES: %-8u", (unsigned)snap->collect_samples);
+    lcd_show_string(64, 180, buf, LCD_COLOR_YELLOW, BG);
+    lcd_show_string(64, 196, "STREAMING 100 Hz CSV", LCD_COLOR_GREEN, BG);
 }
 
 static void render_bench(const ui_snapshot_t *snap)
 {
-    char line[32];
-    lcd_show_string(8, 34, "Inference bench", COL_TITLE, COL_BG);
-    snprintf(line, sizeof(line), "runs done: %u / 50", (unsigned)snap->bench_done);
-    lcd_show_string(8, 70, line, COL_VALUE, COL_BG);
-    snprintf(line, sizeof(line), "median: %u us", (unsigned)snap->bench_median_us);
-    lcd_show_string(8, 96, line, COL_VALUE, COL_BG);
-    snprintf(line, sizeof(line), "p95:    %u us", (unsigned)snap->bench_p95_us);
-    lcd_show_string(8, 118, line, COL_VALUE, COL_BG);
-    lcd_show_string(8, 150, "measures feature extract", COL_TEXT, COL_BG);
-    lcd_show_string(8, 168, "+ forest on live windows", COL_TEXT, COL_BG);
+    static uint32_t s_last_done = 0xFFFFFFFF;
+    char buf[32];
+
+    if (snap->bench_done != s_last_done) {
+        uint16_t fill_w = (uint16_t)(snap->bench_done * 178U / 50U);
+        if (fill_w > 0U) {
+            lcd_fill_rect(31, 78, (uint16_t)(30 + fill_w), 84, LCD_COLOR_GREEN);
+        }
+        if (fill_w < 178U) {
+            lcd_fill_rect((uint16_t)(31 + fill_w), 78, 208, 84, BG);
+        }
+        snprintf(buf, sizeof(buf), "%2u / 50", (unsigned)snap->bench_done);
+        lcd_show_string(100, 56, buf, LCD_COLOR_WHITE, BG);
+        s_last_done = snap->bench_done;
+    }
+
+    snprintf(buf, sizeof(buf), "%6u us", (unsigned)snap->bench_median_us);
+    lcd_show_string(90, 110, buf, LCD_COLOR_CYAN, BG);
+    snprintf(buf, sizeof(buf), "%6u us", (unsigned)snap->bench_p95_us);
+    lcd_show_string(90, 134, buf, LCD_COLOR_CYAN, BG);
 }
 
 void ui_dashboard_render(const ui_snapshot_t *snap)
@@ -195,7 +355,13 @@ void ui_dashboard_render(const ui_snapshot_t *snap)
         snap->mode == UI_MODE_BENCH ? 'B' : 'R';
 
     if (mode_char != s_mode_char) {
-        draw_static_frame(mode_char);
+        s_mode_char = mode_char;
+        switch (mode_char) {
+        case 'D': frame_diag(); break;
+        case 'C': frame_collect(); break;
+        case 'B': frame_bench(); break;
+        default:  frame_run(); break;
+        }
     }
 
     switch (snap->mode) {

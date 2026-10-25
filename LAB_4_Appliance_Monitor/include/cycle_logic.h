@@ -36,6 +36,17 @@ typedef enum {
     CYCLE_STATE_DONE = 3,
 } cycle_state_t;
 
+/**
+ * Which tub finished. The target appliance is a twin-tub semiautomatic washer:
+ * wash tub and spin-dry tub are started and stopped manually and independently,
+ * so each sustained-active phase that ends in quiet raises its own DONE event.
+ */
+typedef enum {
+    CYCLE_REASON_NONE = 0,
+    CYCLE_REASON_WASH = 1,
+    CYCLE_REASON_SPIN = 2,
+} cycle_reason_t;
+
 /** Decision source reported alongside the state */
 typedef struct {
     cycle_state_t state;        /* Hysteresis-filtered product state */
@@ -43,6 +54,7 @@ typedef struct {
     int baseline_class;         /* Raw rule-based class this window */
     bool models_agree;          /* model_class == baseline_class */
     bool alert_active;          /* DONE alert waiting for acknowledgment */
+    cycle_reason_t alert_reason; /* WASH or SPIN tub that finished (NONE while idle) */
     uint32_t state_age_ms;      /* Time since the current state was entered */
     uint32_t state_changes;     /* Total measured transitions since reset */
 } cycle_decision_t;
@@ -66,6 +78,9 @@ cycle_state_t cycle_logic_state(void);
 
 /** true while a DONE alert is unacknowledged. */
 bool cycle_logic_is_alerting(void);
+
+/** Which tub raised the active (or last) DONE alert. */
+cycle_reason_t cycle_logic_alert_reason(void);
 
 /** Time in the current state (ms). */
 uint32_t cycle_logic_state_age_ms(uint32_t now_ms);

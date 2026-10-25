@@ -40,11 +40,13 @@ void led_matrix_clear(void);
  * @brief Appliance status rendering (called by the UI thread at 4 Hz):
  *        LEDs 0..7  - vibration intensity bar (rms-gated, green->red)
  *        LED 8      - state color (IDLE dim blue / WASH cyan / SPIN orange / DONE green)
- *        LED 16     - DONE alert flash (bright white blink while alert_active)
+ *        LED 16     - DONE alert flash; tinted by the tub that finished on a
+ *                     twin-tub machine (cyan = wash, orange = spin)
  *        LEDs 17,18 - ambient context (temperature over 30 C -> warm tint, dark room -> dim)
+ * @param alert_reason 0 none, 1 wash tub finished, 2 spin tub finished.
  */
-void led_matrix_update_appliance(int state, bool alert_active, float rms_g,
-                                 bool hot_ambient, bool dark_room);
+void led_matrix_update_appliance(int state, bool alert_active, int alert_reason,
+                                 float rms_g, bool hot_ambient, bool dark_room);
 
 #ifdef __cplusplus
 }

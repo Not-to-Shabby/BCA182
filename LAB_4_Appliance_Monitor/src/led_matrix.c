@@ -104,8 +104,8 @@ static uint8_t clamp_level(float v)
     return (uint8_t)(v * (float)LED_MAX_BRIGHTNESS);
 }
 
-void led_matrix_update_appliance(int state, bool alert_active, float rms_g,
-                                 bool hot_ambient, bool dark_room)
+void led_matrix_update_appliance(int state, bool alert_active, int alert_reason,
+                                 float rms_g, bool hot_ambient, bool dark_room)
 {
     uint8_t dim = dark_room ? 3U : 1U;
 
@@ -128,10 +128,18 @@ void led_matrix_update_appliance(int state, bool alert_active, float rms_g,
     default: led_matrix_set_pixel(8, 0, 0, (uint8_t)(8U / dim)); break; /* IDLE dim blue */
     }
 
-    /* LED 16: alert flash handled by caller phase; steady on here */
-    led_matrix_set_pixel(16, alert_active ? LED_MAX_BRIGHTNESS : 0U,
-                         alert_active ? LED_MAX_BRIGHTNESS : 0U,
-                         alert_active ? LED_MAX_BRIGHTNESS : 0U);
+    /* LED 16: alert flash tinted by which tub finished (twin-tub machine) */
+    if (alert_active) {
+        if (alert_reason == 1) {          /* wash tub: cyan flash */
+            led_matrix_set_pixel(16, 0, LED_MAX_BRIGHTNESS, LED_MAX_BRIGHTNESS);
+        } else if (alert_reason == 2) {   /* spin tub: orange flash */
+            led_matrix_set_pixel(16, LED_MAX_BRIGHTNESS, LED_MAX_BRIGHTNESS / 2U, 0);
+        } else {
+            led_matrix_set_pixel(16, LED_MAX_BRIGHTNESS, LED_MAX_BRIGHTNESS, LED_MAX_BRIGHTNESS);
+        }
+    } else {
+        led_matrix_set_pixel(16, 0, 0, 0);
+    }
 
     /* LEDs 17/18: ambient context */
     led_matrix_set_pixel(17, hot_ambient ? 24U : 0U, 0U, 0U);

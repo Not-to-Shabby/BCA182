@@ -194,12 +194,13 @@ void test_full_cycle_produces_exactly_one_done_alert(void)
     }
     TEST_ASSERT_EQUAL_INT(CYCLE_STATE_SPIN, d.state);
 
-    /* Machine stops: two quiet windows confirm IDLE -> DONE alert */
+    /* Machine stops: two quiet windows confirm IDLE -> DONE alert (spin tub) */
     run_window(IDLE_FEATS, t, &d);          t += 1000;
     TEST_ASSERT_FALSE(d.alert_active);      /* hysteresis holds SPIN first */
     run_window(IDLE_FEATS, t, &d);          t += 1000;
     TEST_ASSERT_EQUAL_INT(CYCLE_STATE_DONE, d.state);
     TEST_ASSERT_TRUE(d.alert_active);
+    TEST_ASSERT_EQUAL_INT(CYCLE_REASON_SPIN, d.alert_reason);
 
     /* Alert latches until acknowledged; further windows keep it */
     run_window(IDLE_FEATS, t, &d);
@@ -227,6 +228,68 @@ void test_short_spin_does_not_raise_done(void)
     }
     TEST_ASSERT_EQUAL_INT(CYCLE_STATE_IDLE, d.state);
     TEST_ASSERT_FALSE(d.alert_active);
+}
+
+/* Twin-tub semantics: the wash tub stopping is its own DONE event */
+void test_wash_tub_stop_raises_wash_done(void)
+{
+    cycle_decision_t d;
+    uint32_t t = 0;
+    for (int i = 0; i < 30; i++, t += 1000) {   /* wash tub runs 30 s */
+        run_window(WASH_FEATS, t, &d);
+    }
+    TEST_ASSERT_EQUAL_INT(CYCLE_STATE_WASH, d.state);
+
+    run_window(IDLE_FEATS, t, &d); t += 1000;   /* hysteresis holds WASH */
+    TEST_ASSERT_FALSE(d.alert_active);
+    run_window(IDLE_FEATS, t, &d); t += 1000;   /* confirmed quiet */
+    TEST_ASSERT_EQUAL_INT(CYCLE_STATE_DONE, d.state);
+    TEST_ASSERT_TRUE(d.alert_active);
+    TEST_ASSERT_EQUAL_INT(CYCLE_REASON_WASH, d.alert_reason);
+}
+
+void test_short_wash_burst_does_not_raise_done(void)
+{
+    cycle_decision_t d;
+    uint32_t t = 0;
+    for (int i = 0; i < 5; i++, t += 1000) {    /* 5 s wash: under the guard */
+        run_window(WASH_FEATS, t, &d);
+    }
+    TEST_ASSERT_EQUAL_INT(CYCLE_STATE_WASH, d.state);
+    for (int i = 0; i < 3; i++, t += 1000) {
+        run_window(IDLE_FEATS, t, &d);
+    }
+    TEST_ASSERT_EQUAL_INT(CYCLE_STATE_IDLE, d.state);
+    TEST_ASSERT_FALSE(d.alert_active);
+    TEST_ASSERT_EQUAL_INT(CYCLE_REASON_NONE, d.alert_reason);
+}
+
+void test_wash_then_spin_session_raises_both_alerts_in_turn(void)
+{
+    cycle_decision_t d;
+    uint32_t t = 0;
+
+    for (int i = 0; i < 20; i++, t += 1000) {   /* wash tub */
+        run_window(WASH_FEATS, t, &d);
+    }
+    for (int i = 0; i < 2; i++, t += 1000) {    /* wash stops */
+        run_window(IDLE_FEATS, t, &d);
+    }
+    TEST_ASSERT_EQUAL_INT(CYCLE_REASON_WASH, d.alert_reason);
+    TEST_ASSERT_TRUE(cycle_logic_acknowledge());
+
+    for (int i = 0; i < 2; i++, t += 1000) {    /* leave IDLE (still hysteresis) */
+        run_window(IDLE_FEATS, t, &d);
+    }
+    for (int i = 0; i < 15; i++, t += 1000) {   /* user starts spin tub */
+        run_window(SPIN_FEATS, t, &d);
+    }
+    TEST_ASSERT_EQUAL_INT(CYCLE_STATE_SPIN, d.state);
+    for (int i = 0; i < 2; i++, t += 1000) {    /* spin stops */
+        run_window(IDLE_FEATS, t, &d);
+    }
+    TEST_ASSERT_EQUAL_INT(CYCLE_STATE_DONE, d.state);
+    TEST_ASSERT_EQUAL_INT(CYCLE_REASON_SPIN, d.alert_reason);
 }
 
 void test_unacknowledged_done_times_out_to_idle(void)
@@ -293,6 +356,9 @@ int main(void)
     RUN_TEST(test_two_windows_required_to_change_state);
     RUN_TEST(test_full_cycle_produces_exactly_one_done_alert);
     RUN_TEST(test_short_spin_does_not_raise_done);
+    RUN_TEST(test_wash_tub_stop_raises_wash_done);
+    RUN_TEST(test_short_wash_burst_does_not_raise_done);
+    RUN_TEST(test_wash_then_spin_session_raises_both_alerts_in_turn);
     RUN_TEST(test_unacknowledged_done_times_out_to_idle);
     RUN_TEST(test_service_mode_transitions);
     RUN_TEST(test_service_mode_ack_only_clears_real_alerts);

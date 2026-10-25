@@ -102,7 +102,7 @@ def synth_idle(rng):
 def synth_wash(rng):
     n = rng.integers(4, 10) * WINDOW
     t = np.arange(n) / FS
-    f = rng.uniform(1.2, 2.8)                      # agitation slosh
+    f = rng.uniform(0.8, 3.0)                      # twin-tub agitator slosh
     amp = rng.uniform(0.08, 0.25)
     slosh = amp * np.sin(2 * np.pi * f * t) * (0.7 + 0.3 * np.sin(2 * np.pi * 0.3 * t))
     harmonics = 0.3 * amp * np.sin(2 * np.pi * 2 * f * t + 1.0)
@@ -115,7 +115,7 @@ def synth_wash(rng):
 def synth_spin(rng):
     n = rng.integers(4, 10) * WINDOW
     t = np.arange(n) / FS
-    f = rng.uniform(10.0, 25.0)                    # extract resonance
+    f = rng.uniform(10.0, 35.0)                    # spin-dry tub ~1200-2100 RPM
     amp = rng.uniform(0.15, 0.50)
     sig = amp * np.sin(2 * np.pi * f * t)
     sig += 0.4 * amp * np.sin(2 * np.pi * 2 * f * t + 0.7)

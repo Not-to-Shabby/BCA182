@@ -75,12 +75,18 @@ static void render_run(const ui_snapshot_t *snap)
     lcd_show_string(big_x, big_y, name, STATE_COLORS[snap->decision.state], COL_BG);
 
     if (snap->alert) {
-        /* The blink comes from snap->alert alternating across 4 Hz frames */
+        /* Twin-tub machine: name the tub that finished (blink comes from
+         * snap->alert alternating across 4 Hz frames). */
+        const char *banner = (snap->decision.alert_reason == CYCLE_REASON_WASH)
+                                 ? "WASH DONE! Move"
+                                 : (snap->decision.alert_reason == CYCLE_REASON_SPIN)
+                                       ? "SPIN DONE! Hang"
+                                       : "CYCLE DONE!";
         lcd_fill_rect(0, 26, LCD_W, 8, COL_ALERT);
-        lcd_show_string(60, 120, "CYCLE DONE!", COL_ALERT, COL_BG);
+        lcd_show_string(48, 120, banner, COL_ALERT, COL_BG);
     } else {
         lcd_fill_rect(0, 26, LCD_W, 8, COL_BG);
-        lcd_show_string(60, 120, "           ", COL_TEXT, COL_BG);
+        lcd_show_string(48, 120, "                ", COL_TEXT, COL_BG);
     }
 
     /* Vibration gauge: rms 0..0.5 g across 200 px */

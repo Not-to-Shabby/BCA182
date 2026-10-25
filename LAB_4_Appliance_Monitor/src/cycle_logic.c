@@ -21,7 +21,7 @@
 #define BASELINE_SPIN_DOM_HZ     8.0f    /* Extract resonance starts here */
 
 #define HYST_CONFIRM_WINDOWS     2U      /* Consecutive windows to leave a state */
-#define SPIN_MIN_DURATION_MS     8000U   /* Short bursts do not earn a DONE */
+#define PHASE_MIN_DURATION_MS    8000U   /* Tub must run this long to earn a DONE */
 #define DONE_TIMEOUT_MS          300000U /* Unacknowledged DONE returns to IDLE after 5 min */
 
 static cycle_state_t s_state;
@@ -30,7 +30,8 @@ static uint32_t s_state_changes;
 static int s_candidate;                 /* Hysteresis candidate class */
 static uint32_t s_candidate_count;
 static bool s_alert;
-static uint32_t s_spin_start_ms;
+static cycle_reason_t s_alert_reason;
+static uint32_t s_phase_start_ms;       /* When the active WASH/SPIN tub started */
 
 void cycle_logic_reset(void)
 {
@@ -40,7 +41,8 @@ void cycle_logic_reset(void)
     s_candidate = (int)CYCLE_IDLE;
     s_candidate_count = 0;
     s_alert = false;
-    s_spin_start_ms = 0;
+    s_alert_reason = CYCLE_REASON_NONE;
+    s_phase_start_ms = 0;
 }
 
 bool cycle_logic_acknowledge(void)
@@ -49,6 +51,7 @@ bool cycle_logic_acknowledge(void)
         return false;
     }
     s_alert = false;
+    s_alert_reason = CYCLE_REASON_NONE;
     s_state = CYCLE_STATE_IDLE;
     s_state_entered_ms = 0;
     return true;
@@ -62,6 +65,11 @@ cycle_state_t cycle_logic_state(void)
 bool cycle_logic_is_alerting(void)
 {
     return s_alert;
+}
+
+cycle_reason_t cycle_logic_alert_reason(void)
+{
+    return s_alert_reason;
 }
 
 uint32_t cycle_logic_state_age_ms(uint32_t now_ms)
@@ -101,8 +109,8 @@ static void enter_state(cycle_state_t next, uint32_t now_ms)
 {
     s_state = next;
     s_state_entered_ms = now_ms;
-    if (next == CYCLE_STATE_SPIN) {
-        s_spin_start_ms = now_ms;
+    if (next == CYCLE_STATE_WASH || next == CYCLE_STATE_SPIN) {
+        s_phase_start_ms = now_ms;
     }
 }
 
@@ -124,11 +132,15 @@ void cycle_logic_process(const float *features, uint32_t now_ms, cycle_decision_
             s_candidate_count = 1;
         }
         if (s_candidate_count >= HYST_CONFIRM_WINDOWS) {
-            /* A verified measured-state change */
-            if (s_state == CYCLE_STATE_SPIN && model == (int)CYCLE_IDLE &&
-                (now_ms - s_spin_start_ms) >= SPIN_MIN_DURATION_MS) {
-                /* Extract phase ended: raise exactly one DONE alert */
+            bool tub_was_running = (s_state == CYCLE_STATE_WASH) || (s_state == CYCLE_STATE_SPIN);
+            bool going_quiet = (model == (int)CYCLE_IDLE);
+            if (tub_was_running && going_quiet &&
+                (now_ms - s_phase_start_ms) >= PHASE_MIN_DURATION_MS) {
+                /* A tub that ran long enough has stopped: raise exactly one
+                 * DONE alert naming which tub finished (twin-tub machine). */
                 s_alert = true;
+                s_alert_reason = (s_state == CYCLE_STATE_SPIN) ? CYCLE_REASON_SPIN
+                                                               : CYCLE_REASON_WASH;
                 s_state = CYCLE_STATE_DONE;
                 s_state_entered_ms = now_ms;
             } else {
@@ -144,6 +156,7 @@ void cycle_logic_process(const float *features, uint32_t now_ms, cycle_decision_
     /* Unacknowledged DONE falls back to IDLE after the timeout (alert clears) */
     if (s_state == CYCLE_STATE_DONE && (now_ms - s_state_entered_ms) >= DONE_TIMEOUT_MS) {
         s_alert = false;
+        s_alert_reason = CYCLE_REASON_NONE;
         s_state = CYCLE_STATE_IDLE;
         s_state_entered_ms = now_ms;
     }
@@ -153,6 +166,7 @@ void cycle_logic_process(const float *features, uint32_t now_ms, cycle_decision_
     out->baseline_class = baseline;
     out->models_agree = (model == baseline);
     out->alert_active = s_alert;
+    out->alert_reason = s_alert_reason;
     out->state_age_ms = now_ms - s_state_entered_ms;
     out->state_changes = s_state_changes;
 }

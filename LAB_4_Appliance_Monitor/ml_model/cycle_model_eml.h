@@ -9,23 +9,19 @@
     
 
 static inline int32_t cycle_forest_tree_0(const float *features, int32_t features_length) {
-          if (features[8] < 0.274927f) {
-              if (features[4] < 0.104844f) {
-                  if (features[4] < 0.021196f) {
-                      return 0;
-                  } else {
-                      return 1;
-                  }
+          if (features[10] < 11.000000f) {
+              if (features[4] < 0.018476f) {
+                  return 0;
               } else {
-                  return 2;
+                  if (features[4] < 0.160378f) {
+                      return 1;
+                  } else {
+                      return 2;
+                  }
               }
           } else {
-              if (features[11] < 0.220110f) {
-                  if (features[0] < 0.021871f) {
-                      return 0;
-                  } else {
-                      return 1;
-                  }
+              if (features[11] < 0.175029f) {
+                  return 0;
               } else {
                   return 2;
               }
@@ -34,11 +30,15 @@ static inline int32_t cycle_forest_tree_0(const float *features, int32_t feature
         
 
 static inline int32_t cycle_forest_tree_1(const float *features, int32_t features_length) {
-          if (features[0] < 0.117767f) {
-              if (features[5] < 0.023384f) {
+          if (features[0] < 0.118966f) {
+              if (features[5] < 0.022787f) {
                   return 0;
               } else {
-                  return 1;
+                  if (features[11] < 0.234598f) {
+                      return 1;
+                  } else {
+                      return 2;
+                  }
               }
           } else {
               return 2;
@@ -47,8 +47,8 @@ static inline int32_t cycle_forest_tree_1(const float *features, int32_t feature
         
 
 static inline int32_t cycle_forest_tree_2(const float *features, int32_t features_length) {
-          if (features[5] < 0.143381f) {
-              if (features[0] < 0.023879f) {
+          if (features[5] < 0.141930f) {
+              if (features[0] < 0.023335f) {
                   return 0;
               } else {
                   return 1;
@@ -61,7 +61,7 @@ static inline int32_t cycle_forest_tree_2(const float *features, int32_t feature
 
 static inline int32_t cycle_forest_tree_3(const float *features, int32_t features_length) {
           if (features[12] < 0.892698f) {
-              if (features[5] < 0.021506f) {
+              if (features[5] < 0.021258f) {
                   return 0;
               } else {
                   return 1;
@@ -73,19 +73,19 @@ static inline int32_t cycle_forest_tree_3(const float *features, int32_t feature
         
 
 static inline int32_t cycle_forest_tree_4(const float *features, int32_t features_length) {
-          if (features[9] < 0.910027f) {
-              if (features[4] < 0.020335f) {
+          if (features[3] < 0.145551f) {
+              if (features[4] < 0.019804f) {
                   return 0;
               } else {
-                  if (features[6] < 0.324121f) {
+                  if (features[6] < 0.427136f) {
                       return 1;
                   } else {
                       return 2;
                   }
               }
           } else {
-              if (features[11] < 0.171791f) {
-                  return 0;
+              if (features[11] < 0.188552f) {
+                  return 1;
               } else {
                   return 2;
               }
@@ -95,14 +95,14 @@ static inline int32_t cycle_forest_tree_4(const float *features, int32_t feature
 
 static inline int32_t cycle_forest_tree_5(const float *features, int32_t features_length) {
           if (features[11] < 0.191119f) {
-              if (features[6] < 0.248744f) {
-                  if (features[3] < 0.024628f) {
+              if (features[6] < 0.233668f) {
+                  if (features[3] < 0.024352f) {
                       return 0;
                   } else {
                       return 1;
                   }
               } else {
-                  if (features[5] < 0.026251f) {
+                  if (features[5] < 0.029333f) {
                       return 0;
                   } else {
                       return 1;
@@ -116,7 +116,7 @@ static inline int32_t cycle_forest_tree_5(const float *features, int32_t feature
 
 static inline int32_t cycle_forest_tree_6(const float *features, int32_t features_length) {
           if (features[12] < 0.836797f) {
-              if (features[5] < 0.021485f) {
+              if (features[5] < 0.021237f) {
                   return 0;
               } else {
                   return 1;
@@ -128,14 +128,18 @@ static inline int32_t cycle_forest_tree_6(const float *features, int32_t feature
         
 
 static inline int32_t cycle_forest_tree_7(const float *features, int32_t features_length) {
-          if (features[12] < 0.892698f) {
-              if (features[5] < 0.023363f) {
+          if (features[6] < 0.233668f) {
+              if (features[5] < 0.022766f) {
                   return 0;
               } else {
                   return 1;
               }
           } else {
-              return 2;
+              if (features[12] < 0.766322f) {
+                  return 0;
+              } else {
+                  return 2;
+              }
           }
         }
         
@@ -154,8 +158,8 @@ static inline int32_t cycle_forest_tree_8(const float *features, int32_t feature
         
 
 static inline int32_t cycle_forest_tree_9(const float *features, int32_t features_length) {
-          if (features[5] < 0.143998f) {
-              if (features[3] < 0.024658f) {
+          if (features[5] < 0.141985f) {
+              if (features[3] < 0.024382f) {
                   return 0;
               } else {
                   return 1;

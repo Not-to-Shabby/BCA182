@@ -191,6 +191,7 @@ static void ui_thread_fn(void *p1, void *p2, void *p3)
         bool hot = !isnan(snap.temperature_c) && snap.temperature_c > 30.0f;
         bool dark = snap.lux < 30U; /* 0xFFFF (absent) fails this test by design */
         led_matrix_update_appliance((int)snap.decision.state, snap.alert,
+                                    (int)snap.decision.alert_reason,
                                     snap.rms_g, hot, dark);
 
         sleep_until(&next_wake, UI_PERIOD_MS);

@@ -13,20 +13,25 @@ default STM32Cube + FreeRTOS prescription. Rationale and risk are documented in
 
 ### 1.1 Problem statement (one paragraph)
 
-Laundry appliances are fire and water hazards when forgotten: a dryer left running
-unattended overnight is a documented household fire risk, and wet clothes left in a
-finished cycle grow mold and wrinkle within hours. The target user is a busy household
-member (including deaf or hard-of-hearing users who cannot hear an end-of-cycle buzzer,
-and users in apartments where the machine is on a different floor or in a shared
-basement). The operating environment is a laundry room: strong whole-body vibration,
-high humidity, and low ambient light. **Laundry Sentinel** is a small USB-powered
-monitor placed on top of (or beside) the machine. It senses the machine's vibration
-signature with the onboard ICM-20608 six-axis IMU, classifies the appliance state
-on-device with a trained random-forest model, and reports **IDLE → WASH → SPIN → DONE**
-on the LCD and 19-LED matrix, flashing an attention pattern when the cycle finishes
-until the user acknowledges it. Every state transition is timestamped and logged to the
-microSD card, so the product also answers "how long did this cycle actually take?" and
-"did the machine ever stop unexpectedly?".
+Laundry appliances are fire and water hazards when forgotten: a spin dryer left running
+unattended is a documented household fire risk, and clothes left sitting after a tub
+stops grow mold and wrinkle within hours. The target appliance is a **twin-tub
+semiautomatic washer** (separate wash and spin-dry tubs, each started and stopped
+manually by mechanical timer) — dominant in the target household market and *harder
+to monitor than an automatic machine*, because nothing announces a tub finishing and
+the user must return twice per load: once to move clothes from wash tub to spin tub,
+once to hang them. The target user is a busy household member (including deaf or
+hard-of-hearing users who cannot hear the motor stop, and users in apartments where
+the machine is on a different floor or in a shared basement). The operating
+environment is a laundry area: strong whole-body vibration, high humidity, and low
+ambient light. **Laundry Sentinel** is a small USB-powered monitor placed on top of
+the machine's shared chassis. It senses vibration with the onboard ICM-20608
+six-axis IMU, classifies the active tub on-device with a trained random-forest
+model, and reports **IDLE / WASH / SPIN** plus a per-tub **DONE** alert (wash tub
+stopped → "WASH DONE", spin tub stopped → "SPIN DONE") on the LCD and 19-LED
+matrix, flashing until acknowledged. Every state transition is timestamped and
+logged to the microSD card, so the product also answers "how long did each tub
+actually run?" and "did a tub stop earlier than its timer setting?".
 
 ### 1.2 Alternative ideas considered
 
@@ -40,16 +45,23 @@ microSD card, so the product also answers "how long did this cycle actually take
 
 | State | Physical meaning | Signal signature |
 |-------|------------------|------------------|
-| `IDLE` (0) | Machine off or finished, user not yet responded | Vibration near noise floor (< ~0.02 g RMS) |
-| `WASH` (1) | Agitation / tumbling phase | Strong low-frequency content (1–3 Hz), moderate RMS |
-| `SPIN` (2) | High-RPM extract phase | Dominant 10–25 Hz component, high RMS, high crest factor |
-| `DONE` (3) | **Derived event**: SPIN observed ≥ 10 s followed by sustained IDLE with decaying residual vibration | Alert until acknowledged |
+| `IDLE` (0) | Both tubs off / machine quiet | Vibration near noise floor (< ~0.02 g RMS) |
+| `WASH` (1) | Wash tub agitator running | Strong low-frequency content (0.8–3 Hz slosh), moderate RMS |
+| `SPIN` (2) | Spin-dry tub running | Dominant 10–35 Hz component (≈1200–2100 RPM), high RMS |
+| `DONE` (3) | **Derived event**: whichever tub was active for ≥ 8 s falls silent → exactly one per-tub alert (`WASH DONE` / `SPIN DONE`) | Alert until acknowledged |
 
 The model itself classifies the three *measured* states (IDLE / WASH / SPIN);
-`DONE` is derived deterministically by the state machine from a verified
-`SPIN → IDLE` transition (documented in `cycle_logic.c`). This gives four
-meaningful product states while keeping the trained model honest about what it
-can actually observe.
+`DONE` is derived deterministically by the state machine from a confirmed
+active→quiet transition (documented in `cycle_logic.c`). This keeps the trained
+model honest about what it can observe while giving the twin-tub user the two
+alerts that matter. If both tubs ever run simultaneously, the classifier reports
+the tub with the dominant vibration (normally the spin tub); alerts still key off
+sustained-quiet periods, so no event is lost.
+
+**Data collection protocol (Phase 5, twin-tub):** capture at least two sessions
+each of (a) machine off, (b) wash tub only, (c) spin tub only. Label with the
+COLLECT mode labels IDLE/WASH/SPIN respectively; keep both-tubs-running out of
+the training set (documented limitation, not a labeled class).
 
 ### 1.4 Block diagram
 
@@ -99,9 +111,10 @@ can actually observe.
 
 ### 1.6 Acceptance criteria
 
-1. **Detection**: on a real washer, ≥ 90 % of 1-second windows during a full cycle
-   are classified into the correct state by the trained model (held-out machine data),
-   and every real `SPIN → IDLE` transition produces exactly one DONE alert.
+1. **Detection**: on the real twin-tub machine, ≥ 90 % of 1-second windows from
+   held-out capture sessions are classified into the correct state by the trained
+   model, and every real tub stop (wash or spin, after ≥ 8 s of running) produces
+   exactly one correctly-named DONE alert.
 2. **Latency**: median end-to-end state-change latency (vibration onset → LCD/LED
    update) ≤ 2.5 s; measured over ≥ 50 labeled transitions in the bench log.
 3. **Inference cost**: report median and 95th-percentile inference time over ≥ 50

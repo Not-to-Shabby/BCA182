@@ -1,14 +1,17 @@
 # Laboratory Activity 4 — Laundry Sentinel
 ## Edge AI Appliance Cycle Monitor on RT-Thread RT-Spark (STM32F407ZGT6, Zephyr RTOS)
 
-**Laundry Sentinel** is a consumer appliance monitor: place it on or next to a
-washing machine and it senses the machine's vibration signature with the
-onboard ICM-20608 IMU, classifies the cycle phase **on the STM32** with a
-trained random-forest model (10 trees, 14 vibration features, emlearn-generated
-C), and reports **IDLE → WASH → SPIN → DONE** on the ST7789 LCD and the 19-LED
-matrix. A derived **DONE** event (verified SPIN ≥ 8 s ending in a sustained
-quiet period) raises an attention alert until the user acknowledges it with
-KEY0. Every transition is timestamped to the microSD as `cycle_log.csv`.
+**Laundry Sentinel** is a consumer appliance monitor for a **twin-tub
+semiautomatic washer** (separate manually-timed wash and spin-dry tubs): placed
+on the machine's shared chassis, it senses vibration with the onboard ICM-20608
+IMU, classifies the active tub **on the STM32** with a trained random-forest
+model (10 trees, 14 vibration features, emlearn-generated C), and reports
+**IDLE / WASH / SPIN** on the ST7789 LCD and the 19-LED matrix. When a tub that
+ran ≥ 8 s falls silent, it raises a per-tub **DONE** alert — **WASH DONE**
+("move clothes to the spin tub") or **SPIN DONE** ("hang the laundry") — on the
+LCD banner and a tinted LED flash until acknowledged with KEY0. Every
+transition is timestamped to the microSD as `cycle_log.csv`, so it also answers
+"how long did each tub actually run?".
 
 > **RTOS note:** this lab intentionally uses **Zephyr RTOS** instead of the
 > sheet's default STM32Cube + FreeRTOS. The deviation and its rationale are
@@ -19,10 +22,15 @@ KEY0. Every transition is timestamped to the microSD as `cycle_log.csv`.
 
 | State | Meaning | Feedback |
 |-------|---------|----------|
-| IDLE | machine quiet / off | dim blue LED, LCD dashboard |
-| WASH | agitation phase | cyan LED, low-band vibration gauge |
-| SPIN | extract phase | orange LED, high-band + dominant-freq gauge |
-| DONE | cycle finished (derived event) | green LED + red blinking banner on LCD + white flash on LED 16 until KEY0 |
+| IDLE | both tubs quiet / off | dim blue LED, LCD dashboard |
+| WASH | wash tub agitator running | cyan LED, low-band vibration gauge |
+| SPIN | spin-dry tub running (~1200–2100 RPM) | orange LED, high-band + dominant-freq gauge |
+| WASH DONE | wash tub stopped after ≥ 8 s | red blinking banner "WASH DONE! Move" + cyan LED 16 flash until KEY0 |
+| SPIN DONE | spin tub stopped after ≥ 8 s | red blinking banner "SPIN DONE! Hang" + orange LED 16 flash until KEY0 |
+
+Twin-tub note: both tubs share one chassis, so one board senses both. If both
+tubs run simultaneously the classifier reports the dominant one (normally
+spin); alerts key off sustained-quiet periods, so no tub-stop event is lost.
 
 Context sensing: AHT10 temperature/humidity and AP3216C ambient light (both
 probed at boot, graceful ABSENT) feed night mode (dark room dims the LED
@@ -85,8 +93,9 @@ pio test -e native               # host unit tests
 
 ## Remaining phases
 
-- **Phase 5**: collect real appliance captures (COLLECT mode), retrain
-  (`ml_model/train_cycle_model.py --real ...`), report held-out metrics and
-  the forest-vs-baseline comparison.
+- **Phase 5**: collect real twin-tub captures (COLLECT mode; label IDLE with the
+  machine off, WASH with the wash tub only, SPIN with the spin tub only; ≥ 2
+  sessions each), retrain (`ml_model/train_cycle_model.py --real ...`), report
+  held-out metrics and the forest-vs-baseline comparison.
 - **Phase 6**: on-board bench numbers (50+ inferences), 15-minute soak,
   failure-mode tests (SD absent, IMU disconnected), formal lab report and demo.

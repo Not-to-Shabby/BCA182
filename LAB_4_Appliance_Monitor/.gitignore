@@ -1,0 +1,13 @@
+.pio/
+.vscode/
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.log
+synth_out/
+__pycache__/
+*.pyc
+ml_model/*.csv
+ml_model/model_report.txt

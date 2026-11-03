@@ -1,0 +1,97 @@
+{
+  "title": "BenchWatch - Lab Workbench Monitor",
+  "uid": "benchwatch-main",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": { "from": "now-3h", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Temperature & Humidity",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "celsius" },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "humidity_pct" },
+            "properties": [{ "id": "unit", "value": "percent" }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"benchwatch\") |> range(v.timeRangeStart, v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"bench_telemetry\" and (r._field == \"temperature_c\" or r._field == \"humidity_pct\")) |> aggregateWindow(every: v.windowPeriod, fn: mean) |> yield()",
+          "datasource": { "type": "influxdb", "uid": "BenchWatch-InfluxDB" }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Light & Proximity",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"benchwatch\") |> range(v.timeRangeStart, v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"bench_telemetry\" and (r._field == \"light\" or r._field == \"proximity\")) |> aggregateWindow(every: v.windowPeriod, fn: mean) |> yield()",
+          "datasource": { "type": "influxdb", "uid": "BenchWatch-InfluxDB" }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Motion |a| (g) + Disturbance Events",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1.35 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"benchwatch\") |> range(v.timeRangeStart, v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"bench_telemetry\" and r._field == \"motion_mag\") |> yield()",
+          "datasource": { "type": "influxdb", "uid": "BenchWatch-InfluxDB" }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Link Health (wifi / mqtt) & Actual Buzzer State",
+      "type": "state-timeline",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"benchwatch\") |> range(v.timeRangeStart, v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"bench_telemetry\" and (r._field == \"wifi\" or r._field == \"mqtt\" or r._field == \"buzzer\")) |> yield()",
+          "datasource": { "type": "influxdb", "uid": "BenchWatch-InfluxDB" }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Command Acknowledgments (accepted vs rejected)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"benchwatch\") |> range(v.timeRangeStart, v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"bench_ack\") |> last() |> yield()",
+          "datasource": { "type": "influxdb", "uid": "BenchWatch-InfluxDB" }
+        }
+      ]
+    }
+  ]
+}

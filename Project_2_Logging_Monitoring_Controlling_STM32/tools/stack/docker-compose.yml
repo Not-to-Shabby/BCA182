@@ -1,0 +1,73 @@
+# ==============================================================================
+# BenchWatch backend stack: Mosquitto (MQTT) + InfluxDB + Grafana + ingestion.
+#
+# Start:   docker compose up -d      (from this directory)
+# Stop:    docker compose down
+# Grafana: http://localhost:3000  (admin/admin - change on first login)
+# InfluxDB UI: http://localhost:8086
+#
+# Credentials below are LAB PLACEHOLDERS for a LAN-only deployment.
+# Change INFLUXDB_TOKEN before real use and never commit real secrets.
+# ==============================================================================
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: benchwatch-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: benchwatch-influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: benchwatch
+      DOCKER_INFLUXDB_INIT_PASSWORD: benchwatch-lab
+      DOCKER_INFLUXDB_INIT_ORG: bca182
+      DOCKER_INFLUXDB_INIT_BUCKET: benchwatch
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: benchwatch-lab-token-change-me
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    restart: unless-stopped
+
+  ingestion:
+    build: ../ingestion
+    container_name: benchwatch-ingestion
+    depends_on:
+      - mosquitto
+      - influxdb
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_TOPIC_FILTER: "bca182/#"
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: benchwatch-lab-token-change-me
+      INFLUX_ORG: bca182
+      INFLUX_BUCKET: benchwatch
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    container_name: benchwatch-grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - influxdb
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    restart: unless-stopped
+
+volumes:
+  influxdb-data:
+  grafana-data:

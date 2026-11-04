@@ -476,9 +476,9 @@ static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
 
         const uint32_t now = k_uptime_get_32();
         if ((int32_t)(now - next_level) >= 0) {
-            printk("[AUDIO] mic L rms=%-6u R rms=%-6u peak=%-6d\n",
+            printk("[AUDIO] mic L rms=%-6u R rms=%-6u peak=%-6d clip=%u\n",
                    (unsigned)s_level_rms, (unsigned)s_level_rms_r,
-                   (int)s_level_peak);
+                   (int)s_level_peak, (unsigned)s_level_clips);
             next_level = now + AUDIO_LEVEL_PERIOD_MS;
         }
         if ((int32_t)(now - next_stat) >= 0) {

@@ -172,6 +172,7 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
     uint32_t aps_failures = 0U;
     uint32_t imu_failures = 0U;
     baby_state_t prev_state = BABY_STATE_NORMAL; /* matches monitor_state_init */
+    bool s_first_reading_logged = false;
     env_alert_t prev_env = ENV_OK;
     uint32_t next_wake = k_uptime_get_32();
 
@@ -222,6 +223,17 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
                    env_alert_name(env));
             prev_state = state;
             prev_env = env;
+        }
+
+        /* One-shot evidence line: the first live reading after probe. */
+        if (!s_first_reading_logged && aht_ok) {
+            s_first_reading_logged = true;
+            printk("[SENSE] first reading: T=%d.%u C RH=%u.%u %% LUX=%u "
+                   "PROX=%u ACCEL=%ld mg\n",
+                   temp_x10 / 10, (unsigned)(temp_x10 % 10),
+                   hum_x10 / 10, (unsigned)(hum_x10 % 10),
+                   (unsigned)lux, (unsigned)proximity,
+                   (long)accel_mg);
         }
 
         sleep_until(&next_wake, SENSOR_PERIOD_MS);

@@ -15,3 +15,5 @@ ml_model/*.csv
 __pycache__/
 *.pyc
 ml_model/features_cache.npz
+ml_model/features_aug_cache.npz
+ml_model/noise_pool_*.npz

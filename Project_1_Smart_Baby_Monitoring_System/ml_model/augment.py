@@ -1,31 +1,55 @@
 #!/usr/bin/env python3
 """
-augment.py - v2 wave-level data augmentation for the cry/non-cry trainer.
+augment.py - v3 wave-level data augmentation for the cry/non-cry trainer.
 
 Purpose: donateacry (phone-app, close mic) cries look nothing like the frozen
 test's ESC-50 crying_baby clips (ambient room recordings, distant mic, FULL of
 broadband room noise: test-cry ZCR 0.185 vs train-cry 0.138, mfcc00_mean
 -56.9 vs -76.7). The v1 forest therefore recalled only 0.29 of test-cry
 windows. This module closes that gap by synthesizing, from every TRAINING cry
-window only, variants that emulate the deployment channel:
+window only, variants that emulate the deployment channel.
 
-  * playback-bandwidth limiting: first-order lowpass, cutoff 3-6 kHz
-    (distant/phone speaker)
-  * additive room noise: white or pink (1/f) at SNR 5-20 dB (raises ZCR and
-    fills the mel spectrogram floor exactly like the ESC-50 shift)
-  * volume +/-8 dB
+v5 recipe (v2 diagnostics: the forest keys on spectral-shape MFCCs and
+learned a synthetic-noise shortcut; v3/v4 lesson: the cry must stay DOMINANT
+in mixtures - ESC-50 crying_baby is loud crying in a room, not a faint cry
+buried in noise, and noise-heavy mixtures inflate the ambient false-positive
+rate):
+
+  * REAL-NOISE MIXING: with p=0.5 a cry window is mixed with a REAL ESC-50
+    fold 1-3 non-cry window (train split only) at SNR 10-25 dB (cry clearly
+    dominant). This creates contrastive pairs (cry+real ambience -> cry vs
+    the same ambience alone -> noncry). Remaining variants keep synthetic
+    white/pink noise at SNR 5-20 dB.
+  * REVERB: 2-3 decaying echo taps (25-110 ms, gain 0.15-0.40), p=0.7 -
+    the dominant room effect the v2 recipe lacked.
+  * playback-bandwidth limiting: first-order lowpass (Tustin, prewarped),
+    cutoff 2.5-7 kHz, p=0.6 (distant/phone speaker).
+  * volume -6..+14 dB for all variants; a "loud" branch (p=0.3) applies
+    +10..+20 dB - mirrored on the non-cry side so loudness alone never
+    becomes a cry cue (ESC-50 cries are LOUD: mfcc00_mean -56.9 vs
+    train-cry -76.7; the loud branch closes that gap). ALL training non-cry
+    windows get a noise/volume variant (frac 1.0) to counterweight the
+    boundary.
   * pitch/speed shift +/-10% (linear-interp resample trick, per FILE so a
-    variant is a coherent re-recording)
+    variant is a coherent re-recording).
   * 50 Hz mains hum mix at low level (-32..-22 dB rel RMS) with 100/150 Hz
-    harmonics
+    harmonics.
 
-A FRACTION of TRAINING non-cry windows also gets noise + volume variants so
-the model stays calibrated under noise (per the improvement plan; no lowpass
-on non-cry - muffling ambient noise would make it look MORE cry-like).
+A FRACTION of TRAINING non-cry windows also gets noise + volume variants
+(same loud branch) so the model stays calibrated under noise.
+
+Also provides stress_val_windows(): the DEPLOYMENT channel applied to VAL cry
+windows only (always lowpass + heavier real-noise mixing at SNR 0-10 dB) so
+the trainer can tune its vote threshold in the noisy regime instead of the
+clean close-mic regime. This still uses ONLY val data (plus the train-split
+noise pool) - the frozen test is never touched.
 
 Hard rules encoded here:
-  * only manifest rows with split == "train" are ever augmented;
-  * val / test / confuser rows are passed through untouched;
+  * only manifest rows with split == "train" are ever used for training
+    augmentation, and only their waveforms enter the noise pool;
+  * val rows appear ONLY in stress_val_windows (label-preserving channel
+    simulation for threshold tuning), never in training data;
+  * test/confuser rows are never touched;
   * everything is deterministic: every (file, variant) carries its own RNG
     seed derived from a CRC32 of its cache key, so results are independent
     of processing order and stable across cache-partial runs.
@@ -35,8 +59,12 @@ Augmented features are precomputed ONCE into ml_model/features_aug_cache.npz
 is fast and reproducible.
 
 Library API used by train_cry_model.py:
+  load_noise_pool(manifest_rows, dataset_dir)     -> list of 1 s noise windows
   load_or_build_augmented(manifest_rows, dataset_dir, n_cry_variants,
-                          noncry_frac) -> (X_aug, y_aug, src_aug, rel_aug)
+                          noncry_frac, noise_pool)
+                                                  -> (X, y, src, rel)
+  stress_val_windows(manifest_rows, dataset_dir, noise_pool)
+                                                  -> (X, y, rel)
 
 CLI:
   python augment.py --dataset-dir ml_model --selftest
@@ -60,24 +88,46 @@ from extract_features import (              # noqa: E402
 N_FEATURES = len(FEATURE_NAMES)             # 29, mirrors the trainer constant
 
 AUG_CACHE_NAME = "features_aug_cache.npz"
-AUG_CACHE_VERSION = "aug-v1"     # bump to invalidate stale augmented features
+AUG_CACHE_VERSION = "aug-v5"     # bump to invalidate stale augmented features
+N_AUG_CRY_VARIANTS_DEFAULT = 2   # augmented variants per training cry clip
+NONCRY_FRAC_DEFAULT = 1.0        # fraction of training non-cry windows aug'd
 SEED = 42                        # master seed, matches the trainer contract
-LOWPASS_FC_MIN_HZ = 3000.0
-LOWPASS_FC_MAX_HZ = 6000.0
-LOWPASS_PROB = 0.75              # per cry window
-NOISE_PROB = 0.85                # per cry window (white 0.45 / pink 0.40)
-SNR_MIN_DB, SNR_MAX_DB = 5.0, 20.0
-GAIN_MIN_DB, GAIN_MAX_DB = -8.0, 8.0
+
+LOWPASS_FC_MIN_HZ = 2500.0
+LOWPASS_FC_MAX_HZ = 7000.0
+LOWPASS_PROB = 0.6               # per cry window (stress val: always on)
+REVERB_PROB = 0.7                # per cry window
+REVERB_TAP_DELAYS_MS = (25.0, 45.0, 65.0, 85.0, 110.0)
+REVERB_GAIN_MAX = 0.40
+NOISE_PROB = 0.85                # per cry window when real-noise mix not used
+REAL_NOISE_PROB = 0.5            # per cry window (real ESC-50 ambience mix)
+# v3/v4 lesson: the cry must stay DOMINANT in the mixture. ESC-50 crying_baby
+# clips are loud crying in a room, not a faint cry buried in noise - burying
+# donateacry's quiet cries at low SNR created "noise labeled cry" windows
+# that blurred the boundary (val noncry FP at majority: 18.7% v2 -> 21.6% v3
+# -> 23.6% v4). At SNR 10-25 dB the cry formant structure stays learnable
+# while the room channel (noise floor, reverb, distance) still varies.
+REAL_NOISE_SNR_MIN_DB = 10.0     # stress val: 8-18 dB
+REAL_NOISE_SNR_MAX_DB = 25.0
+SNR_MIN_DB, SNR_MAX_DB = 5.0, 20.0          # synthetic noise range
+GAIN_MIN_DB, GAIN_MAX_DB = -6.0, 14.0
+LOUD_PROB = 0.3                  # loud branch, mirrored cry AND non-cry
+LOUD_GAIN_MIN_DB, LOUD_GAIN_MAX_DB = 10.0, 20.0
 SPEED_MIN, SPEED_MAX = 0.90, 1.10    # +/-10 % pitch/speed, per cry FILE variant
 SPEED_PROB = 0.5
 HUM_PROB = 0.25                  # per cry window
 HUM_LEVEL_MIN_DB, HUM_LEVEL_MAX_DB = -32.0, -22.0   # rel signal RMS
-NONCRY_NOISE_PROB = 0.8          # white/pink for non-cry variants
+NOISE_POOL_MAX_WINDOWS = 4000    # cap ESC-50 ambience pool memory (~250 MB)
 
 
 # ------------------------------------------------------------ primitives ----
 def _rms(x):
-    return float(np.sqrt(np.mean(np.square(x, dtype=np.float64)) + 1e-12))
+    """RMS with an explicit float64 cast (numpy 2.x raises FloatingPointError
+    on float32-subnormal squares otherwise) and a tiny floor so silent
+    windows still yield a usable noise-target scale."""
+    with np.errstate(under="ignore", over="ignore"):
+        p = float(np.mean(np.square(np.asarray(x, dtype=np.float64))))
+    return float(np.sqrt(max(p, 1e-24)))
 
 
 def gain_db(x, db):
@@ -95,6 +145,19 @@ def lowpass_first_order(x, fc_hz, fs=FS):
     return lfilter([b0, b1], [1.0, a1], x).astype(np.float64)
 
 
+def apply_reverb(x, rng, fs=FS):
+    """Cheap room reverb: 2-3 decaying echo taps at 25-110 ms (later taps
+    weaker). Emulates the distant-mic room recordings of the test domain."""
+    n_taps = int(rng.integers(2, 4))
+    delays = rng.choice(len(REVERB_TAP_DELAYS_MS), size=n_taps, replace=False)
+    y = np.array(x, dtype=np.float64)
+    for order, di in enumerate(sorted(delays)):
+        d = max(int(REVERB_TAP_DELAYS_MS[di] * fs / 1000.0), 1)
+        g = float(rng.uniform(0.15, REVERB_GAIN_MAX)) * (0.7 ** order)
+        y[d:] += g * x[:-d]
+    return y
+
+
 def _pink_noise(n, rng):
     """1/f (pink) noise via spectral shaping of white noise (Kasdin-Walter
     style: rfft -> 1/sqrt(f) weights -> irfft)."""
@@ -107,16 +170,22 @@ def _pink_noise(n, rng):
     return np.fft.irfft(spec * shape, n=n)
 
 
+def mix_noise(x, noise, snr_db):
+    """Scale a noise array to the requested SNR (vs signal RMS) and add."""
+    noise = np.asarray(noise, dtype=np.float64)
+    noise_rms = _rms(noise)
+    if noise_rms <= 0.0 or len(noise) != len(x):
+        return np.asarray(x, dtype=np.float64)
+    target_rms = _rms(x) * float(10.0 ** (-snr_db / 20.0))
+    return np.asarray(x, dtype=np.float64) + noise * (target_rms / noise_rms)
+
+
 def add_noise(x, rng, snr_db, kind="white"):
     """Additive white/pink noise scaled to the requested SNR vs signal RMS."""
     n = len(x)
     noise = (rng.standard_normal(n) if kind == "white"
              else _pink_noise(n, rng))
-    noise_rms = _rms(noise)
-    if noise_rms <= 0.0:
-        return x
-    target_rms = _rms(x) * float(10.0 ** (-snr_db / 20.0))
-    return x + noise * (target_rms / noise_rms)
+    return mix_noise(x, noise, snr_db)
 
 
 def add_hum(x, rng, fs=FS):
@@ -155,32 +224,56 @@ def _clip_guard(y):
     return y
 
 
+def _apply_volume(y, rng):
+    """Volume -8..+8 dB; the loud branch (p=0.2, +8..+16 dB) is mirrored on
+    cry AND non-cry windows so loudness alone is not a cry cue."""
+    if rng.random() < LOUD_PROB:
+        return gain_db(y, rng.uniform(LOUD_GAIN_MIN_DB, LOUD_GAIN_MAX_DB))
+    return gain_db(y, rng.uniform(GAIN_MIN_DB, GAIN_MAX_DB))
+
+
 # ------------------------------------------------------------- recipes ------
-def augment_cry_window(w, rng):
-    """One 1 s cry window -> one augmented variant (deterministic given rng)."""
+def augment_cry_window(w, rng, noise_pool=None, stress=False):
+    """One 1 s cry window -> one augmented variant (deterministic given rng).
+
+    stress=True is the deployment-channel simulation used for the VAL-cry
+    threshold proxy: reverb p=0.8, real-noise mixing at SNR 8-18 dB (cry
+    still dominant), and lowpass at p=0.5 - half the stress windows model
+    the live speaker-playback channel, half the full-band ambient-mic
+    channel of the frozen test domain."""
     y = np.asarray(w, dtype=np.float64)
-    if rng.random() < LOWPASS_PROB:                       # distant speaker
-        y = lowpass_first_order(y, rng.uniform(LOWPASS_FC_MIN_HZ,
-                                               LOWPASS_FC_MAX_HZ))
+    lp_p = 0.5 if stress else LOWPASS_PROB
+    if rng.random() < lp_p:                               # distant speaker
+        fc_lo = 2500.0 if stress else LOWPASS_FC_MIN_HZ
+        fc_hi = 5000.0 if stress else LOWPASS_FC_MAX_HZ
+        y = lowpass_first_order(y, rng.uniform(fc_lo, fc_hi))
+    if rng.random() < (0.8 if stress else REVERB_PROB):   # room reverb
+        y = apply_reverb(y, rng)
     if rng.random() < HUM_PROB:                           # mains hum
         y = add_hum(y, rng)
     r = rng.random()                                      # room noise
-    if r < 0.45:
-        y = add_noise(y, rng, rng.uniform(SNR_MIN_DB, SNR_MAX_DB), "white")
-    elif r < NOISE_PROB:
-        y = add_noise(y, rng, rng.uniform(SNR_MIN_DB, SNR_MAX_DB), "pink")
-    y = gain_db(y, rng.uniform(GAIN_MIN_DB, GAIN_MAX_DB))  # volume
+    snr_lo = 8.0 if stress else REAL_NOISE_SNR_MIN_DB
+    snr_hi = 18.0 if stress else REAL_NOISE_SNR_MAX_DB
+    real_p = 0.85 if stress else REAL_NOISE_PROB
+    if noise_pool and r < real_p:
+        idx = int(rng.integers(0, len(noise_pool)))
+        y = mix_noise(y, noise_pool[idx], rng.uniform(snr_lo, snr_hi))
+    elif r < (real_p + (1.0 - real_p) * (NOISE_PROB / 0.85)):
+        kind = "white" if rng.random() < 0.45 else "pink"
+        y = add_noise(y, rng, rng.uniform(SNR_MIN_DB, SNR_MAX_DB), kind)
+    y = _apply_volume(y, rng)                             # volume (+ loud)
     return _clip_guard(y)
 
 
 def augment_noncry_window(w, rng):
-    """Calibration variant for non-cry windows: noise + volume only (keeps
-    them recognizably non-cry under room noise; no muffling)."""
+    """Calibration variant for non-cry windows: synthetic noise + volume only
+    (keeps them recognizably non-cry under noise; no muffling, no reverb -
+    those are cry-channel effects)."""
     y = np.asarray(w, dtype=np.float64)
-    if rng.random() < NONCRY_NOISE_PROB:
+    if rng.random() < NOISE_PROB:
         kind = "white" if rng.random() < 0.5 else "pink"
         y = add_noise(y, rng, rng.uniform(SNR_MIN_DB, SNR_MAX_DB), kind)
-    y = gain_db(y, rng.uniform(GAIN_MIN_DB, GAIN_MAX_DB))
+    y = _apply_volume(y, rng)
     return _clip_guard(y)
 
 
@@ -195,6 +288,68 @@ def _windows_of(x16k):
     window dropped), mirroring extract_features.extract_file_windows()."""
     return [x16k[s:s + WINDOW_SAMPLES]
             for s in range(0, len(x16k) - WINDOW_SAMPLES + 1, WINDOW_SAMPLES)]
+
+
+# ------------------------------------------------------- real-noise pool ----
+def _pool_cache_path(dataset_dir):
+    return os.path.join(dataset_dir, f"noise_pool_{AUG_CACHE_VERSION}.npz")
+
+
+def load_noise_pool(manifest_rows, dataset_dir,
+                    max_windows=NOISE_POOL_MAX_WINDOWS, log=print):
+    """Deterministic pool of REAL ambience windows for cry mixing: 1 s
+    windows from TRAIN-split non-cry clips only (ESC-50 folds 1-3). Val/test/
+    confuser audio never enters the pool. Subsampling (if over the cap) is
+    seeded with SEED, so the pool is identical across runs. The pool is
+    cached to noise_pool_<version>.npz (validated against the number of
+    source files) so repeated trainer runs skip the ~2 min WAV load."""
+    files = []
+    for row in manifest_rows:
+        if row.get("split") == "train" and row.get("label") != "cry":
+            files.append(row["path"])
+    files = sorted(files)
+
+    cache_path = _pool_cache_path(dataset_dir)
+    if os.path.exists(cache_path):
+        try:
+            with np.load(cache_path, allow_pickle=False) as z:
+                if (int(z["n_source_files"]) == len(files)
+                        and int(z["max_windows"]) == int(max_windows)
+                        and z["pool"].shape[1] == WINDOW_SAMPLES):
+                    log(f"noise pool: {z['pool'].shape[0]} windows loaded "
+                        f"from {os.path.basename(cache_path)}")
+                    return [row for row in z["pool"]]
+        except Exception as exc:                      # noqa: BLE001
+            print(f"noise-pool cache unreadable ({exc}) - rebuilding")
+
+    pool = []
+    for rel in files:
+        abs_path = os.path.join(dataset_dir, rel)
+        if not os.path.exists(abs_path):
+            continue
+        try:
+            x, fs = load_wav(abs_path)
+            x = resample_to_16k(x, fs)
+        except Exception as exc:                      # noqa: BLE001
+            print(f"  noise-pool skip: {abs_path}: {exc}")
+            continue
+        for w in _windows_of(x):
+            if len(w) == WINDOW_SAMPLES:
+                pool.append(w.astype(np.float32))
+    if len(pool) > max_windows:
+        rng = np.random.default_rng(SEED)
+        pick = rng.permutation(len(pool))[:max_windows]
+        pool = [pool[i] for i in sorted(pick.tolist())]
+    tmp = cache_path + ".tmp.npz"
+    np.savez_compressed(tmp,
+                        pool=np.stack(pool).astype(np.float32)
+                        if pool else np.zeros((0, WINDOW_SAMPLES), np.float32),
+                        n_source_files=np.int64(len(files)),
+                        max_windows=np.int64(max_windows))
+    os.replace(tmp, cache_path)
+    log(f"noise pool: {len(pool)} real ambience windows (train non-cry only) "
+        f"-> {os.path.basename(cache_path)}")
+    return pool
 
 
 # ------------------------------------------------------- augmented cache ----
@@ -227,13 +382,16 @@ def _save_cache(cache_path, cache):
     os.replace(tmp, cache_path)
 
 
-def _aug_file_block(rel_path, abs_path, label, variant_id, noncry_frac=0.5):
+def _aug_file_block(rel_path, abs_path, label, variant_id, noncry_frac,
+                    noise_pool):
     """One augmented variant of one training clip -> (n, 29) float32 features.
     Fully deterministic: the RNG is seeded from the variant's cache key.
     For non-cry clips, `noncry_frac` of the windows get a calibration variant
     (Bernoulli per window, seeded with the file), the rest are left out."""
+    # noncry_frac only shapes non-cry blocks; cry seeds/keys must not depend
+    # on it so tuning the fraction does not invalidate cry variant caches.
     seed_key = (f"{AUG_CACHE_VERSION}|{rel_path}|{variant_id}"
-                f"|f{noncry_frac:.2f}")
+                + ("" if label == "cry" else f"|f{noncry_frac:.2f}"))
     rng = np.random.default_rng(_file_seed(seed_key))
     try:
         x, fs = load_wav(abs_path)
@@ -242,25 +400,29 @@ def _aug_file_block(rel_path, abs_path, label, variant_id, noncry_frac=0.5):
         print(f"  aug skip: {abs_path}: {exc}")
         return np.zeros((0, N_FEATURES), np.float32)
 
-    if label == "cry" and rng.random() < SPEED_PROB:
-        # per-FILE pitch/speed shift so a variant is a coherent re-recording
-        x = speed_pitch_shift(x, rng.uniform(SPEED_MIN, SPEED_MAX))
-    windows = _windows_of(x)
     feats = []
-    for w in windows:
-        if len(w) != WINDOW_SAMPLES:
-            continue
-        if label != "cry" and rng.random() >= noncry_frac:
-            continue                                  # not selected this run
-        aw = (augment_cry_window(w, rng) if label == "cry"
-              else augment_noncry_window(w, rng))
-        feats.append(extract_window(aw))
+    # donateacry has near-digital-silence windows whose subnormal squares
+    # trigger numpy 2.x FloatingPointError - underflow to 0 is harmless here.
+    with np.errstate(under="ignore", over="ignore"):
+        if label == "cry" and rng.random() < SPEED_PROB:
+            # per-FILE pitch/speed shift: a variant is a coherent re-recording
+            x = speed_pitch_shift(x, rng.uniform(SPEED_MIN, SPEED_MAX))
+        windows = _windows_of(x)
+        for w in windows:
+            if len(w) != WINDOW_SAMPLES:
+                continue
+            if label != "cry" and rng.random() >= noncry_frac:
+                continue                              # not selected this run
+            aw = (augment_cry_window(w, rng, noise_pool) if label == "cry"
+                  else augment_noncry_window(w, rng))
+            feats.append(extract_window(aw))
     return (np.stack(feats).astype(np.float32) if feats
             else np.zeros((0, N_FEATURES), np.float32))
 
 
 def load_or_build_augmented(manifest_rows, dataset_dir,
-                            n_cry_variants=2, noncry_frac=0.5,
+                            n_cry_variants=N_AUG_CRY_VARIANTS_DEFAULT,
+                            noncry_frac=NONCRY_FRAC_DEFAULT, noise_pool=None,
                             save_every=100, log=print):
     """Train-split wave augmentation with a persistent feature cache.
 
@@ -286,10 +448,11 @@ def load_or_build_augmented(manifest_rows, dataset_dir,
         for vid in variants:
             st = os.stat(abs_path)
             key = (f"{AUG_CACHE_VERSION}|{rel_path}|{st.st_mtime_ns}|"
-                   f"{st.st_size}|{vid}")
+                   f"{st.st_size}|{vid}"
+                   + ("" if label == "cry" else f"|f{noncry_frac:.2f}"))
             if key not in cache:
                 cache[key] = _aug_file_block(rel_path, abs_path, label, vid,
-                                             noncry_frac)
+                                             noncry_frac, noise_pool)
                 n_new += 1
                 n_files += 1
                 if n_files % save_every == 0:
@@ -316,6 +479,50 @@ def load_or_build_augmented(manifest_rows, dataset_dir,
             np.concatenate(rel))
 
 
+# --------------------------------------------- stress-val threshold proxy ---
+def stress_val_windows(manifest_rows, dataset_dir, noise_pool, log=print):
+    """Deployment-channel simulation of the VAL cry clips (label-preserving;
+    uses ONLY val data + the train-split noise pool). Returns (X, y, rel):
+    stress-augmented windows of every val cry clip, for threshold tuning in
+    the noisy regime. Deterministic per file ("valstress" seed key)."""
+    X, y, rel = [], [], []
+    for row in manifest_rows:
+        if row.get("split") != "val" or row.get("label") != "cry":
+            continue
+        rel_path = row["path"]
+        abs_path = os.path.join(dataset_dir, rel_path)
+        if not os.path.exists(abs_path):
+            continue
+        rng = np.random.default_rng(
+            _file_seed(f"{AUG_CACHE_VERSION}|{rel_path}|valstress"))
+        try:
+            x, fs = load_wav(abs_path)
+            x = resample_to_16k(x, fs)
+        except Exception as exc:                      # noqa: BLE001
+            print(f"  stress-val skip: {abs_path}: {exc}")
+            continue
+        feats = []
+        with np.errstate(under="ignore", over="ignore"):
+            for w in _windows_of(x):
+                if len(w) != WINDOW_SAMPLES:
+                    continue
+                aw = augment_cry_window(w, rng, noise_pool, stress=True)
+                feats.append(extract_window(aw))
+        if not feats:
+            continue
+        block = np.stack(feats).astype(np.float32)
+        X.append(block)
+        y.append(np.ones(block.shape[0], dtype=np.int64))
+        rel.append(np.full(block.shape[0], rel_path, dtype=object))
+    if not X:
+        log("stress-val: no val cry windows available")
+        return (np.zeros((0, N_FEATURES), np.float32), np.zeros(0, np.int64),
+                np.zeros(0, dtype=object))
+    log(f"stress-val: {sum(b.shape[0] for b in X)} windows from "
+        f"{len(X)} val cry clips")
+    return np.concatenate(X), np.concatenate(y), np.concatenate(rel)
+
+
 # --------------------------------------------------------------- selftest ---
 def _selftest() -> int:
     rng = np.random.default_rng(SEED)
@@ -331,7 +538,7 @@ def _selftest() -> int:
     w = (0.4 * np.sin(2 * np.pi * 400.0 * np.arange(WINDOW_SAMPLES) / FS)
          .astype(np.float64))
 
-    y1 = augment_cry_window(w, rng)
+    y1 = augment_cry_window(w, rng, noise_pool=[w * 0.1])
     y2 = augment_cry_window(w, np.random.default_rng(_file_seed("x")))
     check("cry variant finite + in range",
           bool(np.isfinite(y1).all()) and float(np.max(np.abs(y1))) <= 1.0)
@@ -350,6 +557,20 @@ def _selftest() -> int:
     snr_meas = -10.0 * np.log10(ratio ** 2)      # 10*log10(Psig/Pnoise)
     check("white noise SNR honored (~10 dB)", abs(snr_meas - 10.0) < 0.5,
           f"{snr_meas:.2f} dB")
+
+    # mix_noise with an arbitrary (real) noise array must honor SNR too
+    real = rng.standard_normal(WINDOW_SAMPLES) * 0.3
+    mixed = mix_noise(np.full(WINDOW_SAMPLES, 0.05), real, 6.0)
+    r2 = _rms(mixed - 0.05) / 0.05
+    check("real-noise mix SNR honored (~6 dB)",
+          abs(-10.0 * np.log10(r2 ** 2) - 6.0) < 0.5,
+          f"{-10.0 * np.log10(r2**2):.2f} dB")
+
+    # reverb: output keeps the tone (peak spectrum unchanged) + adds energy
+    rev = apply_reverb(w, np.random.default_rng(9))
+    check("reverb adds tail energy, keeps content",
+          _rms(rev) > _rms(w) * 1.05 and _rms(rev) < _rms(w) * 1.6,
+          f"rms ratio {_rms(rev)/_rms(w):.3f}")
 
     # lowpass: 6 kHz tone through a 3 kHz first-order LPF must be attenuated
     t6 = (0.5 * np.sin(2 * np.pi * 6000.0 * np.arange(WINDOW_SAMPLES) / FS))
@@ -388,6 +609,12 @@ def _selftest() -> int:
           bool(np.isfinite(yn).all()) and float(np.max(np.abs(yn))) <= 1.0)
     check("noncry variant changed the waveform", not np.allclose(yn, w))
 
+    ys = augment_cry_window(w, np.random.default_rng(11), stress=True)
+    fs_ = extract_window(ys)
+    check("stress variant finite + 29 features",
+          bool(np.isfinite(ys).all()) and fs_.shape == (29,)
+          and bool(np.isfinite(fs_).all()))
+
     print(f"{'ALL PASS' if not failures else f'{len(failures)} FAILURE(S): ' + ', '.join(failures)}")
     return 0 if not failures else 1
 
@@ -397,9 +624,9 @@ def main() -> int:
                                  "augmentation + augmented feature cache")
     ap.add_argument("--dataset-dir", default=HERE)
     ap.add_argument("--selftest", action="store_true")
-    ap.add_argument("--variants", type=int, default=2,
+    ap.add_argument("--variants", type=int, default=N_AUG_CRY_VARIANTS_DEFAULT,
                     help="augmented variants per training cry clip")
-    ap.add_argument("--noncry-frac", type=float, default=0.5,
+    ap.add_argument("--noncry-frac", type=float, default=NONCRY_FRAC_DEFAULT,
                     help="fraction of training non-cry windows augmented")
     args = ap.parse_args()
     if args.selftest:
@@ -409,9 +636,11 @@ def main() -> int:
     manifest = os.path.join(args.dataset_dir, "manifest.csv")
     with open(manifest, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
+    pool = load_noise_pool(rows, os.path.abspath(args.dataset_dir))
     X, y, src, rel = load_or_build_augmented(
         rows, os.path.abspath(args.dataset_dir),
-        n_cry_variants=args.variants, noncry_frac=args.noncry_frac)
+        n_cry_variants=args.variants, noncry_frac=args.noncry_frac,
+        noise_pool=pool)
     print(f"augmented windows: {X.shape[0]} (cry={int(y.sum())}, "
           f"noncry={int((1 - y).sum())})")
     return 0

@@ -1,0 +1,7 @@
+dataset_prep.py run 2026-11-04T16:33:51+00:00
+donateacry-corpus: cloned sha=6baf5ac  license=ODbL 1.0  url=https://github.com/gveres/donateacry-corpus.git
+ESC-50: cloned sha=33c8ce9  license=CC BY-NC 3.0  url=https://github.com/karolpiczak/ESC-50.git
+UrbanSound8K: absent (optional)  license=CC BY-NC 3.0
+ffmpeg available: True
+seed=182 donate_val_frac=0.15 test_noncry_n=40
+manifest rows: 3265

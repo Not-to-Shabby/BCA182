@@ -9,7 +9,9 @@ android_app/app/build/
 android_app/build/
 ml_model/data/
 ml_model/*.csv
+!ml_model/manifest.csv
 *.wav
 *.m4a
 __pycache__/
 *.pyc
+ml_model/features_cache.npz

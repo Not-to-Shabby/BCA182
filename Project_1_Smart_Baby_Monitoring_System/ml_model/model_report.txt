@@ -1,0 +1,60 @@
+=== Smart Baby Monitor - P3 cry/non-cry model report ===
+generated : 2026-11-04T16:41:28+00:00
+python 3.11.7, numpy 2.4.6, scikit-learn 1.9.1, emlearn 0.23.2
+model     : RandomForestClassifier(n_estimators=10, max_depth=6, class_weight='balanced', random_state=42, n_jobs=-1)
+features  : mfcc00_mean, mfcc01_mean, mfcc02_mean, mfcc03_mean, mfcc04_mean, mfcc05_mean, mfcc06_mean, mfcc07_mean, mfcc08_mean, mfcc09_mean, mfcc10_mean, mfcc11_mean, mfcc12_mean, mfcc00_std, mfcc01_std, mfcc02_std, mfcc03_std, mfcc04_std, mfcc05_std, mfcc06_std, mfcc07_std, mfcc08_std, mfcc09_std, mfcc10_std, mfcc11_std, mfcc12_std, log_energy_mean, log_energy_std, zcr_mean
+
+--- dataset provenance (dataset_provenance.txt) ---
+dataset_prep.py run 2026-11-04T16:33:51+00:00
+donateacry-corpus: cloned sha=6baf5ac  license=ODbL 1.0  url=https://github.com/gveres/donateacry-corpus.git
+ESC-50: cloned sha=33c8ce9  license=CC BY-NC 3.0  url=https://github.com/karolpiczak/ESC-50.git
+UrbanSound8K: absent (optional)  license=CC BY-NC 3.0
+ffmpeg available: True
+seed=182 donate_val_frac=0.15 test_noncry_n=40
+manifest rows: 3265
+
+--- split counts (1 s windows) ---
+  train     clips cry/noncry 1352/1080   windows cry/noncry 8697/5400
+  val       clips cry/noncry 229/360   windows cry/noncry 1455/1800
+  test      clips cry/noncry 40/40   windows cry/noncry 200/200
+  confuser  clips cry/noncry 0/160   windows cry/noncry 0/800
+
+--- VALIDATION split ---
+Confusion matrix (rows = truth [noncry, cry], cols = prediction [noncry, cry]):
+                 pred noncry   pred cry
+  true noncry |        1641 |      159
+  true cry    |          82 |     1373
+class     precision     recall         f1  support
+noncry        0.952      0.912      0.932     1800
+cry           0.896      0.944      0.919     1455
+accuracy: 0.926
+
+--- FROZEN TEST split (never seen in training) ---
+Confusion matrix (rows = truth [noncry, cry], cols = prediction [noncry, cry]):
+                 pred noncry   pred cry
+  true noncry |         195 |        5
+  true cry    |         142 |       58
+class     precision     recall         f1  support
+noncry        0.579      0.975      0.726      200
+cry           0.921      0.290      0.441      200
+accuracy: 0.632
+
+--- rule-based baseline: log-energy > -16.248391 (threshold tuned on TRAIN, balanced acc 0.548) ---
+--- baseline on FROZEN TEST split ---
+Confusion matrix (rows = truth [noncry, cry], cols = prediction [noncry, cry]):
+                 pred noncry   pred cry
+  true noncry |          21 |      179
+  true cry    |           4 |      196
+class     precision     recall         f1  support
+noncry        0.840      0.105      0.187      200
+cry           0.523      0.980      0.682      200
+accuracy: 0.542
+
+--- confuser false-positive table (split=confuser) ---
+category            clips  windows  FP windows  FP rate  FP clips  baseline FP
+chainsaw               22       40           0    0.000         0           34
+helicopter             15       40           2    0.050         1           38
+rooster                33       40           2    0.050         2           33
+siren                  28       40           1    0.025         1           35
+
+EXPORT: wrote D:\BCA182_Lab\Project_1_Smart_Baby_Monitoring_System\include\cry_model.h (101664 bytes, 10 trees x depth <= 6, 29 features)

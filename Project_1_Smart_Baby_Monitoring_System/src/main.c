@@ -34,6 +34,7 @@
 #include "buttons.h"
 #include "ui_dashboard.h"
 #include "sensor_task.h"
+#include "audio_capture.h"
 
 #include <stdio.h>
 
@@ -220,6 +221,14 @@ int main(void)
 
     sensor_task_start();
     printk("[APP] Sensor task started (AHT10/AP3216C/ICM20608, 2 s)\n");
+
+    /* AUDIO CAPTURE PATH (P2): ES8388 codec + I2S3 TX engine, then the
+     * I2S3ext RX capture path (PB4, DMA1 S2 Ch2 circular). */
+    audio_capture_init();
+    printk("[APP] Audio codec + capture path initialized (ES8388, 16 kHz)\n");
+
+    audio_capture_start();
+    printk("[APP] Audio capture started (mic -> I2S3ext RX -> mono ring)\n");
 
     /* LED matrix liveness until the UI thread takes over pixel 0 */
     led_matrix_set_pixel(0, 0, 16, 0);

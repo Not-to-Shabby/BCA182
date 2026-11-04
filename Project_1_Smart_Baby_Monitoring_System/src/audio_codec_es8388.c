@@ -456,79 +456,54 @@ static void es8388_codec_init(void)
         printk("[ES8388] Notice: NACK on both 0x10 and 0x11 (check I2C bus)\n");
     }
 
-    /* 2. Full ES8388 register configuration, following the OFFICIAL datasheet
-     * sequences (ES8388 User Guide 2011-06-17): 10.1 start-up codec +
-     * 10.2 start-up recording + 8.4.1 differential-mic sample code, adapted
-     * to 16-bit I2S for the STM32 I2S3/I2S3_ext receiver. The previous
-     * RT-Thread-derived init had 0x0C=0x0D (LEFT-JUSTIFIED ADC format) while
-     * the master sends standard I2S -- the format mismatch is why the ext
-     * receiver latched zeros; 0x0A=0x10 also selected a mismatched LIN1/RIN2
-     * pair instead of the differential LIN1-RIN1 mic wiring. */
+    /* 2. Full ES8388 register configuration combining the official RT-Spark
+     * SDK drv_es8388.c sequence with the ES8388 User Guide §8.4.1 differential
+     * microphone setup and 16-bit Philips I2S ADC format (0x0C = 0x0C). */
     es8388_reg_write(0x19, 0x04); /* DACCONTROL3: mute DAC during setup */
-    es8388_reg_write(0x08, 0x00); /* MASTERMODE: slave mode (datasheet 10.2) */
-    es8388_reg_write(0x02, 0xF3); /* power down DEM/STM/DLL/VREFs (10.2) */
-    es8388_reg_write(0x2B, 0x80); /* DACCONTROL21: ADC+DAC share LRCK (10.2) */
-    es8388_reg_write(0x00, 0x0E); /* CONTROL1: Play&Record + **EnRef=1**
-                                     (internal reference ON -- the datasheet
-                                     sequence's 0x05 leaves EnRef=0 and the
-                                     ADC modulator then rails at full scale,
-                                     streaming raw 1s out of ASDOUT) +
-                                     VMIDSEL=10 (500k, the register default) */
-    es8388_reg_write(0x01, 0x40); /* CONTROL2: Power Up Analog and Ibias (10.2) */
+    es8388_reg_write(0x01, 0x50); /* CONTROL2: chip power/bias mgmt (drv_es8388) */
+    es8388_reg_write(0x02, 0x00); /* CHIPPOWER: power up all blocks */
+    es8388_reg_write(0x08, 0x00); /* MASTERMODE: I2S slave mode */
 
-    /* Power up ADC / Analog Input for record (10.2) */
-    es8388_reg_write(0x03, 0x00); /* ADCPOWER: ADC + LIN/RIN inputs on */
-
-    /* ADC setup (8.4.1 differential-mic sample code, 16-bit I2S adapted) */
-    es8388_adc_set_pga(0x77);     /* ADCCONTROL1: MicBoost PGA +21 dB (voice) */
-    es8388_reg_write(0x0A, 0xF0); /* ADCCONTROL2: LIN1-RIN1 differential */
-    es8388_reg_write(0x0B, 0x02); /* ADCCONTROL3: select LIN1+RIN1 pair
-                                     (schematic: MIC_P->pin 24 LIN1,
-                                      MIC_N->pin 23 RIN1) */
-    es8388_reg_write(0x0C, 0x0C); /* ADCCONTROL4: ADCWL=011(16-bit)+I2S fmt */
-    es8388_reg_write(0x0D, 0x02); /* ADCCONTROL5: single speed, ratio 256 */
-    es8388_reg_write(0x10, 0x00); /* ADCCONTROL8: LADC volume 0dB */
-    es8388_reg_write(0x11, 0x00); /* ADCCONTROL9: RADC volume 0dB */
-    es8388_reg_write(0x0F, 0x30); /* ADCCONTROL7: ADC unmute (soft ramp) */
-
-    /* ALC disabled: with a stationary monitor the ALC hunts on silence
-     * (ramps PGA to MAXGAIN, room hum then rails the input -- measured live:
-     * rms climbed 44k->77k with peaks pinned at full scale). Fixed PGA keeps
-     * the capture predictable; software RMS in the feature path handles
-     * leveling. The datasheet voice ALC preset (0x12=0xE2, 0x13=0xC0,
-     * 0x14=0x12, 0x15=0x06) remains the documented option. */
-    es8388_reg_write(0x12, 0x00); /* ALCSEL=00: ALC off */
-    /* The ALC latches its own PGA gain internally; re-write reg 0x09 AFTER
-     * disabling ALC or the pumped gain persists (measured: input railed). */
-    es8388_adc_set_pga(0x00);     /* fixed PGA 0 dB (DC diagnostic) */
-    /* DC diagnostic: disable the ADC high-pass filter (Reg14 ADC_HPF_L/R,
-     * default enabled) so the raw DC level of the input is visible in the
-     * sample dump -- a properly biased input reads near mid-scale, an
-     * unbiased/floating one pins at 0x0000/0xFFFF. */
-    es8388_reg_write(0x0E, 0x00); /* ADC_HPF_L=0, ADC_HPF_R=0 */
-
-    /* DAC setup (unchanged from the Lab 2-proven playback path) */
+    /* DAC setup (Lab 2 + RT-Spark SDK proven path) */
     es8388_reg_write(0x04, 0xC0); /* DACPOWER: disable DAC temporarily */
-    es8388_reg_write(0x17, 0x18); /* DACCONTROL1: 16-bit I2S format */
+    es8388_reg_write(0x00, 0x12); /* CONTROL1: Play & Record mode (VMID=500k, EnRef=1) */
+    es8388_reg_write(0x17, 0x18); /* DACCONTROL1: 16-bit Philips I2S format */
     es8388_reg_write(0x18, 0x02); /* DACCONTROL2: Single speed, ratio 256 */
-    es8388_reg_write(0x26, 0x00); /* DACCONTROL16: audio on LIN1/RIN1 */
+    es8388_reg_write(0x26, 0x00); /* DACCONTROL16: mixer input select */
     es8388_reg_write(0x27, 0x9C); /* DACCONTROL17: L DAC to L mixer */
     es8388_reg_write(0x2A, 0x9C); /* DACCONTROL20: R DAC to R mixer */
-    es8388_reg_write(0x2D, 0x00); /* DACCONTROL23: vroi=0 */
-
-    /* Digital volume: 0dB */
+    es8388_reg_write(0x2B, 0x80); /* DACCONTROL21: ADC+DAC share internal LRCK */
+    es8388_reg_write(0x2D, 0x00); /* DACCONTROL23: VROI=0 */
     es8388_reg_write(0x1A, 0x00); /* DACCONTROL4: L Digital Vol 0dB */
     es8388_reg_write(0x1B, 0x00); /* DACCONTROL5: R Digital Vol 0dB */
-    es8388_reg_write(0x04, 0x3C); /* DACPOWER: Enable DAC and Lout/Rout */
+    es8388_reg_write(0x04, 0x3C); /* DACPOWER: Enable DAC and LOUT1/ROUT1 */
 
-    /* Headphone volume: LOUT1 / ROUT1 (+3.0 dB output boost) */
+    /* ADC setup for onboard electret mic M1 (schematic sheet 9/10:
+     * MIC_P -> pin 24 LINPUT1, MIC_N -> pin 23 RINPUT1, external VMIC bias,
+     * pin 21 MICBIAS unconnected). */
+    es8388_reg_write(0x03, 0xFF); /* ADCPOWER: power down ADC during config */
+    es8388_adc_set_pga(0x88);     /* ADCCONTROL1: +24 dB MIC PGA (estest value) */
+    es8388_reg_write(0x0A, 0xF0); /* ADCCONTROL2: LIN1-RIN1 differential input */
+    es8388_reg_write(0x0B, 0x02); /* ADCCONTROL3: differential pair LIN1-RIN1 */
+    es8388_reg_write(0x0C, 0x0C); /* ADCCONTROL4: 16-bit Philips I2S (0x0D was Left-Justified!) */
+    es8388_reg_write(0x0D, 0x02); /* ADCCONTROL5: single speed, MCLK/LRCK ratio 256 */
+    es8388_reg_write(0x0E, 0x30); /* ADCCONTROL6: enable ADC L/R DC-blocking HPF (default) */
+    es8388_reg_write(0x0F, 0x20); /* ADCCONTROL7: ADC unmute with soft ramp */
+    es8388_reg_write(0x10, 0x00); /* ADCCONTROL8: LADC digital volume 0 dB */
+    es8388_reg_write(0x11, 0x00); /* ADCCONTROL9: RADC digital volume 0 dB */
+    es8388_reg_write(0x12, 0x00); /* ADCCONTROL10: ALC off (fixed PGA gain) */
+    es8388_reg_write(0x03, 0x09); /* ADCPOWER: ADC + LIN/RIN on, internal MICBIAS off */
+
+    /* Headphone volume: LOUT1 / ROUT1 */
     es8388_reg_write(0x2E, 0x21); /* DACCONTROL24: LOUT1VOL (3.5mm Left) */
     es8388_reg_write(0x2F, 0x21); /* DACCONTROL25: ROUT1VOL (3.5mm Right) */
 
-    /* Power up DEM and STM for both paths (10.1 final step) */
-    es8388_reg_write(0x02, 0x00); /* CHIPPOWER: all digital blocks on */
-
-    /* Final un-mute */
+    /* Restart DEM/STM state machine with MCLK/LRCK active (es8388_start) */
+    es8388_reg_write(0x02, 0xF0);
+    k_msleep(5);
+    es8388_reg_write(0x02, 0x00);
+    k_msleep(5);
+    es8388_reg_write(0x03, 0x00); /* ADCPOWER: full ADC & analog input power-up */
     es8388_reg_write(0x19, 0x00); /* DACCONTROL3: DAC UNMUTE */
     k_msleep(10);
 
@@ -628,9 +603,11 @@ void audio_hardware_dac_init(void)
     printk("[Audio_DAC] Initializing STM32 12-bit Analog DAC on PA4...\n");
     dac1_pa4_init();
 
-    printk("[Audio_Codec] Initializing ES8388 (I2C on PF0/PF1) & I2S3 @ 16 kHz...\n");
-    es8388_codec_init();
+    printk("[Audio_Codec] Initializing I2S3 @ 16 kHz & ES8388 (I2C on PF0/PF1)...\n");
+    /* Start I2S3 MCLK/LRCK first so the ES8388 state machine and ADC have
+     * a stable clock reference during power-up (matches SDK sound_init). */
     i2s3_hw_init();
+    es8388_codec_init();
 
     /* Initialize scaled sine table */
     audio_hardware_dac_set_volume(s_current_volume);

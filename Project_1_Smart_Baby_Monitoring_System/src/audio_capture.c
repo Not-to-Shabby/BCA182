@@ -235,6 +235,7 @@ static void consume_latest_half(void)
                                         (double)s_lvl_count);
         s_level_peak = s_lvl_peak;
         s_lvl_sum_sq = 0;
+        s_lvl_sum_sq_r = 0;
         s_lvl_count = 0;
         s_lvl_peak = 0;
     }
@@ -375,30 +376,31 @@ void audio_capture_init(void)
     es8388_adc_debug_readback();
 
     rx_gpio_init();
-    printk("[AUDIO] PB4 de-JTAG'd to I2S3_ext_SD (AF6, high speed, no pull)\n");
+    printk("[AUDIO] PB4 de-JTAG'd to I2S3_ext_SD (AF7, high speed, no pull)\n");
 
-    /* I2S3ext: 16-bit Philips SLAVE receiver. I2SCFG[9:8] encoding:
-     * 00=slave TX, 01=slave RX, 10=master TX, 11=master RX. The ext block
-     * has no WS/CK pins of its own -- it MUST be slave and ride the I2S3
-     * master's clocks (RM0090 full-duplex); "master RX" here silently
-     * samples a dead timing domain and delivers exact zeros. Configured
-     * while I2SE=0 (RM0090: I2SCFGR only writable when disabled). */
+    /* Synchronized full-duplex startup per stm32f4xx_hal_i2s_ex.c
+     * (HAL_I2SEx_TransmitReceive_DMA, lines 455 & 660-666):
+     *   1. Pause Master SPI3 (I2SE=0) while configuring the slave receiver so
+     *      I2S3ext does not start mid-word with a bit-shift offset.
+     *   2. Configure I2S3ext as 16-bit Philips Slave RX (I2SCFG=01b) with
+     *      I2SPR=2U (HAL convention) and RXDMAEN.
+     *   3. Enable RX DMA Stream 2, then enable I2S3ext FIRST, then enable
+     *      Master SPI3 SECOND so both blocks lock onto bit 0 of frame 0. */
+    SPI3->I2SCFGR &= ~SPI_I2SCFGR_I2SE;
+
     I2S3ext->I2SCFGR = 0;
-    I2S3ext->I2SPR = 0;
+    I2S3ext->I2SPR = 2U;
     I2S3ext->I2SCFGR = SPI_I2SCFGR_I2SMOD |   /* I2S mode */
                        SPI_I2SCFGR_I2SCFG_0;  /* 01b: Slave Receive */
-    I2S3ext->CR2 |= SPI_CR2_RXDMAEN;
+    (void)I2S3ext->DR;
+    (void)I2S3ext->SR;
 
     rx_dma_init();
-
-    /* Errata ES0182 "I2S slave mode WS timing": enable the slave exactly
-     * while the master's WS is LOW (left slot, standard I2S). DMA is enabled
-     * first so the very first word is serviced. */
+    I2S3ext->CR2 |= SPI_CR2_RXDMAEN;
     DMA1_Stream2->CR |= DMA_SxCR_EN;
-    uint32_t guard = 0;
-    while (((GPIOA->IDR & (1U << 15)) != 0u) && (++guard < 2000000u)) {
-    }
-    I2S3ext->I2SCFGR |= SPI_I2SCFGR_I2SE;
+
+    I2S3ext->I2SCFGR |= SPI_I2SCFGR_I2SE;     /* Slave ext enabled FIRST */
+    SPI3->I2SCFGR |= SPI_I2SCFGR_I2SE;        /* Master I2S3 enabled SECOND */
 
     printk("[AUDIO] I2S3ext slave RX armed (DMA1 S2 Ch2 circular, 512-word HT/TC)\n");
 }

@@ -188,25 +188,30 @@ and UrbanSound8K per their published terms) and the audio-retention statement.
 disclaimer placement list (dashboard footer, notification subtext, first-launch
 dialog, History/Settings footers).
 
-## 3.1 Hardware Verification Note: AHT2x Absent from Kit (2026-11-05)
+## 3.1 Hardware Verification Note: AHT21 Bus Location (2026-11-05)
 
 The schematic (sheet 6/10) lists an **AHT21** at I2C address 0x38 on a dedicated
-SOFT-I2C pair. On the actual board, the part does not acknowledge on ANY of the
-three candidate pin pairs (bit-banged address-only scan at boot: PF1/PF0 = the
-AP3216C/ICM20608 bus only, PC0/PC1 = nothing, PB10/PB11 = nothing). The course
-spec itself notes onboard resources are "subject to verification against the
-actual board and its schematic."
+SOFT-I2C pair, but the schematic's PDF text layer does not preserve the
+wire-to-pin association. An empirical boot-time address scan of the wrong
+candidate pairs (PF1/PF0, PC0/PC1, PB10/PB11) found nothing at 0x38, and the
+inherited Lab 4-era driver also probed PF1/PF0 (the AP3216C/ICM20608 bus).
 
-Consequences and decisions:
-- The driver was made AHT2x-correct regardless (soft-reset-first probe, calibrate
-  opcode 0xE1/0xBE fallback, raw command-style bus transactions via the new
-  `soft_i2c_write_raw`/`soft_i2c_read_raw`/`soft_i2c_probe` primitives), so an
-  external AHT10 module on PF0/PF1 works with zero further code.
-- Per the spec's troubleshooting rule ("treat a missing sensor as a defined
-  fault, not as proof that the monitored room is safe"), a missing/failing
-  environment sensor drives `BABY_STATE_FAULT` (not a false TEMP-LOW alert);
-  the dashboard shows "--" for temperature/humidity.
-- **BOM justification (if later needed):** external AHT10 breakout module wired
-  to PF0/PF1 - required measurement (ambient temperature/humidity) is documented
-  in the component inventory but the kit's onboard part is not populated/not
-  responding. Cost < USD 2. No equivalent onboard resource exists on this kit.
+**Resolution:** the official RT-Thread SDK demo
+(`sdk-bsp-stm32f407-spark/projects/03_driver_temp_humi`) documents the onboard
+sensor as software **I2C3 ("i2c3"): SCL = PE0, SDA = PE1**, and confirms the
+AHT10 package drives the board-mounted **AHT21**. The bus master was therefore
+generalized into two independent bit-banged buses (`soft_i2c_*` = PF1/PF0 for
+AP3216C + ICM20608, `soft_i2c2_*` = PE0/PE1 for the AHT2x), each with its own
+mutex.
+
+Verified on hardware (commit ca7d215 and later): all three sensors probe OK --
+`AHT10 ok (AHT2x, calib ok), AP3216C ok, ICM20608 ok` -- and the environment
+pipeline runs on live data (real humidity readings drive the hysteresis logic
+and the ALERT state). **No external sensor module is required**; the earlier
+draft BOM justification is withdrawn.
+
+Related driver hardening: the AHT2x is command-style (writes are raw command
+streams, reads are plain master reads -- register-pointer reads are NAKed), so
+the bus master gained `probe`/`write_raw`/`read_raw` primitives and the driver
+does a reset-first probe with the 0xE1 (AHT10) / 0xBE (AHT21) calibration
+fallback.

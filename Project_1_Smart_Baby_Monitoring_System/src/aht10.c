@@ -6,8 +6,13 @@
  * driver covers the AHT10/AHT20/AHT21 family -- same address, measurement and
  * status protocol, differing only in the factory-calibration opcode.
  *
- * Command-style chip: writes are raw command streams (no register pointer)
- * and reads are plain master reads, both via the soft_i2c raw primitives.
+ * Bus: the sensor sits on its OWN software-I2C pair, PE0 = SCL / PE1 = SDA
+ * (the board's "software I2C3 / i2c3" per the official SDK demo
+ * projects/03_driver_temp_humi) -- NOT the PF1/PF0 pair shared by the
+ * AP3216C and ICM20608. All access goes through the soft_i2c2_* raw
+ * primitives (command-style chip: writes are raw command streams, reads are
+ * plain master reads).
+ *
  * Sequence: soft reset 0xBA, status read (bit 7 = busy, bit 3 = calibrated),
  * factory-calibrate 0xE1 (AHT10) / 0xBE (AHT21) + 0x08 0x00, trigger
  * measurement 0xAC 0x33 0x00, wait >= 80 ms, burst-read 6 bytes.
@@ -33,15 +38,18 @@ bool aht10_init(void)
 {
     s_present = false;
 
+    /* Bring up the dedicated AHT2x bus (idempotent). */
+    soft_i2c2_init();
+
     /* Soft reset first: some AHT2x parts do not ACK reads until after it. */
-    if (!soft_i2c_write_raw(AHT10_I2C_ADDR, (const uint8_t[]){ 0xBA }, 1)) {
+    if (!soft_i2c2_write_raw(AHT10_I2C_ADDR, (const uint8_t[]){ 0xBA }, 1)) {
         printk("[AHT10] Not detected at 0x%02X (absent from kit)\n", AHT10_I2C_ADDR);
         return false;
     }
     k_msleep(20);
 
     uint8_t status = 0;
-    if (!soft_i2c_read_raw(AHT10_I2C_ADDR, &status, 1)) {
+    if (!soft_i2c2_read_raw(AHT10_I2C_ADDR, &status, 1)) {
         printk("[AHT10] Not detected at 0x%02X (absent from kit)\n", AHT10_I2C_ADDR);
         return false;
     }
@@ -51,11 +59,11 @@ bool aht10_init(void)
     static const uint8_t init_cmds[2] = { 0xE1, 0xBE };
     bool calibrated = false;
     for (int i = 0; i < 2 && !calibrated; i++) {
-        if (soft_i2c_write_raw(AHT10_I2C_ADDR,
+        if (soft_i2c2_write_raw(AHT10_I2C_ADDR,
                                (const uint8_t[]){ init_cmds[i], 0x08, 0x00 },
                                3)) {
             k_msleep(10);
-            if (soft_i2c_read_raw(AHT10_I2C_ADDR, &status, 1) &&
+            if (soft_i2c2_read_raw(AHT10_I2C_ADDR, &status, 1) &&
                 (status & 0x08)) {
                 calibrated = true;
             }
@@ -78,13 +86,13 @@ bool aht10_read(aht10_reading_t *out)
         return false;
     }
 
-    if (!soft_i2c_write_raw(AHT10_I2C_ADDR, (const uint8_t[]){ 0xAC, 0x33, 0x00 }, 3)) {
+    if (!soft_i2c2_write_raw(AHT10_I2C_ADDR, (const uint8_t[]){ 0xAC, 0x33, 0x00 }, 3)) {
         return false;
     }
     k_msleep(80);
 
     uint8_t raw[6];
-    if (!soft_i2c_read_raw(AHT10_I2C_ADDR, raw, sizeof(raw))) {
+    if (!soft_i2c2_read_raw(AHT10_I2C_ADDR, raw, sizeof(raw))) {
         return false;
     }
     if (raw[0] & 0x80) {

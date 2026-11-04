@@ -112,11 +112,9 @@ static void ui_thread_fn(void *p1, void *p2, void *p3)
 
     monitor_state_t snap;
     uint32_t next_wake = k_uptime_get_32();
-    uint32_t cycle = 0;
 
     for (;;) {
         wait_hw_ready();
-        cycle++;
         const uint32_t now = k_uptime_get_32();
 
         monitor_state_lock();
@@ -137,29 +135,8 @@ static void ui_thread_fn(void *p1, void *p2, void *p3)
             (snap.test_mode && snap.state != BABY_STATE_FAULT);
         buzzer_set(effective_buzzer);
 
-        /* LED matrix pixel 0 tint by system state */
-        uint8_t r = 0, g = 0, b = 0;
-        switch (snap.state) {
-        case BABY_STATE_ALERT:
-            /* Bright red blink, toggling with the 500 ms UI cycle parity */
-            if ((cycle & 1U) != 0U) {
-                r = 255U;
-            } else {
-                r = 30U;
-            }
-            g = 0;
-            b = 0;
-            break;
-        case BABY_STATE_FAULT:
-            r = 200U; g = 80U; b = 0U; /* amber, steady */
-            break;
-        case BABY_STATE_NORMAL:
-        default:
-            r = 0U; g = 16U; b = 0U;   /* dim green, steady */
-            break;
-        }
-        led_matrix_set_pixel(0, r, g, b);
-        led_matrix_show();
+        /* LED matrix is owned by the capture thread (VU meter + alarm
+         * pattern at ~30 Hz) -- no matrix writes from the UI thread. */
 
         sleep_until(&next_wake, UI_PERIOD_MS);
     }

@@ -42,6 +42,8 @@
 #include <stm32f4xx.h>
 
 #include "audio_codec_es8388.h"
+#include "led_matrix.h"
+#include "monitor_state.h"
 
 /* ------------------------------------------------------------------ timing */
 /* Shared I2S frame plan: PLLI2S N=271/R=2 -> 135.5 MHz, I2SDIV=16, ODD=1
@@ -95,6 +97,22 @@ static int16_t  s_lvl_peak;
 static uint32_t s_level_rms = 1; /* 1 avoids /0 in a log scale */
 static uint32_t s_level_rms_r = 1;
 static int16_t  s_level_peak;
+
+/* LED-matrix VU meter (auto-ranging, karaoke style). The capture thread
+ * owns the matrix: it renders the bar in NORMAL state and the alarm
+ * pattern in ALERT/FAULT, so there is exactly one matrix writer. */
+#define VU_UPDATE_EVERY_HALVES 4u    /* ~32 ms refresh */
+#define VU_RELEASE_PER_UPDATE  0.90f /* envelope fall per 32 ms */
+#define VU_REF_DECAY           0.997f
+#define VU_REF_FLOOR           250.0f
+#define VU_PEAK_HOLD_UPDATES   12u   /* ~400 ms peak-stick */
+#define VU_LIT(r, g, b)        (r), (g), (b)
+static float    s_half_rms;      /* rms of the most recent half-buffer */
+static float    s_vu_env;        /* smoothed VU envelope */
+static float    s_vu_ref = 300.0f; /* auto-range reference (slow peak) */
+static uint32_t s_vu_peak_pos;
+static uint32_t s_vu_peak_age;
+static uint32_t s_vu_half_cnt;
 
 /* --------------------------------------------------------------- RX hardware */
 static void rx_gpio_init(void)
@@ -207,6 +225,7 @@ static void consume_latest_half(void)
     s_consumed_halves = completed;
 
     const uint32_t offset = (s_isr_half != 0u) ? AUDIO_RX_HALF_WORDS : 0u;
+    uint64_t half_sq = 0;
     for (uint32_t i = 0; i < AUDIO_RX_HALF_WORDS; i += 2u) {
         const int16_t left = (int16_t)s_rx_dma_buf[offset + i];
         /* The differential mic signal lands in the R slot on this board
@@ -216,6 +235,7 @@ static void consume_latest_half(void)
 
         s_lvl_sum_sq += (uint64_t)((int32_t)left * left);
         s_lvl_sum_sq_r += (uint64_t)((int32_t)right * right);
+        half_sq += (uint64_t)((int32_t)right * right);
         if (mag > s_lvl_peak) {
             s_lvl_peak = mag;
         }
@@ -227,6 +247,9 @@ static void consume_latest_half(void)
         }
     }
     s_halves_serviced++;
+
+    /* Per-half RMS (128 mono samples, ~8 ms) drives the LED-matrix VU. */
+    s_half_rms = sqrtf((double)half_sq / (double)(AUDIO_RX_HALF_WORDS / 2u));
 
     /* Snapshot the finished ~1 s window (single-writer thread). */
     if (s_lvl_count >= AUDIO_FS_HZ) {
@@ -334,6 +357,85 @@ static void run_loopback_demo(void)
     s_demo_done = true;
 }
 
+/* ------------------------------------------------------- LED matrix VU meter */
+/* Auto-ranging bar: the envelope is normalized against a slowly decaying
+ * reference peak, so a noisier room reads as a higher bar instead of a
+ * permanently pegged one (the ambient level changed ~+20 dB between bench
+ * sessions with identical codec config -- git-verified). */
+static void vu_update(void)
+{
+    /* Ballistics: fast attack, slow release; reference tracks the recent
+     * peak with an even slower fall so the bar auto-scales. */
+    if (s_half_rms > s_vu_env) {
+        s_vu_env = s_half_rms;
+    } else {
+        s_vu_env *= VU_RELEASE_PER_UPDATE;
+    }
+    if (s_vu_env > s_vu_ref) {
+        s_vu_ref = s_vu_env;
+    } else {
+        s_vu_ref *= VU_REF_DECAY;
+    }
+    if (s_vu_ref < VU_REF_FLOOR) {
+        s_vu_ref = VU_REF_FLOOR;
+    }
+
+    /* System state composes over the bar: FAULT = steady amber,
+     * ALERT (env or confirmed cry) = blinking red, NORMAL = VU bar. */
+    monitor_state_lock();
+    const baby_state_t state = monitor_state_get()->state;
+    monitor_state_unlock();
+
+    uint8_t cols[LED_MATRIX_NUM_LEDS][3];
+
+    if (state == BABY_STATE_FAULT) {
+        for (uint32_t i = 0; i < LED_MATRIX_NUM_LEDS; i++) {
+            cols[i][0] = 200; cols[i][1] = 80; cols[i][2] = 0;
+        }
+    } else if (state == BABY_STATE_ALERT) {
+        const bool on = ((k_uptime_get_32() / 250u) & 1u) != 0u;
+        for (uint32_t i = 0; i < LED_MATRIX_NUM_LEDS; i++) {
+            cols[i][0] = on ? 255 : 40; cols[i][1] = 0; cols[i][2] = 0;
+        }
+    } else {
+        float frac = s_vu_env / s_vu_ref;
+        if (frac > 1.0f) {
+            frac = 1.0f;
+        }
+        int bar = (int)(frac * (float)(LED_MATRIX_NUM_LEDS - 1) + 0.5f);
+
+        /* Peak-hold marker: stick at the top, then fall 1 LED per update. */
+        if ((uint32_t)bar >= s_vu_peak_pos) {
+            s_vu_peak_pos = (uint32_t)bar;
+            s_vu_peak_age = 0;
+        } else if (++s_vu_peak_age > VU_PEAK_HOLD_UPDATES &&
+                   s_vu_peak_pos > 0) {
+            s_vu_peak_pos--;
+            s_vu_peak_age = VU_PEAK_HOLD_UPDATES / 2u;
+        }
+
+        for (uint32_t i = 0; i < LED_MATRIX_NUM_LEDS; i++) {
+            if (i == s_vu_peak_pos && s_vu_peak_age <= VU_PEAK_HOLD_UPDATES) {
+                cols[i][0] = 220; cols[i][1] = 220; cols[i][2] = 220; /* peak */
+            } else if (i <= 11u) {
+                cols[i][0] = 0; cols[i][1] = 190; cols[i][2] = 0;     /* green */
+            } else if (i <= 15u) {
+                cols[i][0] = 210; cols[i][1] = 150; cols[i][2] = 0;   /* amber */
+            } else {
+                cols[i][0] = 230; cols[i][1] = 30; cols[i][2] = 0;    /* red */
+            }
+            if ((int)i > bar && i != s_vu_peak_pos) {
+                cols[i][0] = 0; cols[i][1] = 0; cols[i][2] = 0; /* unlit */
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < LED_MATRIX_NUM_LEDS; i++) {
+        led_matrix_set_pixel((uint8_t)i, cols[i][0], cols[i][1], cols[i][2]);
+    }
+    led_matrix_show();
+}
+
 /* ------------------------------------------------------------------- thread */
 static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
 {
@@ -347,7 +449,7 @@ static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
 
     run_loopback_demo();
 
-    /* Continuous capture into the mono ring buffer for the future ML task.
+    /* Continuous capture into the mono ring buffer for the cry task.
      * RX underrun (consumer starved by the producer) cannot happen with a
      * blocking take; a take timeout means the RX path stopped producing. */
     uint32_t next_stat = k_uptime_get_32() + AUDIO_STAT_PERIOD_MS;
@@ -357,6 +459,12 @@ static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
             consume_latest_half();
         } else {
             s_rx_underruns++;
+        }
+
+        /* LED-matrix VU at ~30 Hz (every 4th half-buffer). */
+        if (++s_vu_half_cnt >= VU_UPDATE_EVERY_HALVES) {
+            s_vu_half_cnt = 0;
+            vu_update();
         }
 
         const uint32_t now = k_uptime_get_32();

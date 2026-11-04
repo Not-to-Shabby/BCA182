@@ -94,9 +94,11 @@ static uint64_t s_lvl_sum_sq;
 static uint64_t s_lvl_sum_sq_r; /* right slot: channel-swap diagnostic */
 static uint32_t s_lvl_count;
 static int16_t  s_lvl_peak;
+static uint32_t s_lvl_clips; /* samples >= 32000 in the last 1 s window */
 static uint32_t s_level_rms = 1; /* 1 avoids /0 in a log scale */
 static uint32_t s_level_rms_r = 1;
 static int16_t  s_level_peak;
+static uint32_t s_level_clips;
 
 /* LED-matrix VU meter (auto-ranging, karaoke style). The capture thread
  * owns the matrix: it renders the bar in NORMAL state and the alarm
@@ -236,6 +238,9 @@ static void consume_latest_half(void)
         s_lvl_sum_sq += (uint64_t)((int32_t)left * left);
         s_lvl_sum_sq_r += (uint64_t)((int32_t)right * right);
         half_sq += (uint64_t)((int32_t)right * right);
+        if (mag >= 32000) {
+            s_lvl_clips++; /* near full-scale: waveform clipping */
+        }
         if (mag > s_lvl_peak) {
             s_lvl_peak = mag;
         }
@@ -258,10 +263,12 @@ static void consume_latest_half(void)
         s_level_rms_r = (uint32_t)sqrtf((double)s_lvl_sum_sq_r /
                                         (double)s_lvl_count);
         s_level_peak = s_lvl_peak;
+        s_level_clips = s_lvl_clips;
         s_lvl_sum_sq = 0;
         s_lvl_sum_sq_r = 0;
         s_lvl_count = 0;
         s_lvl_peak = 0;
+        s_lvl_clips = 0;
     }
 }
 

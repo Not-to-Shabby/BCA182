@@ -122,6 +122,15 @@ static void cry_thread_fn(void *p1, void *p2, void *p3)
 						     k_uptime_get_32());
 		monitor_state_unlock();
 
+		/* One console line PER WINDOW while diagnosing recall (the
+		 * model's frozen-test cry recall is 0.29, so watching the actual
+		 * per-window CRY vote share tells us whether the gate or the
+		 * model is the bottleneck). Downgrade to change-only prints
+		 * once the threshold is tuned. */
+		printk("[CRY] win cls=%s cry%%=%u -> %s\n",
+		       (cls == CRY_PRED_CRY) ? "CRY" : "NONCRY",
+		       (unsigned)cry_pct, confirmed ? "ALERT" : "-");
+
 		/* One console line per confirmed-detection CHANGE. */
 		if (confirmed != prev_detected) {
 			prev_detected = confirmed;

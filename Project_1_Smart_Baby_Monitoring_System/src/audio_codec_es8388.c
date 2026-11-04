@@ -482,7 +482,12 @@ static void es8388_codec_init(void)
      * MIC_P -> pin 24 LINPUT1, MIC_N -> pin 23 RINPUT1, external VMIC bias,
      * pin 21 MICBIAS unconnected). */
     es8388_reg_write(0x03, 0xFF); /* ADCPOWER: power down ADC during config */
-    es8388_adc_set_pga(0x88);     /* ADCCONTROL1: +24 dB MIC PGA (estest value) */
+    es8388_adc_set_pga(0x22);     /* ADCCONTROL1: 0 dB MIC PGA -- +24 dB (estest)
+                                     hard-clipped loud/close playback (measured:
+                                     peak pinned at 0x7FFF, model features
+                                     destroyed); 0 dB puts a loud cry at
+                                     ~rms 900, and quiet rooms still clear the
+                                     auto-ranging VU + HPF */
     es8388_reg_write(0x0A, 0xF0); /* ADCCONTROL2: LIN1-RIN1 differential input */
     es8388_reg_write(0x0B, 0x02); /* ADCCONTROL3: differential pair LIN1-RIN1 */
     es8388_reg_write(0x0C, 0x0C); /* ADCCONTROL4: 16-bit Philips I2S (0x0D was Left-Justified!) */

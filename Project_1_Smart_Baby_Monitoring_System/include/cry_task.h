@@ -17,8 +17,11 @@
 extern "C" {
 #endif
 
-/* Confidence (vote %) above which a 1 s window counts as "cry". */
-#define CRY_CONF_THRESHOLD 70u
+/* Confidence (CRY-vote %) above which a 1 s window counts as "cry".
+ * 70 was too strict for the v1 model (frozen-test recall 0.29): 50 opens
+ * the gate for live diagnosis; the retrained model ships with its own
+ * val-tuned value. */
+#define CRY_CONF_THRESHOLD 50u
 
 /**
  * No-op by design: the thread is created at build time via

@@ -482,12 +482,11 @@ static void es8388_codec_init(void)
      * MIC_P -> pin 24 LINPUT1, MIC_N -> pin 23 RINPUT1, external VMIC bias,
      * pin 21 MICBIAS unconnected). */
     es8388_reg_write(0x03, 0xFF); /* ADCPOWER: power down ADC during config */
-    es8388_adc_set_pga(0x22);     /* ADCCONTROL1: 0 dB MIC PGA -- +24 dB (estest)
-                                     hard-clipped loud/close playback (measured:
-                                     peak pinned at 0x7FFF, model features
-                                     destroyed); 0 dB puts a loud cry at
-                                     ~rms 900, and quiet rooms still clear the
-                                     auto-ranging VU + HPF */
+    es8388_adc_set_pga(0x22);     /* ADCCONTROL1: PGA 0 dB starting point --
+                                     the ALC then rides between -12 and
+                                     +23.5 dB; +24 dB (estest) hard-clipped
+                                     loud/close playback (peak pinned 0x7FFF,
+                                     features destroyed) */
     es8388_reg_write(0x0A, 0xF0); /* ADCCONTROL2: LIN1-RIN1 differential input */
     es8388_reg_write(0x0B, 0x02); /* ADCCONTROL3: differential pair LIN1-RIN1 */
     es8388_reg_write(0x0C, 0x0C); /* ADCCONTROL4: 16-bit Philips I2S (0x0D was Left-Justified!) */
@@ -496,7 +495,18 @@ static void es8388_codec_init(void)
     es8388_reg_write(0x0F, 0x20); /* ADCCONTROL7: ADC unmute with soft ramp */
     es8388_reg_write(0x10, 0x00); /* ADCCONTROL8: LADC digital volume 0 dB */
     es8388_reg_write(0x11, 0x00); /* ADCCONTROL9: RADC digital volume 0 dB */
-    es8388_reg_write(0x12, 0x00); /* ADCCONTROL10: ALC off (fixed PGA gain) */
+    es8388_reg_write(0x12, 0xE8); /* ADCCONTROL10: ALC stereo ON, MAXGAIN
+                                     +23.5 dB, MINGAIN -12 dB -- holds the
+                                     level in the classifier's sweet spot
+                                     without user volume juggling (the earlier
+                                     "ALC rails" observation was an artifact
+                                     of the then-broken input chain). The
+                                     peak limiter (always on with ALC) catches
+                                     transients the attack can't. */
+    es8388_reg_write(0x13, 0x80); /* ADCCONTROL11: ALC target -12 dBFS, hold 0 */
+    es8388_reg_write(0x14, 0x12); /* ADCCONTROL12: decay 820us, attack 416us */
+    es8388_reg_write(0x15, 0x06); /* ADCCONTROL13: normal ALC, default window */
+    es8388_reg_write(0x16, 0x00); /* ADCCONTROL14: noise gate off */
     es8388_reg_write(0x03, 0x09); /* ADCPOWER: ADC + LIN/RIN on, internal MICBIAS off */
 
     /* Headphone volume: LOUT1 / ROUT1 */

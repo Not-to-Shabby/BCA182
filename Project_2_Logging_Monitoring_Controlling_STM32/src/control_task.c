@@ -13,6 +13,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/sys/printk.h>
 
 #include <string.h>
@@ -22,7 +23,9 @@
 #include "led_matrix.h"
 #include "telemetry.h"
 
-static const struct device *s_buzzer_dev;
+#define BUZZER_PWM_NODE DT_NODELABEL(APP_BUZZER_PWM_NODE)
+
+static const struct device *s_buzzer_pwm;
 static const struct device *s_key_dev;
 static bool s_buzzer_on;
 static uint8_t s_led_mode = LED_MODE_STATUS;
@@ -33,10 +36,12 @@ static bool s_key1_prev = true;
 static uint8_t s_key0_cnt;
 static uint8_t s_key1_cnt;
 
+/* Passive buzzer: 2.5 kHz 50% duty while on, silent (0% duty) while off. */
 static void buzzer_set(bool on)
 {
-    if (s_buzzer_dev != NULL) {
-        gpio_pin_set(s_buzzer_dev, APP_BUZZER_PIN, on ? 1 : 0);
+    if (s_buzzer_pwm != NULL) {
+        pwm_set_cycles(s_buzzer_pwm, APP_BUZZER_PWM_CH, APP_BUZZER_PERIOD_CYCLES,
+                       on ? APP_BUZZER_PERIOD_CYCLES / 2u : 0u, 0);
     }
     s_buzzer_on = on;
 }
@@ -128,12 +133,13 @@ void control_task_run(void)
 {
     printk("[CTRL] control thread started\n");
 
-    s_buzzer_dev = device_get_binding(APP_BUZZER_PORT_NAME);
-    if (s_buzzer_dev != NULL) {
-        gpio_pin_configure(s_buzzer_dev, APP_BUZZER_PIN, GPIO_OUTPUT_INACTIVE);
+    s_buzzer_pwm = DEVICE_DT_GET(BUZZER_PWM_NODE);
+    if (!device_is_ready(s_buzzer_pwm)) {
+        printk("[CTRL] buzzer PWM device not ready\n");
+        s_buzzer_pwm = NULL;
     } else {
-        printk("[CTRL] buzzer port %s unavailable; check APP_BUZZER pin map\n",
-               APP_BUZZER_PORT_NAME);
+        pwm_set_cycles(s_buzzer_pwm, APP_BUZZER_PWM_CH, APP_BUZZER_PERIOD_CYCLES,
+                       0u, 0); /* silent at boot */
     }
 
     s_key_dev = device_get_binding(APP_KEY0_PORT_NAME);

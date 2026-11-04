@@ -31,6 +31,18 @@
 	status = "okay";
 };
 
+/* Onboard buzzer: passive element on PB0 = TIM3_CH3 (verified in Lab 2).
+ * 84 MHz timer clock / 33600 = 2.5 kHz alert tone. */
+&timers3 {
+	status = "okay";
+
+	pwm3: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim3_ch3_pb0>;
+		pinctrl-names = "default";
+	};
+};
+
 &usart1 {
 	status = "okay";
 	current-speed = <115200>;

@@ -22,6 +22,7 @@
 #include <zephyr/net/socket.h>
 #include <zephyr/posix/poll.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/console/console.h>
 
 #include <string.h>
 
@@ -95,41 +96,77 @@ static bool wait_dhcp_lease(struct net_if *iface, int32_t timeout_ms)
 /* Wi-Fi                                                                     */
 /* ------------------------------------------------------------------------ */
 
-static bool wifi_bringup(void)
+/* The RW007 must be initialized exactly once: re-running the init sequence
+ * against an already-live module reliably fails (CMD_INIT -> -2). Later
+ * recovery only re-associates, never re-initializes the hardware. */
+static bool s_rw007_inited;
+
+static bool wifi_ensure_init(void)
 {
+    if (s_rw007_inited) {
+        return true;
+    }
     if (!rw007_wifi_init()) {
-        printk("[NET] RW007 init failed\n");
+        printk("[NET] RW007 init failed; retrying\n");
         return false;
     }
 
     uint8_t mac[6];
     rw007_wifi_get_mac(mac);
     rw007_netif_set_mac(mac);
+    s_rw007_inited = true;
+    return true;
+}
+
+/* Interactive provisioning over the serial console. The operator types the
+ * credentials once (they echo on the terminal); they are saved to internal
+ * flash and never committed to the repository. */
+static bool wifi_provision(void)
+{
+    printk("[NET] no stored Wi-Fi credentials.\n");
+    printk("[NET] Type SSID and press Enter:\n");
+    char *line = console_getline();
+    if (line == NULL || line[0] == '\0') {
+        return false;
+    }
+    char ssid[WIFI_SSID_MAX_LEN];
+    strncpy(ssid, line, sizeof(ssid) - 1);
+    ssid[sizeof(ssid) - 1] = '\0';
+
+    printk("[NET] Type password and press Enter (input echoes on the terminal):\n");
+    line = console_getline();
+    if (line == NULL) {
+        return false;
+    }
+    char pass[WIFI_PASS_MAX_LEN];
+    strncpy(pass, line, sizeof(pass) - 1);
+    pass[sizeof(pass) - 1] = '\0';
+
+    printk("[NET] joining \"%s\" ...\n", ssid);
+    if (!rw007_wifi_connect(ssid, pass)) {
+        printk("[NET] association failed; check credentials\n");
+        return false;
+    }
+    wifi_storage_save(ssid, pass);
+    printk("[NET] credentials saved to flash\n");
+    return true;
+}
+
+static bool wifi_ensure_associated(void)
+{
+    if (rw007_wifi_is_connected()) {
+        return true;
+    }
 
     char ssid[WIFI_SSID_MAX_LEN];
     char pass[WIFI_PASS_MAX_LEN];
     if (!wifi_storage_read(ssid, pass)) {
-        printk("[NET] no stored Wi-Fi credentials; set them via the onboarding "
-               "portal (phase 3) and retry\n");
-        return false;
+        return wifi_provision(); /* provisioning joins as part of the flow */
     }
 
     printk("[NET] joining \"%s\" ...\n", ssid);
     if (!rw007_wifi_connect(ssid, pass)) {
-        printk("[NET] association failed\n");
-        return false;
-    }
-
-    rw007_netif_link(true);
-    struct net_if *iface = rw007_netif_get();
-    if (iface == NULL) {
-        printk("[NET] no netif after association\n");
-        rw007_netif_link(false);
-        return false;
-    }
-
-    if (!wait_dhcp_lease(iface, 30000)) {
-        rw007_netif_link(false);
+        printk("[NET] association failed; retrying\n");
         return false;
     }
     return true;
@@ -290,6 +327,7 @@ void net_task_run(void)
 
     net_mgmt_init_event_callback(&s_dhcp_cb, on_ipv4_addr, NET_EVENT_IPV4_ADDR_ADD);
     net_mgmt_add_event_callback(&s_dhcp_cb);
+    console_getline_init();
 
     int64_t next_telemetry = k_uptime_get();
     int64_t next_status = k_uptime_get() + APP_STATUS_PERIOD_MS;
@@ -305,16 +343,25 @@ void net_task_run(void)
         /* --- Wi-Fi / lease maintenance (non-blocking for sensing) ------- */
         if (!s_wifi_up) {
             s_wifi_ok = false;
-            if (wifi_bringup()) {
-                s_wifi_up = true;
-                s_lease_ok = true;
-                s_wifi_ok = true;
-                connect_backoff_ms = 1000;
-            } else {
-                /* retry later; sensing keeps running the whole time */
+            if (!wifi_ensure_init()) {
                 k_msleep(5000);
                 continue;
             }
+            if (!wifi_ensure_associated()) {
+                k_msleep(5000);
+                continue;
+            }
+            rw007_netif_link(true);
+            struct net_if *up_iface = rw007_netif_get();
+            if (up_iface == NULL || !wait_dhcp_lease(up_iface, 30000)) {
+                rw007_netif_link(false);
+                k_msleep(5000);
+                continue;
+            }
+            s_wifi_up = true;
+            s_lease_ok = true;
+            s_wifi_ok = true;
+            connect_backoff_ms = 1000;
         }
         if (!rw007_wifi_is_connected()) {
             printk("[NET] Wi-Fi lost\n");

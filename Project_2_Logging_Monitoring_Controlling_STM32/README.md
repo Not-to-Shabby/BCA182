@@ -24,8 +24,8 @@ backlight) through validated MQTT commands with acknowledgments.
 
 | Component | Bus | Use in BenchWatch |
 |---|---|---|
-| AHT10 temperature/humidity | soft I2C (PF0/PF1) | bench thermal comfort telemetry |
-| AP3216C light/proximity | soft I2C | light level + "someone at bench" wake |
+| AHT10 temperature/humidity | soft I2C (PF0/PF1) | **Not fitted on this board kit** (verified at boot: "Not detected at 0x38 — absent from kit"); driver kept, limitation documented per assignment rules |
+| AP3216C light/proximity | soft I2C | light level + "someone at bench" wake (verified present at 0x1E) |
 | ICM20608 accel/gyro | SPI | bench disturbance / orientation events |
 | SK6805 LED matrix | GPIO | status output (`led` command: off/status/rainbow) |
 | ST7789 LCD | GPIO | live dashboard, backlight auto-wake on proximity |

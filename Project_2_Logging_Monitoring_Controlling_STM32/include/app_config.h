@@ -22,7 +22,7 @@
 #define APP_TOPIC_ACK       APP_MQTT_TOPIC_BASE "/ack"
 
 /* ---- Broker (LAN Mosquitto in tools/stack/docker-compose.yml) ------------ */
-#define APP_BROKER_HOST "192.168.1.50" /* replace with the PC's LAN IP */
+#define APP_BROKER_HOST "192.168.1.2" /* the lab PC's LAN IP */
 #define APP_BROKER_PORT 1883u
 
 /* ---- Timing (assignment: sample env 1-5 s, publish 5-10 s) --------------- */
@@ -41,10 +41,13 @@
 /* Local mute window opened by KEY0 (local input outranks remote buzzer cmds). */
 #define APP_LOCAL_MUTE_MS 60000
 
-/* ---- Actuator pins (verify against the board schematic before flashing) --- */
-/* Buzzer drive: placeholder pin, UNVERIFIED on RT-Spark revision. */
-#define APP_BUZZER_PORT_NAME "gpioa"
-#define APP_BUZZER_PIN       8
+/* ---- Actuator pins -------------------------------------------------------- */
+/* Onboard buzzer: PASSIVE, driven by TIM3_CH3 PWM on PB0 (pin verified in the
+ * Laboratory 2 audio engine). Beep = 2.5 kHz 50% duty; TIM3 kernel clock is
+ * 84 MHz (APB1 timer) / 33600 -> 2.5 kHz. */
+#define APP_BUZZER_PWM_NODE      pwm3
+#define APP_BUZZER_PWM_CH        3u
+#define APP_BUZZER_PERIOD_CYCLES 33600u
 /* On-board pushbuttons (verified in Laboratory 4, active LOW). */
 #define APP_KEY0_PORT_NAME "gpioc"
 #define APP_KEY0_PIN       0

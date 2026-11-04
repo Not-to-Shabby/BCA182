@@ -117,3 +117,19 @@ rejects.
 | MQTT keepalive under Wokwi-like latency | LAN broker only; keepalive 30 s; tune in Phase 4 |
 | Instructor requires exact STM32Cube stack | deviation declared early (§2); port layer of telemetry.c is framework-agnostic |
 | Credential leakage | no secrets in repo: Wi-Fi in flash via wifi_storage, broker token via compose env placeholder |
+
+## 7. Phase 1 hardware findings (2026-11-05, live on RT-Spark via ST-LINK COM7)
+
+| Item | Result |
+|---|---|
+| Zephyr v4.4.0 boot | clean, single banner, no faults/asserts/reboots |
+| AP3216C | present at 0x1E |
+| ICM20608 | present, WHO_AM_I 0xAF at 0x68 |
+| microSD | FatFs mounted at /SD: |
+| ST7789 LCD | initialized over FSMC, backlight on |
+| AHT10 | **not fitted on this board kit** ("Not detected at 0x38 — absent from kit"); matches the Laboratory 4 inventory finding. Documented limitation — driver retained; thermal telemetry unavailable on this unit |
+| RW007 | module alive (v2.1.0-a7a0d089-57, STA MAC fc:58:4a:a6:e5:e2); scaffold re-ran init on every retry which the module rejects (CMD_INIT -2) — fixed to init-once + connect-only retries |
+| Buzzer | placeholder PA8 replaced by PB0 TIM3_CH3 PWM (2.5 kHz), the pin verified by the Laboratory 2 audio engine |
+| Wi-Fi credentials | not stored on flash → serial-console provisioning added (console_getline → wifi_storage_save); SoftAP portal remains optional (Phase 3) |
+
+Broker endpoint set to the lab PC LAN IP 192.168.1.2:1883 (Mosquitto in tools/stack).

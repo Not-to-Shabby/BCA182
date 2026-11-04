@@ -1,17 +1,23 @@
 /**
  * @file main.c
- * @brief Project 1 - Smart Baby Monitoring System: P0 firmware bring-up.
+ * @brief Project 1 - Smart Baby Monitoring System: presentation + alert layer.
  *
- * Verifies the RT-Spark (STM32F407ZGT6) base peripherals under Zephyr RTOS:
- *   - ST7789 240x240 LCD (FSMC 8080 8-bit parallel bus)
- *   - Onboard 19-LED SK6805 RGB matrix (PA7 data, PF2 power enable)
- *   - Onboard red RGB LED (PF12, active LOW) 500 ms heartbeat blink
- *   - 1 Hz status thread: console uptime heartbeat every 5 s plus a
- *     seconds counter on the LCD
+ * Builds on the P0 bring-up (RT-Spark STM32F407ZGT6, Zephyr RTOS) and wires
+ * the full application together:
+ *   - SENSOR layer  : sensor_task_start() (AHT10 / AP3216C / ICM20608 poll,
+ *                     decision logic refresh) - see sensor_task.h
+ *   - PRESENTATION  : ui_dashboard on the ST7789 240x240 LCD (differential
+ *                     redraw), state tint on the onboard RGB LED matrix
+ *   - ALERT OUTPUT  : TIM3 PWM buzzer (PB0, fixed 2 kHz alarm tone)
+ *   - USER INPUT    : KEY0 acknowledge / KEY1 test-alert toggle (PC0/PC1,
+ *                     debounced in buttons.c)
+ *   - SHARED STATE  : monitor_state_t snapshot guarded by one mutex
  *
  * Thread architecture (Zephyr RTOS, statically defined):
- *   blink  (prio 8)  500 ms: toggles onboard red LED PF12
- *   status (prio 10) 1000 ms: console heartbeat (every 5th cycle) + LCD uptime
+ *   blink  (prio 8)  500 ms: toggles onboard red LED PF12 (liveness)
+ *   ui     (prio 9)  500 ms: snapshot copy -> dashboard redraw, button poll,
+ *                            buzzer drive, LED matrix state tint
+ *   status (prio 10) 1000 ms: console heartbeat only (every 5th cycle = 5 s)
  */
 
 #include <zephyr/kernel.h>
@@ -22,17 +28,19 @@
 #include "lcd_st7789.h"
 #include "led_matrix.h"
 #include "app_version.h"
+#include "monitor_state.h"
+#include "baby_logic.h"
+#include "buzzer.h"
+#include "buttons.h"
+#include "ui_dashboard.h"
+#include "sensor_task.h"
 
 #include <stdio.h>
 
 #define BLINK_PERIOD_MS      500U
+#define UI_PERIOD_MS         500U
 #define STATUS_PERIOD_MS     1000U
 #define HEARTBEAT_DIVIDER    5U    /* status cycles per console heartbeat (5 s) */
-
-/* LCD layout (8x16 font) */
-#define TITLE_Y              8U
-#define SUBTITLE_Y           32U
-#define UPTIME_Y             120U
 
 /* ---------------------------------------------------------------- shared state */
 /* K_THREAD_DEFINE threads start before main() returns; they park here until the
@@ -93,11 +101,73 @@ static void blink_thread_fn(void *p1, void *p2, void *p3)
     }
 }
 
+/* UI/alert cycle: differential dashboard redraw, debounced keys, buzzer and
+ * LED matrix state tint. Everything runs on a local snapshot copy taken under
+ * the state mutex, so no lock is held across LCD/register IO. */
+static void ui_thread_fn(void *p1, void *p2, void *p3)
+{
+    ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
+
+    monitor_state_t snap;
+    uint32_t next_wake = k_uptime_get_32();
+    uint32_t cycle = 0;
+
+    for (;;) {
+        wait_hw_ready();
+        cycle++;
+        const uint32_t now = k_uptime_get_32();
+
+        monitor_state_lock();
+        snap = *monitor_state_get();
+        monitor_state_unlock();
+
+        /* Dashboard: only changed regions are repainted */
+        ui_dashboard_update(&snap);
+
+        /* KEY0 = acknowledge alert (60 s mute), KEY1 = test alert toggle */
+        buttons_poll(now);
+
+        /* Buzzer: logic decision OR the UI-level demo alert. The demo alert
+         * is suppressed in FAULT so a device fault can never be mistaken for
+         * a working alarm demonstration. */
+        const bool effective_buzzer =
+            snap.buzzer_on ||
+            (snap.test_mode && snap.state != BABY_STATE_FAULT);
+        buzzer_set(effective_buzzer);
+
+        /* LED matrix pixel 0 tint by system state */
+        uint8_t r = 0, g = 0, b = 0;
+        switch (snap.state) {
+        case BABY_STATE_ALERT:
+            /* Bright red blink, toggling with the 500 ms UI cycle parity */
+            if ((cycle & 1U) != 0U) {
+                r = 255U;
+            } else {
+                r = 30U;
+            }
+            g = 0;
+            b = 0;
+            break;
+        case BABY_STATE_FAULT:
+            r = 200U; g = 80U; b = 0U; /* amber, steady */
+            break;
+        case BABY_STATE_NORMAL:
+        default:
+            r = 0U; g = 16U; b = 0U;   /* dim green, steady */
+            break;
+        }
+        led_matrix_set_pixel(0, r, g, b);
+        led_matrix_show();
+
+        sleep_until(&next_wake, UI_PERIOD_MS);
+    }
+}
+
+/* Console heartbeat only: the LCD uptime row moved to the UI dashboard. */
 static void status_thread_fn(void *p1, void *p2, void *p3)
 {
     ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
 
-    char buf[24];
     uint32_t next_wake = k_uptime_get_32();
     uint32_t cycle = 0;
 
@@ -105,17 +175,10 @@ static void status_thread_fn(void *p1, void *p2, void *p3)
         wait_hw_ready();
         cycle++;
 
-        uint32_t uptime_s = k_uptime_get_32() / 1000U;
-
-        /* Console heartbeat once every 5 status cycles */
         if ((cycle % HEARTBEAT_DIVIDER) == 0U) {
             printk("[APP] heartbeat: uptime %u s (cycle %u)\n",
-                   (unsigned)uptime_s, (unsigned)cycle);
+                   (unsigned)(k_uptime_get_32() / 1000U), (unsigned)cycle);
         }
-
-        /* LCD seconds counter; fixed-width field overwrites cleanly */
-        snprintf(buf, sizeof(buf), "UPTIME %4u s", (unsigned)uptime_s);
-        lcd_show_string(16, UPTIME_Y, buf, LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
 
         sleep_until(&next_wake, STATUS_PERIOD_MS);
     }
@@ -123,6 +186,7 @@ static void status_thread_fn(void *p1, void *p2, void *p3)
 
 /* Static thread definitions (house style: K_THREAD_DEFINE, no dynamic allocation) */
 K_THREAD_DEFINE(blink_thread, 1024, blink_thread_fn, NULL, NULL, NULL, 8, 0, 0);
+K_THREAD_DEFINE(ui_thread, 2048, ui_thread_fn, NULL, NULL, NULL, 9, 0, 0);
 K_THREAD_DEFINE(status_thread, 2048, status_thread_fn, NULL, NULL, NULL, 10, 0, 0);
 
 /* ------------------------------------------------------------------------ main */
@@ -141,19 +205,27 @@ int main(void)
     lcd_st7789_init();
     printk("[APP] LCD initialized (ST7789 240x240, FSMC 8-bit)\n");
 
-    /* Splash screen */
-    lcd_clear(LCD_COLOR_BLACK);
-    lcd_fill_rect(0, 0, LCD_WIDTH - 1, 23, LCD_COLOR_NAVY);
-    lcd_draw_rect(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, LCD_COLOR_BLUE);
-    lcd_show_string(16, TITLE_Y, "Baby Monitor", LCD_COLOR_WHITE, LCD_COLOR_NAVY);
-    lcd_show_string(16, SUBTITLE_Y, "P0 bring-up", LCD_COLOR_LIGHTGREY, LCD_COLOR_BLACK);
-    lcd_show_string(16, UPTIME_Y, "UPTIME    0 s", LCD_COLOR_YELLOW, LCD_COLOR_BLACK);
+    /* Application layers: shared state, outputs, inputs, presentation, sensors */
+    monitor_state_init();
+    printk("[APP] Monitor state initialized (mutex-guarded snapshot)\n");
 
-    /* LED matrix liveness: dim green pixel on LED 0 */
+    buzzer_init();
+    printk("[APP] Buzzer initialized (TIM3 CH3 PB0, 2 kHz, idle off)\n");
+
+    buttons_init();
+    printk("[APP] Buttons initialized (KEY0=PC0 ack, KEY1=PC1 test)\n");
+
+    ui_dashboard_init();
+    printk("[APP] Dashboard static frame painted (header/cards/disclaimer)\n");
+
+    sensor_task_start();
+    printk("[APP] Sensor task started (AHT10/AP3216C/ICM20608, 2 s)\n");
+
+    /* LED matrix liveness until the UI thread takes over pixel 0 */
     led_matrix_set_pixel(0, 0, 16, 0);
     led_matrix_show();
 
     s_hw_ready = true;
-    printk("[APP] Bring-up complete: blink(8) + status(10) threads released\n");
+    printk("[APP] Bring-up complete: blink(8) + ui(9) + status(10) threads released\n");
     return 0;
 }

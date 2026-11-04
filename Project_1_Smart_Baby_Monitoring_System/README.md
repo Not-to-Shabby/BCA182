@@ -93,8 +93,8 @@ contract: `pio test -e native` (Unity) and `pio check` (Cppcheck, 0 defects).
 
 | Phase | Scope | Status |
 |---|---|---|
-| P0 | Board bring-up | **In progress** |
-| P1 | Sensing & alerts | Pending |
+| P0 | Board bring-up | **Complete** (build+flash+serial verified) |
+| P1 | Sensing & alerts | **Complete** (21/21 tests, cppcheck 0) |
 | P2 | Audio capture | Pending |
 | P3 | Cry ML | Pending |
 | P4 | Wi-Fi & MQTT | Pending |

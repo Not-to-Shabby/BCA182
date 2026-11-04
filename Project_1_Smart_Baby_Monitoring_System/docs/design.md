@@ -187,3 +187,26 @@ and UrbanSound8K per their published terms) and the audio-retention statement.
 **TODO(P7/P8):** finalize this section with measured evidence and the app-side
 disclaimer placement list (dashboard footer, notification subtext, first-launch
 dialog, History/Settings footers).
+
+## 3.1 Hardware Verification Note: AHT2x Absent from Kit (2026-11-05)
+
+The schematic (sheet 6/10) lists an **AHT21** at I2C address 0x38 on a dedicated
+SOFT-I2C pair. On the actual board, the part does not acknowledge on ANY of the
+three candidate pin pairs (bit-banged address-only scan at boot: PF1/PF0 = the
+AP3216C/ICM20608 bus only, PC0/PC1 = nothing, PB10/PB11 = nothing). The course
+spec itself notes onboard resources are "subject to verification against the
+actual board and its schematic."
+
+Consequences and decisions:
+- The driver was made AHT2x-correct regardless (soft-reset-first probe, calibrate
+  opcode 0xE1/0xBE fallback, raw command-style bus transactions via the new
+  `soft_i2c_write_raw`/`soft_i2c_read_raw`/`soft_i2c_probe` primitives), so an
+  external AHT10 module on PF0/PF1 works with zero further code.
+- Per the spec's troubleshooting rule ("treat a missing sensor as a defined
+  fault, not as proof that the monitored room is safe"), a missing/failing
+  environment sensor drives `BABY_STATE_FAULT` (not a false TEMP-LOW alert);
+  the dashboard shows "--" for temperature/humidity.
+- **BOM justification (if later needed):** external AHT10 breakout module wired
+  to PF0/PF1 - required measurement (ambient temperature/humidity) is documented
+  in the component inventory but the kit's onboard part is not populated/not
+  responding. Cost < USD 2. No equivalent onboard resource exists on this kit.

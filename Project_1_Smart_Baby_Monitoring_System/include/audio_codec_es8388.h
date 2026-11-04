@@ -126,6 +126,16 @@ const char *audio_hardware_dac_status(void);
 void es8388_adc_set_pga(uint8_t reg09_value);
 
 /**
+ * @brief Read back and printk the ADC record-path registers (diagnostic).
+ */
+void es8388_adc_debug_readback(void);
+
+/**
+ * @brief Mute the DAC and power down LOUT/ROUT output drivers.
+ */
+void es8388_dac_mute_powerdown(void);
+
+/**
  * @brief Queue stereo PCM words (interleaved L,R, signed 16-bit) into the
  *        I2S3 TX staging FIFO. The DMA producer thread drains the FIFO into
  *        the I2S3 TX DMA buffer at the I2S sample rate (~16 kHz word pairs).

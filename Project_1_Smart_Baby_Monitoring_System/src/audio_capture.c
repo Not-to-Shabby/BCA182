@@ -7,7 +7,7 @@
  *   - The onboard electret mic (differential MIC_P/MIC_N into ES8388
  *     LINPUT1/RINPUT1) is digitized by the codec ADC; ADCDATA is driven on
  *     pin 8 to the MCU net I2S3_ext_SD = PB4.
- *   - PB4 defaults to the JTAG NJTRST function (AF0); it is re-muxed to AF6
+ *   - PB4 defaults to the JTAG NJTRST function (AF0); it is re-muxed to AF7
  *     (I2S3_ext_SD / SPI3_MISO function) by clearing the JTAG role via MODER.
  *   - I2S3ext is the receive-only extension of SPI3 (RM0090 section 28.5);
  *     it shares WS/CK with the I2S3 master TX and runs as 16-bit Philips
@@ -34,6 +34,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
@@ -51,6 +52,7 @@
 #define AUDIO_RING_SECONDS      1u
 #define AUDIO_RING_SAMPLES      (AUDIO_FS_HZ * AUDIO_RING_SECONDS)   /* 16039 */
 #define AUDIO_STAT_PERIOD_MS    10000u
+#define AUDIO_LEVEL_PERIOD_MS   2000u  /* live mic meter cadence */
 
 /* ------------------------------------------------------------------- DMA RX */
 #define AUDIO_RX_DMA_WORDS      512u                      /* L,R interleaved */
@@ -82,16 +84,31 @@ static uint32_t s_ring_head;
 static uint32_t s_ring_count;
 static uint32_t s_ring_overwrites;
 
+/* Live mic level (running ~1 s window, sampled in consume_latest_half and
+ * snapshotted by the capture thread; proves the onboard electret is alive
+ * and is the seed of the future cry/VAD feature path). */
+static uint64_t s_lvl_sum_sq;
+static uint64_t s_lvl_sum_sq_r; /* right slot: channel-swap diagnostic */
+static uint32_t s_lvl_count;
+static int16_t  s_lvl_peak;
+static uint32_t s_level_rms = 1; /* 1 avoids /0 in a log scale */
+static uint32_t s_level_rms_r = 1;
+static int16_t  s_level_peak;
+
 /* --------------------------------------------------------------- RX hardware */
 static void rx_gpio_init(void)
 {
-    /* De-JTAG PB4: it defaults to NJTRST (AF0). On STM32F4 no AFIO remap is
-     * needed - selecting AF mode with AFR[0] nibble 4 = AF6 releases JTAG. */
+    /* De-JTAG PB4: it defaults to NJTRST (AF0). On the STM32F407 the
+     * I2S3ext_SD function lives on **AF7** (also AF5) -- AF6 on this family
+     * is I2S2ext_SD/SAI1! The F42x/43x tables that name PB4 AF6 as
+     * I2S3ext_SD do NOT apply to the F405/407; muxing PB4 to AF6 silently
+     * feeds the I2S3_ext receiver a disconnected internal line (all-zero
+     * captures). stm32f4xx_hal_gpio_ex.h: GPIO_AF7_I2S3ext = 0x07. */
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
     (void)RCC->AHB1ENR; /* settle after clock enable */
 
     GPIOB->MODER = (GPIOB->MODER & ~(3U << (4 * 2))) | (2U << (4 * 2));     /* AF mode */
-    GPIOB->AFR[0] = (GPIOB->AFR[0] & ~(0xFU << (4 * 4))) | (6U << (4 * 4)); /* AF6 */
+    GPIOB->AFR[0] = (GPIOB->AFR[0] & ~(0xFU << (4 * 4))) | (7U << (4 * 4)); /* AF7 */
     GPIOB->OSPEEDR |= (3U << (4 * 2));                                      /* high speed */
     GPIOB->PUPDR &= ~(3U << (4 * 2));                                       /* no pull */
 }
@@ -191,12 +208,46 @@ static void consume_latest_half(void)
     const uint32_t offset = (s_isr_half != 0u) ? AUDIO_RX_HALF_WORDS : 0u;
     for (uint32_t i = 0; i < AUDIO_RX_HALF_WORDS; i += 2u) {
         const int16_t left = (int16_t)s_rx_dma_buf[offset + i];
-        ring_push(left);
+        /* The differential mic signal lands in the R slot on this board
+         * (L rms ~66 vs R rms ~440 with the ALC running): take R as mono. */
+        const int16_t right = (int16_t)s_rx_dma_buf[offset + i + 1];
+        const int16_t mag = (right < 0) ? (int16_t)(-right) : right;
+
+        s_lvl_sum_sq += (uint64_t)((int32_t)left * left);
+        s_lvl_sum_sq_r += (uint64_t)((int32_t)right * right);
+        if (mag > s_lvl_peak) {
+            s_lvl_peak = mag;
+        }
+        s_lvl_count++;
+
+        ring_push(right);
         if (s_record_pos < AUDIO_RECORD_SAMPLES) {
-            s_record_buf[s_record_pos++] = left;
+            s_record_buf[s_record_pos++] = right;
         }
     }
     s_halves_serviced++;
+
+    /* Snapshot the finished ~1 s window (single-writer thread). */
+    if (s_lvl_count >= AUDIO_FS_HZ) {
+        s_level_rms = (uint32_t)sqrtf((double)s_lvl_sum_sq /
+                                      (double)s_lvl_count);
+        s_level_rms_r = (uint32_t)sqrtf((double)s_lvl_sum_sq_r /
+                                        (double)s_lvl_count);
+        s_level_peak = s_lvl_peak;
+        s_lvl_sum_sq = 0;
+        s_lvl_count = 0;
+        s_lvl_peak = 0;
+    }
+}
+
+void audio_capture_get_level(uint32_t *rms, int16_t *peak)
+{
+    if (rms != NULL) {
+        *rms = s_level_rms;
+    }
+    if (peak != NULL) {
+        *peak = s_level_peak;
+    }
 }
 
 /* ------------------------------------------------------------ loopback demo */
@@ -265,6 +316,10 @@ static void run_loopback_demo(void)
     }
     audio_pcm_stop();
     printk("[AUDIO] demo: playback done, underruns=%u\n", (unsigned)s_rx_underruns);
+
+    /* Mute + power down the DAC outputs after the demo: a monitor must not
+     * radiate audio into its own microphone (headphone-jack-to-mic loop). */
+    es8388_dac_mute_powerdown();
 }
 
 /* ------------------------------------------------------------------- thread */
@@ -284,6 +339,7 @@ static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
      * RX underrun (consumer starved by the producer) cannot happen with a
      * blocking take; a take timeout means the RX path stopped producing. */
     uint32_t next_stat = k_uptime_get_32() + AUDIO_STAT_PERIOD_MS;
+    uint32_t next_level = k_uptime_get_32() + AUDIO_LEVEL_PERIOD_MS;
     for (;;) {
         if (k_sem_take(&s_half_sem, K_MSEC(100)) == 0) {
             consume_latest_half();
@@ -292,6 +348,12 @@ static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
         }
 
         const uint32_t now = k_uptime_get_32();
+        if ((int32_t)(now - next_level) >= 0) {
+            printk("[AUDIO] mic L rms=%-6u R rms=%-6u peak=%-6d\n",
+                   (unsigned)s_level_rms, (unsigned)s_level_rms_r,
+                   (int)s_level_peak);
+            next_level = now + AUDIO_LEVEL_PERIOD_MS;
+        }
         if ((int32_t)(now - next_stat) >= 0) {
             printk("[AUDIO] ring: %u s buffered, ovr=%u\n",
                    (unsigned)(s_ring_count / AUDIO_FS_HZ), (unsigned)s_ovr_count);
@@ -310,27 +372,33 @@ void audio_capture_init(void)
     /* Codec + I2S3 master TX + TX DMA engine (sets the shared 16 kHz frame
      * plan, ES8388 ADC/DAC register config incl. PGA and digital unmute). */
     audio_hardware_dac_init();
+    es8388_adc_debug_readback();
 
     rx_gpio_init();
     printk("[AUDIO] PB4 de-JTAG'd to I2S3_ext_SD (AF6, high speed, no pull)\n");
 
-    /* I2S3ext: 16-bit Philips slave receiver (I2SCFG=11b slave RX, CHLEN=0).
-     * Configured while I2SE=0; RM0090: I2SCFGR may only be written when the
-     * peripheral is disabled. I2SPR is unused in slave mode (clock comes from
-     * the I2S3 master via the shared WS/CK). */
+    /* I2S3ext: 16-bit Philips SLAVE receiver. I2SCFG[9:8] encoding:
+     * 00=slave TX, 01=slave RX, 10=master TX, 11=master RX. The ext block
+     * has no WS/CK pins of its own -- it MUST be slave and ride the I2S3
+     * master's clocks (RM0090 full-duplex); "master RX" here silently
+     * samples a dead timing domain and delivers exact zeros. Configured
+     * while I2SE=0 (RM0090: I2SCFGR only writable when disabled). */
     I2S3ext->I2SCFGR = 0;
     I2S3ext->I2SPR = 0;
-    I2S3ext->I2SCFGR = SPI_I2SCFGR_I2SMOD |    /* I2S mode */
-                       SPI_I2SCFGR_I2SCFG_0 |  /* 11b: Slave Receive */
-                       SPI_I2SCFGR_I2SCFG_1;
+    I2S3ext->I2SCFGR = SPI_I2SCFGR_I2SMOD |   /* I2S mode */
+                       SPI_I2SCFGR_I2SCFG_0;  /* 01b: Slave Receive */
     I2S3ext->CR2 |= SPI_CR2_RXDMAEN;
 
     rx_dma_init();
 
-    /* Enable the receiver, then the DMA stream LAST (both while the shared
-     * master WS/CK is already running, so no frames are lost). */
-    I2S3ext->I2SCFGR |= SPI_I2SCFGR_I2SE;
+    /* Errata ES0182 "I2S slave mode WS timing": enable the slave exactly
+     * while the master's WS is LOW (left slot, standard I2S). DMA is enabled
+     * first so the very first word is serviced. */
     DMA1_Stream2->CR |= DMA_SxCR_EN;
+    uint32_t guard = 0;
+    while (((GPIOA->IDR & (1U << 15)) != 0u) && (++guard < 2000000u)) {
+    }
+    I2S3ext->I2SCFGR |= SPI_I2SCFGR_I2SE;
 
     printk("[AUDIO] I2S3ext slave RX armed (DMA1 S2 Ch2 circular, 512-word HT/TC)\n");
 }

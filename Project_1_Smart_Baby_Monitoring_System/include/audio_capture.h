@@ -19,6 +19,8 @@
 #ifndef AUDIO_CAPTURE_H_
 #define AUDIO_CAPTURE_H_
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,6 +42,16 @@ void audio_capture_init(void);
  *        releases the capture thread.
  */
 void audio_capture_start(void);
+
+/**
+ * @brief Live microphone level, aggregated over the last ~1 s window.
+ *
+ * RMS and peak of the captured mono samples (full-scale int16). Silence with
+ * the default +18 dB PGA sits in the low hundreds; speech near the board
+ * pushes the RMS into the thousands. Snapshotted by the capture thread, so
+ * both outputs are a consistent pair.
+ */
+void audio_capture_get_level(uint32_t *rms, int16_t *peak);
 
 #ifdef __cplusplus
 }

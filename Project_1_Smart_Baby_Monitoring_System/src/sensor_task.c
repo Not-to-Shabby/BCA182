@@ -202,6 +202,7 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
          * (=> device FAULT, not a false environmental alert). */
         bool env_sensor_ok =
             aht_present && (aht_failures < SENSOR_FAULT_AFTER_FAILURES);
+        st->env_sensor_ok = env_sensor_ok;
         /* No environmental evaluation without a live sensor: stale "0.0 C"
          * readings must not surface as a TEMP LOW alert next to the FAULT. */
         env_alert_t env = env_sensor_ok
@@ -210,7 +211,8 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
                               : ENV_OK;
         baby_state_t state = evaluate_system_state(st->state, env,
                                                    st->device_moved,
-                                                   env_sensor_ok);
+                                                   env_sensor_ok,
+                                                   st->cry_detected);
         st->env = env;
         st->state = state;
         st->buzzer_on = baby_logic_buzzer_on(state, st->last_update_ms);

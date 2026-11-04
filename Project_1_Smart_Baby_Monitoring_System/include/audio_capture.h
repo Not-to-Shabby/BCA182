@@ -20,6 +20,7 @@
 #define AUDIO_CAPTURE_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +53,35 @@ void audio_capture_start(void);
  * both outputs are a consistent pair.
  */
 void audio_capture_get_level(uint32_t *rms, int16_t *peak);
+
+/**
+ * @brief True once the one-shot boot loopback demo has finished (completed
+ *        or aborted). The cry classifier waits on this before it starts
+ *        draining the ring and reusing the demo scratch buffer.
+ */
+bool audio_capture_demo_done(void);
+
+/**
+ * @brief Drain the OLDEST mono samples from the capture ring (consumer side).
+ *
+ * The capture thread is the only producer; this function is the only
+ * consumer. Copies min(ring_count, max_samples) oldest samples into dst and
+ * advances past them, returning how many were copied. Safe against the
+ * pre-empting capture thread (whole drain runs inside an IRQ lock).
+ */
+uint32_t audio_capture_ring_read(int16_t *dst, uint32_t max_samples);
+
+/**
+ * @brief Loan the 32078-sample demo record buffer as classification scratch.
+ *
+ * POST-DEMO LIFETIME CONTRACT: once audio_capture_demo_done() is true the
+ * capture path never writes this buffer again (the demo freezes its write
+ * index at the full length on both the completed and aborted paths), so the
+ * ~10 s boot demo leaves this 64 KB allocation idle forever. The cry task
+ * reuses it as its 1 s (16000-sample) window buffer, avoiding a +32 KB RAM
+ * cost. Not valid for concurrent use with the demo (poll demo_done() first).
+ */
+int16_t *audio_capture_scratch_buffer(void);
 
 #ifdef __cplusplus
 }

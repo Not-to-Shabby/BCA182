@@ -52,10 +52,13 @@ env_alert_t evaluate_environment(env_alert_t prev, int16_t temp_x10,
  * anything claiming to sense the infant. env_sensor_ok is false while the
  * temperature/humidity source is absent or failing: a missing sensor is a
  * defined device FAULT, never evidence that the room is safe (spec:
- * troubleshooting & safety).
+ * troubleshooting & safety). cry_detected is the output of the on-device
+ * cry classifier (confidence threshold + consecutive-window confirmation);
+ * a confirmed cry raises ALERT like an environmental violation.
  */
 baby_state_t evaluate_system_state(baby_state_t current, env_alert_t env,
-				   bool device_moved, bool env_sensor_ok);
+				   bool device_moved, bool env_sensor_ok,
+				   bool cry_detected);
 
 /* Caregiver pressed the acknowledge key: silence the buzzer for
  * ALERT_MUTE_MS starting at now_ms. Does not change the state itself. */

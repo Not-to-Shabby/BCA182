@@ -75,24 +75,22 @@ env_alert_t evaluate_environment(env_alert_t prev, int16_t temp_x10,
 }
 
 baby_state_t evaluate_system_state(baby_state_t current, env_alert_t env,
-                                   bool device_moved, bool env_sensor_ok)
+                                   bool device_moved, bool env_sensor_ok,
+                                   bool cry_detected)
 {
     /* Pure and stateless by contract: FAULT overrides ALERT overrides
      * NORMAL, with no latching here. current is intentionally unused but
      * kept in the signature so callers can pass their tracked state and a
      * future latch needs no call-site change. A missing/failing environment
      * sensor is a device FAULT (spec: troubleshooting & safety) -- the
-     * system must not present stale "0.0 C" readings as a TEMP LOW alert. */
+     * system must not present stale "0.0 C" readings as a TEMP LOW alert.
+     * A confirmed cry (classifier, 2-of-3 windows) raises ALERT. */
     (void)current;
 
     if (device_moved || !env_sensor_ok) {
         return BABY_STATE_FAULT;
     }
-
-    if (device_moved) {
-        return BABY_STATE_FAULT;
-    }
-    if (env != ENV_OK) {
+    if (env != ENV_OK || cry_detected) {
         return BABY_STATE_ALERT;
     }
     return BABY_STATE_NORMAL;

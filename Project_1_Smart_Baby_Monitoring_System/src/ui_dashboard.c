@@ -8,7 +8,9 @@
  * compares it against a cached mirror (s_last_*), and repaints only regions
  * whose content changed -- no flicker, no residue. The ALERT banner blinks
  * red/maroon on a 250 ms phase derived from the tick, mirroring the alert
- * strip behavior of Lab 4.
+ * strip behavior of Lab 4; a confirmed cry (cry_task) replaces the ALERT
+ * banner text with "CRY DETECTED" under the same treatment and raises a CRY
+ * flag in the footer row.
  *
  * All drawing happens on the caller's snapshot COPY (never the live state
  * pointer), so no lock is held while the relatively slow FSMC writes run.
@@ -48,10 +50,11 @@
 #define VALUE_X     80U
 #define ROW_Y(i)    (92U + (i) * 18U)
 
-/* Footer card: uptime left, TEST flag right */
+/* Footer card: uptime left, CRY + TEST flags right */
 #define FOOT_Y1     192U
 #define FOOT_Y2     218U
 #define UP_Y        196U
+#define CRY_X       144U
 #define TEST_X      180U
 
 /* Disclaimer footer line */
@@ -60,8 +63,9 @@
 #define MUTE_BLANK  "          " /* same width as "MUTE 99:59" */
 
 /* ----------------------------------------------------- differential caches */
-static int8_t s_last_state = -1;        /* baby_state_t, -1 = never painted */
+static char   s_last_banner[24];        /* last banner text, '' = never */
 static bool   s_last_alert_phase;
+static bool   s_last_cry_flag;
 static char   s_last_mute[16];
 static char   s_last_temp[12];
 static char   s_last_hum[12];
@@ -100,8 +104,9 @@ void ui_dashboard_init(void)
 			LCD_COLOR_GRAY, BG);
 
 	/* Reset caches so the first update() paints every dynamic region */
-	s_last_state = -1;
+	s_last_banner[0] = '\0';
 	s_last_alert_phase = false;
+	s_last_cry_flag = false;
 	s_last_mute[0] = '\0';
 	s_last_temp[0] = '\0';
 	s_last_hum[0] = '\0';
@@ -125,7 +130,11 @@ static void paint_field(uint16_t x, uint16_t y, const char *text,
 	}
 }
 
-static void paint_banner(baby_state_t state, bool alert_phase)
+/* The banner text is formatted by the caller (it encodes the state AND the
+ * cry flag); paint_banner only picks the colors, fills the strip and centers
+ * the text. text must stay within 23 chars + NUL (the s_last_banner cache). */
+static void paint_banner(baby_state_t state, const char *text,
+			 bool alert_phase)
 {
 	uint16_t fill;
 	uint16_t fg;
@@ -148,10 +157,8 @@ static void paint_banner(baby_state_t state, bool alert_phase)
 
 	lcd_fill_rect(0, BANNER_Y1, LCD_WIDTH - 1, BANNER_Y2, fill);
 
-	char buf[24];
-	snprintf(buf, sizeof(buf), "STATE: %s", baby_state_name(state));
-	uint16_t x = (uint16_t)((LCD_WIDTH - strlen(buf) * CHAR_W) / 2U);
-	lcd_show_string(x, BANNER_TEXT_Y, buf, fg, fill);
+	uint16_t x = (uint16_t)((LCD_WIDTH - strlen(text) * CHAR_W) / 2U);
+	lcd_show_string(x, BANNER_TEXT_Y, text, fg, fill);
 }
 
 /* ------------------------------------------------------------ update pass */
@@ -165,11 +172,20 @@ void ui_dashboard_update(const monitor_state_t *s)
 	const uint32_t now = k_uptime_get_32();
 	const bool alert_phase = ((now / 250U) & 1U) != 0U; /* 250 ms phase */
 
-	/* --- STATE banner (blinks only while ALERT) --- */
-	if ((int8_t)s->state != s_last_state ||
+	/* --- STATE banner (blinks only while ALERT) ---
+	 * A confirmed cry takes over the ALERT banner text ("CRY DETECTED"
+	 * instead of "STATE: ALERT"), same red/blink treatment; FAULT still
+	 * outranks it and keeps the amber STATE banner. */
+	if (s->state == BABY_STATE_ALERT && s->cry_detected) {
+		snprintf(buf, sizeof(buf), "CRY DETECTED");
+	} else {
+		snprintf(buf, sizeof(buf), "STATE: %s",
+			 baby_state_name(s->state));
+	}
+	if (strcmp(buf, s_last_banner) != 0 ||
 	    (s->state == BABY_STATE_ALERT && alert_phase != s_last_alert_phase)) {
-		paint_banner(s->state, alert_phase);
-		s_last_state = (int8_t)s->state;
+		paint_banner(s->state, buf, alert_phase);
+		snprintf(s_last_banner, sizeof(s_last_banner), "%s", buf);
 		s_last_alert_phase = alert_phase;
 	}
 
@@ -239,11 +255,18 @@ void ui_dashboard_update(const monitor_state_t *s)
 	paint_field(VALUE_X, ROW_Y(4), buf, LCD_COLOR_CYAN,
 		    s_last_accel, sizeof(s_last_accel));
 
-	/* --- Footer: uptime seconds + TEST flag --- */
+	/* --- Footer: uptime seconds + CRY / TEST flags --- */
 	snprintf(buf, sizeof(buf), "UP %6u s",
 		 (unsigned)(now / 1000U));
 	paint_field(16, UP_Y, buf, LCD_COLOR_YELLOW,
 		    s_last_up, sizeof(s_last_up));
+
+	const bool cry_flag = s->cry_detected;
+	if (cry_flag != s_last_cry_flag) {
+		lcd_show_string(CRY_X, UP_Y, cry_flag ? "CRY" : "   ",
+				LCD_COLOR_RED, BG);
+		s_last_cry_flag = cry_flag;
+	}
 
 	const bool test = s->test_mode;
 	if (test != s_last_test) {

@@ -75,6 +75,7 @@ static volatile uint32_t s_dma_err_count;    /* DMA TEIF/DMEIF/FEIF */
 
 /* Thread-side state */
 static volatile bool s_rx_started;
+static volatile bool s_demo_done; /* boot demo finished: scratch buffer free */
 static uint32_t s_consumed_halves;
 static uint32_t s_half_missed;   /* DMA lapped the consumer (service overrun) */
 static uint32_t s_rx_underruns;  /* no half-buffer for 100 ms (RX stalled) */
@@ -274,6 +275,11 @@ static void run_loopback_demo(void)
         if (k_sem_take(&s_half_sem, K_MSEC(500)) != 0) {
             printk("[AUDIO] demo: RX stalled, aborting record (%u samples)\n",
                    (unsigned)s_record_pos);
+            /* An aborted demo is still "finished" for its consumers: freeze
+             * the demo buffer at full length so the capture path can never
+             * append to it again, then release the cry task. */
+            s_record_pos = AUDIO_RECORD_SAMPLES;
+            s_demo_done = true;
             return;
         }
         consume_latest_half();
@@ -321,6 +327,11 @@ static void run_loopback_demo(void)
     /* Mute + power down the DAC outputs after the demo: a monitor must not
      * radiate audio into its own microphone (headphone-jack-to-mic loop). */
     es8388_dac_mute_powerdown();
+
+    /* Demo complete: s_record_buf is now frozen (consume_latest_half() only
+     * appends while s_record_pos < AUDIO_RECORD_SAMPLES) and the cry task
+     * may claim it via audio_capture_scratch_buffer(). */
+    s_demo_done = true;
 }
 
 /* ------------------------------------------------------------------- thread */
@@ -419,4 +430,52 @@ void audio_capture_start(void)
     }
     s_rx_started = true; /* releases the capture thread */
     printk("[AUDIO] capture path live (16 kHz mono via I2S3ext RX on PB4)\n");
+}
+
+bool audio_capture_demo_done(void)
+{
+    return s_demo_done;
+}
+
+uint32_t audio_capture_ring_read(int16_t *dst, uint32_t max_samples)
+{
+    if ((dst == NULL) || (max_samples == 0u)) {
+        return 0u;
+    }
+
+    /* The capture thread is the only producer and this function is the only
+     * consumer, but the producer pre-empts this (lower-priority) caller, so
+     * the whole drain runs inside an IRQ lock: count/head cannot move while
+     * the samples are copied and the DMA ISR (which only gives a semaphore,
+     * it never touches the ring) tolerates the sub-ms lock window -- the
+     * 512-word DMA half-buffer alone buffers 16 ms of RX data. */
+    unsigned int key = irq_lock();
+    const uint32_t count = s_ring_count;
+    const uint32_t n = (count < max_samples) ? count : max_samples;
+    /* Oldest sample sits 'count' slots behind the write head; the formula is
+     * also correct for a full ring, where head itself is the oldest. */
+    uint32_t src = (s_ring_head + AUDIO_RING_SAMPLES - count) %
+                   AUDIO_RING_SAMPLES;
+    for (uint32_t i = 0u; i < n; i++) {
+        dst[i] = s_ring_buf[src];
+        src++;
+        if (src >= AUDIO_RING_SAMPLES) {
+            src = 0u; /* wrap around the circular buffer */
+        }
+    }
+    s_ring_count = count - n; /* drop the drained oldest samples */
+    irq_unlock(key);
+
+    return n;
+}
+
+int16_t *audio_capture_scratch_buffer(void)
+{
+    /* Post-demo lifetime contract (see audio_capture.h): once demo_done() is
+     * true the capture path never writes s_record_buf again -- the demo path
+     * freezes s_record_pos at AUDIO_RECORD_SAMPLES on both the completed and
+     * aborted paths -- so the 32078-sample (64 KB) boot-demo allocation is
+     * idle forever after ~10 s and is loaned here as the cry task's window
+     * buffer (needs 16000 samples), avoiding a +32 KB RAM cost. */
+    return s_record_buf;
 }

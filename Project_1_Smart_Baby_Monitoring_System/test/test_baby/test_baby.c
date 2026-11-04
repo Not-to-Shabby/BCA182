@@ -106,39 +106,49 @@ void test_temp_alerts_cannot_cooccur(void)
 void test_state_normal_stays_normal(void)
 {
     TEST_ASSERT_EQUAL_INT(BABY_STATE_NORMAL,
-                          evaluate_system_state(BABY_STATE_NORMAL, ENV_OK, false, true));
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_OK, false, true, false));
 }
 
 void test_state_alert_on_each_env_violation(void)
 {
     TEST_ASSERT_EQUAL_INT(BABY_STATE_ALERT,
-                          evaluate_system_state(BABY_STATE_NORMAL, ENV_TEMP_LOW, false, true));
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_TEMP_LOW, false, true, false));
     TEST_ASSERT_EQUAL_INT(BABY_STATE_ALERT,
-                          evaluate_system_state(BABY_STATE_NORMAL, ENV_TEMP_HIGH, false, true));
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_TEMP_HIGH, false, true, false));
     TEST_ASSERT_EQUAL_INT(BABY_STATE_ALERT,
-                          evaluate_system_state(BABY_STATE_NORMAL, ENV_HUMIDITY_HIGH, false, true));
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_HUMIDITY_HIGH, false, true, false));
 }
 
 void test_state_fault_on_motion_even_with_ok_env(void)
 {
     TEST_ASSERT_EQUAL_INT(BABY_STATE_FAULT,
-                          evaluate_system_state(BABY_STATE_NORMAL, ENV_OK, true, true));
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_OK, true, true, false));
 }
 
 /* Missing/failing environment sensor => FAULT even with a nominally OK env. */
 void test_state_fault_on_missing_env_sensor(void)
 {
     TEST_ASSERT_EQUAL_INT(BABY_STATE_FAULT,
-                          evaluate_system_state(BABY_STATE_NORMAL, ENV_OK, false, false));
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_OK, false, false, false));
     /* Stale readings must never masquerade as an environmental alert. */
     TEST_ASSERT_EQUAL_INT(BABY_STATE_FAULT,
-                          evaluate_system_state(BABY_STATE_ALERT, ENV_TEMP_LOW, false, false));
+                          evaluate_system_state(BABY_STATE_ALERT, ENV_TEMP_LOW, false, false, false));
 }
 
 void test_state_fault_overrides_alert(void)
 {
     TEST_ASSERT_EQUAL_INT(BABY_STATE_FAULT,
-                          evaluate_system_state(BABY_STATE_ALERT, ENV_TEMP_HIGH, true, true));
+                          evaluate_system_state(BABY_STATE_ALERT, ENV_TEMP_HIGH, true, true, false));
+}
+
+/* Confirmed cry (classifier output) raises ALERT like an env violation. */
+void test_state_alert_on_confirmed_cry(void)
+{
+    TEST_ASSERT_EQUAL_INT(BABY_STATE_ALERT,
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_OK, false, true, true));
+    /* Cry co-occurring with an env violation still yields ALERT. */
+    TEST_ASSERT_EQUAL_INT(BABY_STATE_ALERT,
+                          evaluate_system_state(BABY_STATE_NORMAL, ENV_TEMP_HIGH, false, true, true));
 }
 
 /* Stateless: with a healthy environment, no motion and a present sensor,
@@ -146,9 +156,9 @@ void test_state_fault_overrides_alert(void)
 void test_state_returns_to_normal_when_env_recovers(void)
 {
     TEST_ASSERT_EQUAL_INT(BABY_STATE_NORMAL,
-                          evaluate_system_state(BABY_STATE_ALERT, ENV_OK, false, true));
+                          evaluate_system_state(BABY_STATE_ALERT, ENV_OK, false, true, false));
     TEST_ASSERT_EQUAL_INT(BABY_STATE_NORMAL,
-                          evaluate_system_state(BABY_STATE_FAULT, ENV_OK, false, true));
+                          evaluate_system_state(BABY_STATE_FAULT, ENV_OK, false, true, false));
 }
 
 /* ---------------------------------------------------- buzzer / mute window */
@@ -244,6 +254,7 @@ int main(void)
     RUN_TEST(test_state_alert_on_each_env_violation);
     RUN_TEST(test_state_fault_on_motion_even_with_ok_env);
     RUN_TEST(test_state_fault_on_missing_env_sensor);
+    RUN_TEST(test_state_alert_on_confirmed_cry);
     RUN_TEST(test_state_fault_overrides_alert);
     RUN_TEST(test_state_returns_to_normal_when_env_recovers);
     RUN_TEST(test_buzzer_sounds_on_alert_without_ack);

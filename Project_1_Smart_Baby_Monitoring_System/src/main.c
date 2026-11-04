@@ -35,6 +35,7 @@
 #include "ui_dashboard.h"
 #include "sensor_task.h"
 #include "audio_capture.h"
+#include "cry_task.h"
 
 #include <stdio.h>
 
@@ -229,6 +230,11 @@ int main(void)
 
     audio_capture_start();
     printk("[APP] Audio capture started (mic -> I2S3ext RX -> mono ring)\n");
+
+    /* ON-DEVICE CRY CLASSIFIER: drains the capture ring after the boot demo
+     * releases it (self-gating thread; 2-of-3 windows -> cry -> ALERT). */
+    cry_task_start();
+    printk("[APP] Cry task started (on-device classifier, 2-of-3 windows)\n");
 
     /* LED matrix liveness until the UI thread takes over pixel 0 */
     led_matrix_set_pixel(0, 0, 16, 0);

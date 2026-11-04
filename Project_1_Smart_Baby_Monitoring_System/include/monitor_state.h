@@ -30,6 +30,11 @@ typedef struct {
 	baby_state_t state;
 	env_alert_t env;
 
+	/* Cry classifier output (cry_task, 1 s windows, 2-of-3 confirmed) */
+	bool cry_detected;     /* confirmed cry (hysteresis-applied)   */
+	uint32_t cry_confidence; /* model vote confidence, 0..100     */
+	bool env_sensor_ok;    /* mirror of the sensor task's AHT health */
+
 	/* Timing / user feedback */
 	uint32_t last_update_ms; /* k_uptime_get_32() of last refresh */
 	uint32_t mute_until_ms;  /* mirror of logic mute window       */

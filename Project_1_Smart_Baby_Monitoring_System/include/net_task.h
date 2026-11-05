@@ -32,6 +32,10 @@ bool net_task_is_online(void);
 /** Dotted-quad string of the current IPv4 (or "0.0.0.0"). */
 const char *net_task_get_ip(void);
 
+/** Request the config portal (e.g. KEY0 held 3 s). The supervisor opens
+ *  the SoftAP at its next loop iteration (dropping STA if associated). */
+void net_task_request_portal(void);
+
 #ifdef __cplusplus
 }
 #endif

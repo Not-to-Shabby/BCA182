@@ -11,6 +11,7 @@
  */
 
 #include "buttons.h"
+#include "net_task.h"
 #include "baby_logic.h"
 #include "monitor_state.h"
 
@@ -25,12 +26,15 @@
 
 /* A raw level must hold this long (ms) before it is accepted as stable. */
 #define DEBOUNCE_MS 50U
+#define PORTAL_HOLD_MS 3000U /* KEY0 held 3 s opens the config portal */
 
 /* Per-key debounce bookkeeping. stable starts HIGH (= released). */
 typedef struct {
 	bool stable;         /* accepted (debounced) level, true = released */
 	bool last_raw;       /* previous raw sample                         */
 	uint32_t raw_change_ms; /* k_uptime_get_32() of last raw transition  */
+	uint32_t held_since_ms; /* 0 = not tracking a hold                   */
+	bool portal_fired;   /* KEY0 long-hold fired for this press          */
 } key_t;
 
 static key_t s_key0 = { true, true, 0U };
@@ -50,6 +54,8 @@ void buttons_init(void)
 	s_key0.stable = true;
 	s_key0.last_raw = true;
 	s_key0.raw_change_ms = 0U;
+	s_key0.held_since_ms = 0U;
+	s_key0.portal_fired = false;
 	s_key1.stable = true;
 	s_key1.last_raw = true;
 	s_key1.raw_change_ms = 0U;
@@ -69,6 +75,22 @@ static bool key_update(key_t *k, bool raw_now, uint32_t now_ms)
 		k->stable = raw_now;
 		if (!k->stable) {
 			return true; /* confirmed press (falling edge) */
+		}
+		/* Released: stop any long-hold tracking. */
+		k->held_since_ms = 0U;
+		k->portal_fired = false;
+	}
+	/* KEY0 long-hold (>= PORTAL_HOLD_MS while pressed): request the
+	 * config portal once per press (on-demand reconfiguration even
+	 * when Wi-Fi is working; the ack already fired on the press). */
+	if (!k->stable && k == &s_key0) {
+		if (k->held_since_ms == 0U) {
+			k->held_since_ms = now_ms;
+		} else if (!k->portal_fired &&
+			   (now_ms - k->held_since_ms) >= PORTAL_HOLD_MS) {
+			k->portal_fired = true;
+			net_task_request_portal();
+			printk("[UI] KEY0 held -- config portal requested\n");
 		}
 	}
 	return false;

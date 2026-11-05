@@ -117,6 +117,7 @@
  * whole and s_ip_str is only rewritten while going online, so no lock beyond
  * the monitor_state mutex (which guards the published mirror) is required. */
 static volatile bool s_online;
+static volatile bool s_portal_requested; /* KEY0-held-3s / API trigger */
 static char s_ip_str[16] = "0.0.0.0";
 
 /* Active credential set (this thread only; guarded by the supervisor loop
@@ -381,6 +382,21 @@ static void net_thread_fn(void *p1, void *p2, void *p3)
     load_best_creds();
 
     for (;;) {
+        /* On-demand portal (KEY0 held 3 s): overrides everything. */
+        if (s_portal_requested) {
+            s_portal_requested = false;
+            if (s_joined) {
+                s_joined = false;
+            }
+            printk("[NET] portal requested -- opening config portal "
+                   "(%u s window)\n", (unsigned)NET_PORTAL_WINDOW_S);
+            if (wifi_portal_run(NET_PORTAL_WINDOW_S, &res) && res.valid) {
+                try_verify_and_save(&res);
+            }
+            s_backoff_s = NET_RETRY_MIN_S;
+            k_sleep(K_SECONDS(1));
+            continue; /* rejoin / re-supervise with (possibly new) creds */
+        }
         if (!hw_up) {
             hw_up = rw007_wifi_init();
             if (!hw_up) {
@@ -506,4 +522,9 @@ bool net_task_is_online(void)
 const char *net_task_get_ip(void)
 {
     return s_ip_str;
+}
+
+void net_task_request_portal(void)
+{
+	s_portal_requested = true;
 }

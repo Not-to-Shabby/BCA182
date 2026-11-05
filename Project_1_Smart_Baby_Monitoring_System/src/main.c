@@ -36,6 +36,8 @@
 #include "sensor_task.h"
 #include "audio_capture.h"
 #include "cry_task.h"
+#include "net_task.h"
+#include "mqtt_task.h"
 
 #include <stdio.h>
 
@@ -212,6 +214,13 @@ int main(void)
      * releases it (self-gating thread; 2-of-3 windows -> cry -> ALERT). */
     cry_task_start();
     printk("[APP] Cry task started (on-device classifier, 2-of-3 windows)\n");
+
+    /* P4 CONNECTIVITY: RW007 Wi-Fi -> DHCP supervisor; MQTT publisher
+     * (both self-gating threads; see net_task.h / mqtt_task.h). */
+    net_task_start();
+    printk("[APP] Net task started (RW007 -> DHCP supervisor)\n");
+    mqtt_task_start();
+    printk("[APP] MQTT task started (readings/events publisher)\n");
 
     /* LED matrix liveness until the UI thread takes over pixel 0 */
     led_matrix_set_pixel(0, 0, 16, 0);

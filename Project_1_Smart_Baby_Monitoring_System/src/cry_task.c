@@ -10,7 +10,7 @@
  *      FFT tables once (audio_features_init()).
  *   3. Drain the OLDEST 16000 mono samples (AUDIO_FEAT_WINDOW_SAMPLES) out of
  *      the capture ring (audio_capture_ring_read()) into the window buffer.
- *   4. Classify the full window: 29 features (audio_features_compute) ->
+ *   4. Classify the full window: 63 features (audio_features_compute) ->
  *      emlearn forest confidence (cry_model_predict_confidence).
  *   5. Apply the spec's confirmation rule: a window is cry-positive when the
  *      model calls CRY with vote share >= CRY_CONF_THRESHOLD (70%), and the

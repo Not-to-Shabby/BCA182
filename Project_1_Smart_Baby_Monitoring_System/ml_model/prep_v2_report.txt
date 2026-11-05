@@ -1,0 +1,88 @@
+=== prep_v2.py wave-2 dataset merge 2026-11-05T17:41:21+00:00 ===
+workers=12, val_frac=0.1, seed=182
+base manifest: 3265 rows confuser=160, test=80, train=2436, val=589
+candidates siccd: 3200 rows
+candidates csibe: 29770 rows
+candidates hoyyu_icd: 28478 rows
+candidates total: 61448
+hashing + extracting 64713 clips (3265 base + 61448 candidates) ...
+feature cache loaded: 3265 entries
+  scanned 5000/64713 (98 s)
+  scanned 10000/64713 (98 s)
+  scanned 15000/64713 (98 s)
+  scanned 20000/64713 (98 s)
+  scanned 25000/64713 (98 s)
+  scanned 30000/64713 (101 s)
+  scanned 35000/64713 (104 s)
+  scanned 40000/64713 (108 s)
+  scanned 45000/64713 (115 s)
+  scanned 50000/64713 (121 s)
+  scanned 55000/64713 (127 s)
+  scanned 60000/64713 (132 s)
+hash+extract pass done: 64713 clips, 0 errors (137 s)
+existing hash sets: train=2435 val=589 protect(test+confuser)=240
+routing: {'dropped_short': 23110, 'eligible': 35650, 'dropped_intra_candidate_dup': 2688}
+eligible for split: 35650
+
+--- stratified 10% val split (eligible candidates) ---
+  csibe     cry    eligible=   506 groups=  506 -> val    51 clips (10.1%)
+  csibe     noncry eligible=  6154 groups= 6154 -> val   615 clips (10.0%)
+  hoyyu_icd cry    eligible= 13272 groups=13272 -> val  1327 clips (10.0%)
+  hoyyu_icd noncry eligible= 12680 groups=12680 -> val  1268 clips (10.0%)
+  siccd     cry    eligible=  3038 groups= 3038 -> val   304 clips (10.0%)
+
+wrote manifest_v2.csv: 38915 rows (3265 base + 35650 new)
+
+--- merged manifest split summary (clips) ---
+  confuser  noncry     160
+  test      cry         40
+  test      noncry      40
+  train     cry      16490
+  train     noncry   18031
+  val       cry       1911
+  val       noncry    2243
+  train: cry:noncry = 1:1.09 (by clips)
+  val: cry:noncry = 1:1.17 (by clips)
+
+--- pre-warming features_cache.npz ---
+  cache: 2000 new entries saved (1 s)
+  cache: 4000 new entries saved (2 s)
+  cache: 6000 new entries saved (2 s)
+  cache: 8000 new entries saved (3 s)
+  cache: 10000 new entries saved (3 s)
+  cache: 12000 new entries saved (4 s)
+  cache: 14000 new entries saved (5 s)
+  cache: 16000 new entries saved (6 s)
+  cache: 18000 new entries saved (7 s)
+  cache: 20000 new entries saved (8 s)
+  cache: 22000 new entries saved (9 s)
+  cache: 24000 new entries saved (10 s)
+  cache: 26000 new entries saved (12 s)
+  cache: 28000 new entries saved (13 s)
+  cache: 30000 new entries saved (14 s)
+  cache: 32000 new entries saved (16 s)
+  cache: 34000 new entries saved (18 s)
+cache pre-warm done: 35650 new, 3265 hits, 0 missing (19 s)
+
+--- dedup method ---
+content fingerprint = md5 of 16 kHz mono signed-16-bit PCM bytes
+(16 kHz/mono/s16 files hashed verbatim from the WAV data chunk;
+other formats routed through extract_features.load_wav +
+resample_to_16k + s16 quantization). EXACT-content matching only:
+re-encoded / gain- or pitch-shifted duplicates are NOT caught.
+SICCD's ~330 internally-augmented clips carry no metadata marker
+and could not be identified or excluded individually.
+
+--- dedup stats (candidates) ---
+  candidates scanned                    61448
+  unreadable/error                      0
+  dropped: hash == FROZEN test/confuser 0
+  dropped: duplicate of another candidate 2688
+  -> train (duplicate of existing train clip) 0
+  -> train (duplicate of existing val clip; kept out of val) 0
+  dropped: shorter than 1 s window      23110
+  eligible for train/val split          35650
+  assigned val (10% stratified)         3565
+  assigned train                        32085
+
+total runtime 2.6 min

@@ -34,6 +34,7 @@ typedef struct {
 	bool cry_detected;     /* confirmed cry (hysteresis-applied)   */
 	uint32_t cry_confidence; /* model vote confidence, 0..100     */
 	bool env_sensor_ok;    /* mirror of the sensor task's AHT health */
+	bool net_online;       /* mirror of net_task link state        */
 
 	/* Timing / user feedback */
 	uint32_t last_update_ms; /* k_uptime_get_32() of last refresh */

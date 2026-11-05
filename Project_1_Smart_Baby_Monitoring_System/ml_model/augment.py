@@ -85,7 +85,8 @@ from extract_features import (              # noqa: E402
     FS, FEATURE_NAMES, WINDOW_SAMPLES, extract_window, load_wav,
     resample_to_16k, UnsupportedAudio)
 
-N_FEATURES = len(FEATURE_NAMES)             # 29, mirrors the trainer constant
+N_FEATURES = len(FEATURE_NAMES)             # 63 (feature-set v2), mirrors the
+                                            # trainer constant
 
 AUG_CACHE_NAME = "features_aug_cache.npz"
 AUG_CACHE_VERSION = "aug-v5"     # bump to invalidate stale augmented features
@@ -384,7 +385,8 @@ def _save_cache(cache_path, cache):
 
 def _aug_file_block(rel_path, abs_path, label, variant_id, noncry_frac,
                     noise_pool):
-    """One augmented variant of one training clip -> (n, 29) float32 features.
+    """One augmented variant of one training clip -> (n, N_FEATURES) float32
+    features.
     Fully deterministic: the RNG is seeded from the variant's cache key.
     For non-cry clips, `noncry_frac` of the windows get a calibration variant
     (Bernoulli per window, seeded with the file), the rest are left out."""
@@ -547,8 +549,8 @@ def _selftest() -> int:
     check("different seeds give different variants", not np.allclose(y1, y2))
 
     f = extract_window(y1)
-    check("augmented window yields 29 finite features",
-          f.shape == (29,) and bool(np.isfinite(f).all()))
+    check(f"augmented window yields {N_FEATURES} finite features",
+          f.shape == (N_FEATURES,) and bool(np.isfinite(f).all()))
 
     # SNR correctness: white noise at 10 dB SNR -> noise RMS = sig/10^0.5
     x = np.full(WINDOW_SAMPLES, 0.1)
@@ -611,8 +613,8 @@ def _selftest() -> int:
 
     ys = augment_cry_window(w, np.random.default_rng(11), stress=True)
     fs_ = extract_window(ys)
-    check("stress variant finite + 29 features",
-          bool(np.isfinite(ys).all()) and fs_.shape == (29,)
+    check(f"stress variant finite + {N_FEATURES} features",
+          bool(np.isfinite(ys).all()) and fs_.shape == (N_FEATURES,)
           and bool(np.isfinite(fs_).all()))
 
     print(f"{'ALL PASS' if not failures else f'{len(failures)} FAILURE(S): ' + ', '.join(failures)}")

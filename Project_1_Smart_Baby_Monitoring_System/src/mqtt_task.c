@@ -6,8 +6,7 @@
  * Pipeline (implements the frozen contract in mqtt_task.h):
  *   1. Park until net_task_is_online() (RW007 associated + DHCP lease +
  *      carrier), polled at 200 ms. No socket work happens before that.
- *   2. Resolve the broker host (secrets.h MQTT_BROKER_HOST, which may be a
- *      hostname or dotted quad) with zsock_getaddrinfo() and connect with
+ *   2. Resolve the broker host with zsock_getaddrinfo() and connect with
  *      the standard Zephyr MQTT client library (Zephyr 4.4 mqtt_socket,
  *      MQTT 3.1.1, mirrors samples/net/mqtt_publisher). Client id is
  *      "babymonitor-<4 random hex digits>" so parallel simulators can
@@ -80,10 +79,12 @@
 #include "baby_logic.h"
 #include "monitor_state.h"
 #include "net_task.h"
+#include "wifi_storage.h"
 
 /* ----------------------------------------------------------- configuration */
 
-/* Broker: secrets.h (git-ignored) overrides the public-test defaults.
+/* Broker: the portal-saved wifi_storage v2 preference wins at (re)connect
+ * time; secrets.h (git-ignored) is the fallback when no broker was saved.
  * Mirrors the __has_include pattern documented in secrets.h.example --
  * the project must still compile without credentials for grading. */
 #if defined(__has_include)
@@ -462,22 +463,36 @@ static void mqtt_evt_handler(struct mqtt_client *const client,
 
 /* -------------------------------------------------------------- connect */
 
-/** Resolve MQTT_BROKER_HOST (name or dotted quad) into the broker addr. */
+/** Resolve the preferred broker (name or dotted quad) into the broker addr.
+ *  Preference at every (re)connect: the portal-saved wifi_storage v2 record
+ *  (wifi_storage_get_broker) over the secrets.h default. */
 static bool broker_resolve(void)
 {
 	struct zsock_addrinfo *res = NULL;
 	char port_str[8];
 
-	(void)snprintf(port_str, sizeof(port_str), "%u",
-		       (unsigned)MQTT_BROKER_PORT);
+	char saved_host[WIFI_BROKER_HOST_MAX_LEN];
+	uint16_t saved_port = 0;
+	const char *host = MQTT_BROKER_HOST;
+	unsigned port = (unsigned)MQTT_BROKER_PORT;
+
+	if (wifi_storage_get_broker(saved_host, sizeof(saved_host),
+				    &saved_port)) {
+		host = saved_host;
+		port = saved_port;
+		printk("[MQTT] broker %s:%u (portal-saved)\n", host, port);
+	} else {
+		printk("[MQTT] broker %s:%u (secrets.h)\n", host, port);
+	}
+
+	(void)snprintf(port_str, sizeof(port_str), "%u", port);
 
 	struct zsock_addrinfo hints = {
 		.ai_family = AF_INET,
 		.ai_socktype = SOCK_STREAM,
 	};
 
-	const int rc = zsock_getaddrinfo(MQTT_BROKER_HOST, port_str, &hints,
-					 &res);
+	const int rc = zsock_getaddrinfo(host, port_str, &hints, &res);
 	if (rc != 0 || res == NULL) {
 		return false;
 	}

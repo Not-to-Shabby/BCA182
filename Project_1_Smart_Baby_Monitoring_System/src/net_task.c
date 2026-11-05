@@ -1,8 +1,9 @@
 /**
  * @file net_task.c
  * @brief P4 - Network transport task: RW007 Wi-Fi (SPI) -> Zephyr L2
- *        Ethernet -> DHCPv4, with link-loss supervision and exponential
- *        backoff reconnect.
+ *        Ethernet -> DHCPv4, with link-loss supervision, exponential
+ *        backoff reconnect and the SoftAP captive-portal provisioning
+ *        branch.
  *
  * Bring-up sequence (mirrors the verified LAB_3 join_and_get_ip() pattern):
  *   1. Boot gate: park 8 s so the one-shot audio loopback demo finishes
@@ -10,25 +11,55 @@
  *      acceptable simplification -- see the boot-gate comment below).
  *   2. rw007_wifi_init(): raw-register SPI2 bring-up + module reset.
  *   3. rw007_wifi_scan(): console log of the strongest discovered SSIDs.
- *   4. rw007_netif_set_mac(station MAC) + rw007_wifi_connect(secrets.h).
- *   5. rw007_netif_link(true) + net_dhcpv4_start(), wait up to 20 s for the
+ *   4. Credential selection: wifi_storage v2 record first (portal-saved
+ *      Wi-Fi credentials), falling back to the secrets.h compile-time
+ *      default when no record exists.
+ *   5. rw007_netif_set_mac(station MAC) + rw007_wifi_connect(selected
+ *      credentials), 3-attempt join burst with a short gap.
+ *   6. rw007_netif_link(true) + net_dhcpv4_start(), wait up to 20 s for the
  *      NET_EVENT_IPV4_ADDR_ADD management event (DHCP lease).
- *   6. Publish net_online=true + the dotted-quad IP into monitor_state
+ *   7. Publish net_online=true + the dotted-quad IP into monitor_state
  *      (under monitor_state_lock()) and printk "[NET] online ip=...".
  *
- * Supervisor loop (1 s poll of rw007_wifi_is_connected()): on link loss the
- * interface carrier is dropped, DHCP is stopped, net_online is published as
- * false and the task retries the join sequence with exponential backoff
- * (2, 4, 8, 16, 30, 30... s cap). The RW007 driver exposes no standalone
- * hardware-reset entry point that is safe to call twice (rw007_wifi_init()
- * spawns a new driver thread on every call), so after 5 consecutive failed
- * joins the task logs a fault line (with netif stats) and simply keeps
- * retrying at the capped interval.
+ * Supervisor loop (1 s poll of rw007_wifi_is_connected() while online): on
+ * link loss the interface carrier is dropped, DHCP is stopped, net_online is
+ * published as false and the task retries the join burst with exponential
+ * backoff (2, 4, 8, 16, 30, 30... s cap).
+ *
+ * Captive-portal provisioning branch (port of the LAB_3 setup portal, 300 s
+ * window because the form now also carries broker + mute controls):
+ *   - Boot, no credentials at all (no flash record, secrets.h placeholder):
+ *     the portal opens immediately (first-boot UX) and is re-offered after
+ *     each backoff pause until credentials are provisioned, so the device
+ *     can never end up permanently unreachable.
+ *   - Boot, saved credentials but the 3-attempt join burst fails: the
+ *     portal opens (LAB_3 while(!online) pattern).
+ *   - Runtime, was online at least once: the portal opens after every 5th
+ *     failed join burst (e.g. the router password changed) -- between
+ *     windows the supervisor resumes backoff retries with the previous
+ *     credentials. After a portal exit without save the same backoff
+ *     retries continue.
+ *   - POST /save hand-off: the portal runs INLINE on this thread, so its
+ *     return value is the supervisor's rejoin signal (no semaphore). The
+ *     submitted credentials are verified with a real STA join (connect-
+ *     verify before saving, the LAB_3 rule); only a verified join stores
+ *     all four values via wifi_storage_save_ex(). The MQTT broker change
+ *     takes effect at mqtt_task's next reconnect (broker preference is read
+ *     from wifi_storage there).
+ *   - The portal publishes monitor_state.portal_active (UI footer AP flag);
+ *     teardown ordering follows LAB_3: dhcpv4_server_stop -> ipv4 addr
+ *     remove -> netif_link(false) -> softap stop -> restore STA MAC.
+ *
+ * The RW007 driver exposes no standalone hardware-reset entry point that is
+ * safe to call twice (rw007_wifi_init() spawns a new driver thread on every
+ * call), so after 5 consecutive failed join bursts the task logs a fault
+ * line (with netif stats) and simply keeps retrying at the capped interval.
  *
  * RAM contract (see net_task.h): the DTCM migration of the audio ring
  * (audio_capture.c) plus the record-buffer shrink freed ~64 KB of main SRAM
  * to fund the networking CONFIG block in zephyr/prj.conf; this task's own
- * stack also lives in DTCM via the raw-buffer pattern below.
+ * stack also lives in DTCM via the raw-buffer pattern below (bumped to
+ * 2560 B for the portal call depth).
  */
 
 #include "net_task.h"
@@ -36,6 +67,8 @@
 #include "monitor_state.h"
 #include "rw007_wifi.h"
 #include "rw007_netif.h"
+#include "wifi_portal.h"
+#include "wifi_storage.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -49,7 +82,8 @@
 /* --------------------------------------------------------------- credentials */
 /* Prefer the git-ignored secrets.h (copy of secrets.h.example with real
  * values); fall back to the example placeholders so the build never breaks
- * for grading. The placeholders are detected at runtime with one hint line. */
+ * for grading. The placeholders are detected at runtime with one hint line
+ * and route boot into the setup portal instead of a doomed join. */
 #if defined(__has_include)
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -73,6 +107,10 @@
 #define NET_INIT_RETRY_S       10u   /* RW007 hardware-init retry delay       */
 #define NET_HW_FAULT_ATTEMPTS  5u    /* consecutive join fails -> fault log   */
 #define NET_SCAN_TOP           5u    /* strongest SSIDs logged after a scan   */
+#define NET_JOIN_ATTEMPTS      3u    /* join burst size (LAB_3 pattern)       */
+#define NET_JOIN_RETRY_GAP_S   2u    /* pause between burst attempts          */
+#define NET_PORTAL_WINDOW_S    300u  /* captive portal window (bigger form)   */
+#define NET_PORTAL_EVERY_BURSTS 5u   /* runtime portal re-offer cadence       */
 
 /* ----------------------------------------------------------------- API state */
 /* Single-writer (this thread only) / multi-reader: net_online flips as a
@@ -81,13 +119,28 @@
 static volatile bool s_online;
 static char s_ip_str[16] = "0.0.0.0";
 
+/* Active credential set (this thread only; guarded by the supervisor loop
+ * structure, no cross-thread access). */
+static char s_ssid[WIFI_SSID_MAX_LEN];
+static char s_pass[WIFI_PASS_MAX_LEN];
+static bool s_have_creds;  /* a usable credential pair is loaded          */
+static bool s_joined;      /* currently associated + leased               */
+static bool s_ever_online; /* joined at least once since boot             */
+
+/* Backoff / fault counters: file-scope statics so the portal helpers can
+ * reset them (single writer: this thread). */
+static uint32_t s_fail_count;
+static uint32_t s_backoff_s = NET_RETRY_MIN_S;
+
 /* ------------------------------------------------------- thread (DTCM stack) */
 /* Raw aligned buffer cast to k_thread_stack_t: K_THREAD_STACK_DEFINE carries
  * its own section attribute and CANNOT be wrapped in a custom-section
  * attribute, so the DTCM placement needs this pattern. The +64 guard bytes
  * absorb Zephyr's thread-stack bookkeeping prologue. DTCM is CPU-access-only,
- * which is exactly what a thread stack needs (no DMA touches it). */
-#define NET_TASK_STACK_SIZE 2048u
+ * which is exactly what a thread stack needs (no DMA touches it). Stack is
+ * 2560 B: the captive-portal call chain (poll loop + vsnprintf emit) needs
+ * more headroom than the plain supervisor's 2048 B. */
+#define NET_TASK_STACK_SIZE 2560u
 #define NET_TASK_PRIORITY   7
 
 static uint8_t __attribute__((section(".dtcm_noinit"), aligned(32)))
@@ -163,6 +216,29 @@ static void log_scan_top(void)
     }
 }
 
+/* --------------------------------------------------------- credential source */
+/* Best available credentials: the wifi_storage v2 record (portal-saved)
+ * first, else the secrets.h compile-time default (skipped when it is still
+ * the placeholder). */
+static void load_best_creds(void)
+{
+    s_have_creds = false;
+
+    if (wifi_storage_read(s_ssid, s_pass)) {
+        s_have_creds = true;
+        printk("[NET] using saved credentials for '%s'\n", s_ssid);
+        return;
+    }
+    if (strcmp(WIFI_SSID, "your-wifi-ssid") != 0) {
+        strncpy(s_ssid, WIFI_SSID, sizeof(s_ssid) - 1u);
+        s_ssid[sizeof(s_ssid) - 1u] = '\0';
+        strncpy(s_pass, WIFI_PASS, sizeof(s_pass) - 1u);
+        s_pass[sizeof(s_pass) - 1u] = '\0';
+        s_have_creds = true;
+        printk("[NET] using secrets.h credentials for '%s'\n", s_ssid);
+    }
+}
+
 /* ------------------------------------------------------- associate + lease   */
 /* Mirror of the verified LAB_3 main.c join_and_get_ip(): station MAC into the
  * netif, Wi-Fi association, carrier on + DHCP start, bounded lease wait.
@@ -179,7 +255,7 @@ static bool join_and_get_ip(void)
     rw007_wifi_get_mac(sta_mac);
     rw007_netif_set_mac(sta_mac);
 
-    if (!rw007_wifi_connect(WIFI_SSID, WIFI_PASS)) {
+    if (!rw007_wifi_connect(s_ssid, s_pass)) {
         return false;
     }
 
@@ -209,6 +285,74 @@ static bool join_and_get_ip(void)
     return true;
 }
 
+/* Bounded join burst with a short gap between attempts (LAB_3
+ * connect_with_retries pattern). */
+static bool join_burst(uint32_t attempts)
+{
+    for (uint32_t attempt = 1u; attempt <= attempts; attempt++) {
+        printk("[NET] join attempt %u/%u for '%s'\n",
+               (unsigned)attempt, (unsigned)attempts, s_ssid);
+        if (join_and_get_ip()) {
+            return true;
+        }
+        if (attempt < attempts) {
+            k_sleep(K_SECONDS(NET_JOIN_RETRY_GAP_S));
+        }
+    }
+    return false;
+}
+
+/* ----------------------------------------------------- portal save hand-off  */
+/* Verify-then-save (LAB_3 rule): the portal only captured the submission;
+ * nothing is stored until the submitted credentials pass a real STA join.
+ * A blank broker field preserves the previously saved broker preference. */
+static void try_verify_and_save(const wifi_portal_result_t *res)
+{
+    printk("[NET] verifying submitted credentials for '%s'\n", res->ssid);
+
+    strncpy(s_ssid, res->ssid, sizeof(s_ssid) - 1u);
+    s_ssid[sizeof(s_ssid) - 1u] = '\0';
+    strncpy(s_pass, res->pass, sizeof(s_pass) - 1u);
+    s_pass[sizeof(s_pass) - 1u] = '\0';
+    s_have_creds = true;
+
+    if (!join_burst(NET_JOIN_ATTEMPTS)) {
+        printk("[NET] submitted credentials did not join -- not saved\n");
+        s_joined = false;
+        s_have_creds = false;
+        load_best_creds(); /* resume with the previous credential set */
+        return;
+    }
+
+    /* Verified: record the join and persist the full v2 record. */
+    s_joined = true;
+    s_ever_online = true;
+    s_fail_count = 0;
+    s_backoff_s = NET_RETRY_MIN_S;
+
+    const char *broker = res->broker_host;
+    uint16_t broker_port = res->broker_port;
+    char prev_host[WIFI_BROKER_HOST_MAX_LEN];
+    uint16_t prev_port;
+
+    if ((broker == NULL || broker[0] == '\0') &&
+        wifi_storage_get_broker(prev_host, sizeof(prev_host), &prev_port)) {
+        broker = prev_host; /* blank field = keep current broker */
+        broker_port = prev_port;
+    }
+
+    if (wifi_storage_save_ex(res->ssid, res->pass,
+                             (broker != NULL && broker[0] != '\0') ? broker : NULL,
+                             broker_port)) {
+        printk("[NET] credentials%s%s verified & saved to flash\n",
+               (broker != NULL && broker[0] != '\0') ? " + broker " : "",
+               (broker != NULL && broker[0] != '\0') ? broker : "");
+    } else {
+        printk("[NET] WARNING: flash save failed (credentials active for "
+               "this boot only)\n");
+    }
+}
+
 /* ------------------------------------------------------------------- thread  */
 static void net_thread_fn(void *p1, void *p2, void *p3)
 {
@@ -227,13 +371,14 @@ static void net_thread_fn(void *p1, void *p2, void *p3)
     net_mgmt_add_event_callback(&s_ip_cb);
 
     if (strcmp(WIFI_SSID, "your-wifi-ssid") == 0) {
-        printk("[NET] secrets.h placeholders in use -- copy "
-               "include/secrets.h.example, fill in credentials, rebuild\n");
+        printk("[NET] secrets.h placeholders in use -- join the SoftAP "
+               "'BabyMon-Setup' to provision credentials\n");
     }
 
     bool hw_up = false;
-    uint32_t fail_count = 0;
-    uint32_t backoff_s = NET_RETRY_MIN_S;
+    wifi_portal_result_t res;
+
+    load_best_creds();
 
     for (;;) {
         if (!hw_up) {
@@ -250,41 +395,93 @@ static void net_thread_fn(void *p1, void *p2, void *p3)
             log_scan_top();
         }
 
-        if (join_and_get_ip()) {
-            /* Online: supervise the link with a 1 s poll. */
-            backoff_s = NET_RETRY_MIN_S;
-            fail_count = 0;
-            publish_net_state(true);
-            printk("[NET] online ip=%s\n", s_ip_str);
-
-            while (rw007_wifi_is_connected()) {
-                k_sleep(K_SECONDS(NET_POLL_PERIOD_S));
-            }
-
-            /* Link lost: take the path down and start the retry cycle. */
-            printk("[NET] dropped, retry in %u s\n", (unsigned)backoff_s);
+        /* No credentials anywhere: first-boot UX -- portal immediately, and
+         * re-offered after every backoff pause until provisioning succeeds
+         * (the device would otherwise be unreachable forever). */
+        if (!s_have_creds) {
             net_take_offline();
-            k_sleep(K_SECONDS(backoff_s));
+            printk("[NET] no credentials -- opening config portal "
+                   "(%u s window)\n", (unsigned)NET_PORTAL_WINDOW_S);
+            if (wifi_portal_run(NET_PORTAL_WINDOW_S, &res) && res.valid) {
+                try_verify_and_save(&res);
+                if (s_joined) {
+                    continue; /* verified + saved: supervise at loop bottom */
+                }
+            }
+            k_sleep(K_SECONDS(s_backoff_s));
+            s_backoff_s = (s_backoff_s < NET_RETRY_MAX_S) ? (s_backoff_s * 2u)
+                                                          : NET_RETRY_MAX_S;
             continue;
         }
 
-        /* Join/lease failed: exponential backoff reconnect. */
-        net_take_offline();
-        fail_count++;
-        if (fail_count == NET_HW_FAULT_ATTEMPTS ||
-            (fail_count % NET_HW_FAULT_ATTEMPTS) == 0) {
-            /* The driver exposes no standalone reset/reinit entry point that
-             * is safe to call twice (rw007_wifi_init() spawns another driver
-             * thread on every call), so the supervisor just keeps retrying
-             * the CMD_JOIN path at the capped interval. */
-            printk("[NET] fault: %u consecutive join failures -- no driver "
-                   "reset path, continuing retries\n", (unsigned)fail_count);
-            rw007_netif_stats();
+        if (!s_joined) {
+            if (join_burst(NET_JOIN_ATTEMPTS)) {
+                s_joined = true;
+                s_ever_online = true;
+                s_fail_count = 0;
+                s_backoff_s = NET_RETRY_MIN_S;
+            } else {
+                /* Join burst failed: exponential backoff reconnect, with the
+                 * config portal opened (a) on boot when the saved
+                 * credentials never joined, and (b) every 5th failed burst
+                 * at runtime (e.g. changed router password). Between portal
+                 * windows the supervisor retries the previous credentials. */
+                net_take_offline();
+                s_fail_count++;
+                if (s_fail_count == NET_HW_FAULT_ATTEMPTS ||
+                    (s_fail_count % NET_HW_FAULT_ATTEMPTS) == 0) {
+                    /* The driver exposes no standalone reset/reinit entry
+                     * point that is safe to call twice (rw007_wifi_init()
+                     * spawns another driver thread on every call), so the
+                     * supervisor just keeps retrying the join path at the
+                     * capped interval. */
+                    printk("[NET] fault: %u consecutive failed join bursts "
+                           "-- no driver reset path, continuing retries\n",
+                           (unsigned)s_fail_count);
+                    rw007_netif_stats();
+                }
+
+                if (!s_ever_online ||
+                    (s_fail_count % NET_PORTAL_EVERY_BURSTS) == 0u) {
+                    printk("[NET] opening config portal (%u s window)\n",
+                           (unsigned)NET_PORTAL_WINDOW_S);
+                    if (wifi_portal_run(NET_PORTAL_WINDOW_S, &res) &&
+                        res.valid) {
+                        try_verify_and_save(&res);
+                        if (s_joined) {
+                            continue; /* supervise at loop bottom */
+                        }
+                    }
+                    /* Portal exit without save (or failed verify): fall
+                     * through to the backoff pause with the previous
+                     * credentials. */
+                }
+
+                printk("[NET] join failed, retry in %u s\n",
+                       (unsigned)s_backoff_s);
+                k_sleep(K_SECONDS(s_backoff_s));
+                s_backoff_s = (s_backoff_s < NET_RETRY_MAX_S)
+                                  ? (s_backoff_s * 2u)
+                                  : NET_RETRY_MAX_S;
+                continue;
+            }
         }
-        printk("[NET] join failed, retry in %u s\n", (unsigned)backoff_s);
-        k_sleep(K_SECONDS(backoff_s));
-        backoff_s = (backoff_s < NET_RETRY_MAX_S) ? (backoff_s * 2u)
-                                                  : NET_RETRY_MAX_S;
+
+        /* Joined: supervise the link with a 1 s poll. */
+        publish_net_state(true);
+        printk("[NET] online ip=%s\n", s_ip_str);
+
+        while (rw007_wifi_is_connected()) {
+            k_sleep(K_SECONDS(NET_POLL_PERIOD_S));
+        }
+
+        /* Link lost: take the path down and start the retry cycle. */
+        printk("[NET] dropped, retry in %u s\n", (unsigned)s_backoff_s);
+        net_take_offline();
+        s_joined = false;
+        k_sleep(K_SECONDS(s_backoff_s));
+        /* backoff stays at MIN (it was reset when the join succeeded), so
+         * the first post-drop retry happens quickly. */
     }
 }
 

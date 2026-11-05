@@ -11,7 +11,10 @@
  * strip behavior of Lab 4; a confirmed cry (cry_task) replaces the ALERT
  * banner text with "CRY DETECTED" under the same treatment and raises a CRY
  * flag in the footer row, next to the NET link flag (P4: bright green while
- * net_task holds a DHCP lease, dim grey while offline).
+ * net_task holds a DHCP lease, dim grey while offline). While the SoftAP
+ * captive-portal is serving (monitor_state.portal_active, P4) the same flag
+ * slot shows a bright cyan "AP" instead -- there is deliberately no STA
+ * link in that mode.
  *
  * All drawing happens on the caller's snapshot COPY (never the live state
  * pointer), so no lock is held while the relatively slow FSMC writes run.
@@ -51,7 +54,7 @@
 #define VALUE_X     80U
 #define ROW_Y(i)    (92U + (i) * 18U)
 
-/* Footer card: uptime left, then NET + CRY + TEST flags right */
+/* Footer card: uptime left, then NET/AP + CRY + TEST flags right */
 #define FOOT_Y1     192U
 #define FOOT_Y2     218U
 #define UP_Y        196U
@@ -76,7 +79,8 @@ static char   s_last_prox[12];
 static char   s_last_accel[12];
 static char   s_last_up[16];
 static bool   s_last_test;
-static bool   s_last_net;
+static char   s_last_flag[4];         /* NET / AP footer flag text           */
+static uint16_t s_last_flag_color;    /* NET / AP footer flag color          */
 
 /* ----------------------------------------------------------- static frame */
 void ui_dashboard_init(void)
@@ -118,7 +122,8 @@ void ui_dashboard_init(void)
 	s_last_accel[0] = '\0';
 	s_last_up[0] = '\0';
 	s_last_test = false;
-	s_last_net = false;
+	s_last_flag[0] = '\0';
+	s_last_flag_color = BG;
 }
 
 /* ------------------------------------------------------------ field paints */
@@ -279,14 +284,26 @@ void ui_dashboard_update(const monitor_state_t *s)
 		s_last_test = test;
 	}
 
-	/* --- NET link flag (net_task -> monitor_state.net_online) ---
+	/* --- NET / AP link flag (net_task / wifi_portal -> monitor_state) ---
 	 * Always painted so the flag position is stable: bright green while the
-	 * monitor holds a DHCP lease, dim grey otherwise. The snapshot copy the
-	 * UI thread already takes includes net_online, so this read is free. */
-	const bool net = s->net_online;
-	if (net != s_last_net) {
-		lcd_show_string(NET_X, UP_Y, "NET",
-				net ? LCD_COLOR_GREEN : LCD_COLOR_GRAY, BG);
-		s_last_net = net;
+	 * monitor holds a DHCP lease, dim grey otherwise, and a bright cyan
+	 * "AP" while the SoftAP config portal is serving (no STA link exists
+	 * in that mode). The snapshot copy the UI thread already takes includes
+	 * both fields, so these reads are free. */
+	const char *flag;
+	uint16_t flag_color;
+
+	if (s->portal_active) {
+		flag = "AP ";
+		flag_color = LCD_COLOR_CYAN;
+	} else {
+		flag = "NET";
+		flag_color = s->net_online ? LCD_COLOR_GREEN : LCD_COLOR_GRAY;
+	}
+	if (strcmp(flag, s_last_flag) != 0 ||
+	    flag_color != s_last_flag_color) {
+		lcd_show_string(NET_X, UP_Y, flag, flag_color, BG);
+		snprintf(s_last_flag, sizeof(s_last_flag), "%s", flag);
+		s_last_flag_color = flag_color;
 	}
 }

@@ -1,6 +1,6 @@
 /**
  * @file test_features.c
- * @brief Host-native Unity suite for the on-device 29-feature extractor.
+ * @brief Host-native Unity suite for the on-device 63-feature extractor.
  *
  * Parity contract: src/audio_features.c must reproduce the PC trainer front
  * end (ml_model/extract_features.py) feature-for-feature.  The golden vector
@@ -142,7 +142,11 @@ void test_compute_is_deterministic(void)
  * all-zero window must give finite features everywhere.  With constant
  * frames every MFCC std collapses to ~0, mfcc00_mean = sqrt(40)*log(1e-10)
  * (row 0 of the orthonormal DCT sums to sqrt(40), rows 1..12 sum to 0),
- * log_energy_mean = log(1e-12) and ZCR = 0 (signbit(+0.0) is false). */
+ * log_energy_mean = log(1e-12) and ZCR = 0 (signbit(+0.0) is false).
+ * Feature-set v2: the delta sequences of constant frames are identically 0
+ * (means and stds), and the spectral-shape guards define centroid /
+ * rolloff / flatness as 0 for zero-power frames -- so every feature except
+ * the two logarithmic means must be exactly ~0. */
 
 void test_silence_window_features_finite(void)
 {
@@ -154,12 +158,13 @@ void test_silence_window_features_finite(void)
     assert_all_finite(feat, "silence");
 
     TEST_ASSERT_FLOAT_WITHIN(1e-3f, (float)log(1e-12), feat[26]);
-    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, feat[27]);
     TEST_ASSERT_FLOAT_WITHIN(1e-3f, (float)(sqrt(40.0) * log(1e-10)), feat[0]);
-    for (i = 1u; i < AUDIO_FEAT_COUNT - 3u; i++) { /* mfcc01..12 mean + stds */
+    for (i = 0u; i < AUDIO_FEAT_COUNT; i++) {
+        if ((i == 0u) || (i == 26u)) {
+            continue; /* the two logarithmic means asserted above */
+        }
         TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, feat[i]);
     }
-    TEST_ASSERT_FLOAT_WITHIN(1e-9f, 0.0f, feat[28]);
 }
 
 /* ---------------------------------------------------- 4. ZCR definition --- */
@@ -198,7 +203,54 @@ void test_louder_sine_has_higher_log_energy(void)
     TEST_ASSERT_TRUE(loud[26] > quiet[26] + 1.0f);
 }
 
-/* ------------------------------------- 6. model feeds on the features ----- */
+/* ------------------------------- 6. v2 deltas track spectral motion ------
+ * Feature-set v2's reason to exist: a window whose spectrum MOVES must
+ * stand out in the delta features even when its per-window summary (v1
+ * block) looks like a steady tone's.  A 500 Hz tone completes exactly
+ * 16 cycles per 512-sample frame (8 per hop), so all 61 frames are
+ * identical, the MFCC/log-energy delta sequences are identically zero and
+ * every delta std collapses to ~0 (variance clamp).  A linear 400->900 Hz
+ * sweep sweeps the spectral peak across mel bands frame by frame, which
+ * must surface as a large MFCC-delta std (indices 42..54). */
+
+void test_delta_features_track_spectral_motion(void)
+{
+    float steady[AUDIO_FEAT_COUNT];
+    float swept[AUDIO_FEAT_COUNT];
+    float max_steady = 0.0f;
+    float max_swept = 0.0f;
+    double phase = 0.0;
+    uint32_t n;
+    uint32_t i;
+
+    for (n = 0u; n < GOLDEN_WINDOW_LEN; n++) {
+        const double t = (double)n / 16000.0;
+        s_quiet[n] = quantize_half_away(
+            0.2 * sin(2.0 * 3.14159265358979323846 * 500.0 * t) * 32768.0);
+        phase += 2.0 * 3.14159265358979323846 *
+                 (400.0 + 500.0 * t) / 16000.0;
+        s_loud[n] = quantize_half_away(0.2 * sin(phase) * 32768.0);
+    }
+    audio_features_compute(s_quiet, GOLDEN_WINDOW_LEN, steady);
+    audio_features_compute(s_loud, GOLDEN_WINDOW_LEN, swept);
+    assert_all_finite(steady, "steady tone");
+    assert_all_finite(swept, "swept tone");
+
+    for (i = 42u; i < 55u; i++) { /* mfcc00_delta_std .. mfcc12_delta_std */
+        if (steady[i] > max_steady) {
+            max_steady = steady[i];
+        }
+        if (swept[i] > max_swept) {
+            max_swept = swept[i];
+        }
+    }
+    printf("test_features: mfcc-delta std max: steady %.4g, swept %.4g\n",
+           (double)max_steady, (double)max_swept);
+    TEST_ASSERT_TRUE(max_steady < 0.01f);
+    TEST_ASSERT_TRUE(max_swept > 0.10f);
+}
+
+/* ------------------------------------- 7. model feeds on the features ----- */
 
 void test_model_predict_on_golden_features(void)
 {
@@ -239,6 +291,7 @@ int main(void)
     RUN_TEST(test_silence_window_features_finite);
     RUN_TEST(test_alternating_window_zcr_is_one);
     RUN_TEST(test_louder_sine_has_higher_log_energy);
+    RUN_TEST(test_delta_features_track_spectral_motion);
     RUN_TEST(test_model_predict_on_golden_features);
     return UNITY_END();
 }

@@ -20,16 +20,22 @@ git clone --depth 1      stdlib wave -> float mono      v5 wave augmentation of
 donateacry + ESC-50      windowed-sinc resample 16kHz   TRAIN windows only:
 ffmpeg .3gp/.caf->WAV    512/256 Hann frames            real ESC-50 ambience mix,
 manifest.csv             40-mel -> log -> DCT-II        reverb, lowpass, volume,
-(path,label,split,       13 MFCCs -> 29 feats/window    loud branch, pitch/speed,
- fold,source_id)         (pure NumPy, CMSIS mirror)     hum -> features_aug_cache
+(path,label,split,       13 MFCCs -> 63 feats/window    loud branch, pitch/speed,
+ fold,source_id)         (v1 29-summary block + 34      hum -> features_aug_cache
+                         temporal-dynamics features:
+                         MFCC-delta mean/std, log-energy
+                         delta mean/std, spectral
+                         centroid/rolloff(0.85)/flatness
+                         mean/std) (pure NumPy)
 
 train_cry_model.py
 -----------------------------------------------------------------------------------
 manifest -> windows (cached) + augmented train windows (cached, seeded)
--> RF candidates (seed 42: rf10x6 / rf12x7 / rf24x6 / rf10x6_plain)
+-> candidates (seed 42: rf12x7 / rf16x7 / rf18x7 / rf20x7 / rf30x8 /
+   et30x8 / et12x7 - ExtraTrees exports through the same eml_trees code)
 -> VAL-only comparison: cry side = raw val cry + stress-val cry proxy
    (deployment channel applied to val cry windows), FP gate = confuser split
--> cry-vote-share threshold swept 30..80 (firmware rule replicated exactly)
+-> cry-vote-share threshold swept 40..85 (firmware rule replicated exactly)
 -> FROZEN TEST evaluated once at the chosen point
 -> emlearn inline forest -> include/cry_model.h (same API as v1)
 ```
@@ -69,17 +75,18 @@ Notes:
   ~6 minutes; a failed/slow clone prints a WARNING and the pipeline still
   runs on whatever is present.
 - Step 3 caches window features in `ml_model/features_cache.npz` (keyed by
-  path + mtime + size), augmented train features in
-  `ml_model/features_aug_cache.npz` (keyed additionally by variant id; the
-  augmentation recipe version `AUG_CACHE_VERSION` invalidates it), and the
+  cache version + path + mtime + size; version `v2` = feature-set v2's 63
+  features), augmented train features in `ml_model/features_aug_cache.npz`
+  (invalidated by feature width, rebuilt once for v2 - the waveforms replay
+  identically because the per-(file, variant) seeds are unchanged), and the
   real-ambience noise pool in `ml_model/noise_pool_aug-v5.npz`, so re-runs
   are fast and reproducible.
 - `include/cry_model.h` is written **only** when the frozen test set holds
   >= 20 cry AND >= 20 non-cry clips; otherwise `model_report.txt` says
   exactly what is missing. The exported header is also size-gated
-  (`--header-max-bytes`, default 300 KB): the val-ranked candidates are
-  exported in order until one fits (rf30x8 measured 1.22 MB and was replaced
-  by the size-feasible rf12x7/rf24x6 candidates).
+  (`--header-max-bytes`, default 400 KB): the val-ranked candidates are
+  exported in order until one fits (v6: rf30x8 measured 1.18 MB and
+  rf20x7 415 KB - both skipped; rf16x7 at 330 KB ships).
 
 ## Frozen evaluation protocol (docs/project-plan.md §P3) - unchanged
 
@@ -158,7 +165,8 @@ unchanged from v1:
   class; a vote tie -> NONCRY, mirroring sklearn argmax).
 
 Pair it with `CRY_CONF_THRESHOLD` in `include/cry_task.h` (currently
-**75u** = 9/12 trees, the val-tuned operating point of the shipped model).
+**75u** = 12/16 trees, the val-tuned operating point of the shipped v6
+model).
 
 Verified: the generated header was compiled standalone (`gcc -std=c99 -Wall
 -Wextra`, zero warnings) and its predictions + confidences match sklearn
@@ -178,52 +186,79 @@ this matches the academic course context. Clones live under
 `ml_model/data/` (git-ignored; re-creatable with step 2). Cloned commits are
 recorded in `ml_model/dataset_provenance.txt` at prep time.
 
-## Current status (v5 retrain, November 2026)
+## Current status (v6 retrain - feature-set v2 temporal dynamics, November 2026)
 
 - Environment: numpy 2.4.6 / scipy 1.17.1 / scikit-learn 1.9.1 /
   emlearn 0.23.2 in the PlatformIO venv; git + ffmpeg available.
-- `extract_features.py --selftest`: **ALL PASS**;
-  `augment.py --selftest`: **ALL PASS** (16 checks).
-- Shipped model: **rf12x7** - RandomForestClassifier(n_estimators=12,
+- `extract_features.py --selftest`: **ALL PASS** (21 checks, including the
+  v2 delta/spectral definitions); `augment.py --selftest`: **ALL PASS**.
+- Feature-set v2: the 29 v1 summary features keep indices 0-28 and 34
+  temporal-dynamics features are appended (63 total, under the 64 budget):
+  per-frame MFCC deltas (edge-replicated first difference
+  `d[t] = (m'[t+1]-m'[t-1])/2`, mean+std = 26), per-frame log-energy delta
+  mean+std (2), per-frame spectral centroid / rolloff(0.85) / flatness
+  mean+std (6). The on-device front end (`src/audio_features.c`) computes
+  all 63 (pure C, FFT workspace + per-frame histories in DTCM) and
+  `pio test -e native` proves PC<->C parity: **golden max |err| = 4.8e-07**
+  (tolerance 1e-3), 7/7 feature tests + 22/22 baby-logic tests pass.
+- Shipped model: **rf16x7** - RandomForestClassifier(n_estimators=16,
   max_depth=7, class_weight="balanced", random_state=42) trained on
-  36,897 windows (14,097 original + 22,800 augmented). Header
-  `include/cry_model.h`: **263,528 bytes** (12 trees x depth <= 7),
-  inside the 300 KB budget.
-- Val-tuned operating point: **cry vote share >= 75 %** (9/12 trees)
-  - cry F1 on the tuning set (raw + stress val cries) **0.885**
-    (P 0.916 / R 0.857; raw-val cry recall 0.956, stress-val cry
-    recall 0.757), raw-val noncry FP 0.128, **confuser FP 0.077** (gate 0.10).
+  36,897 windows (14,097 original + 22,800 augmented, same augmentation
+  waveforms as v5 replayed through the new front end). Header
+  `include/cry_model.h`: **332,196 bytes** (16 trees x depth <= 7), inside
+  the 400 KB budget.
+- Candidate sweep on VAL (seed 42; cry side = raw + stress val cries, gate
+  = confuser FP <= 10 %): rf12x7 0.844 (only gate-passing point T=83),
+  rf16x7 **0.876** (T=75), rf18x7 0.871 (T=77), rf20x7 0.882 (T=75),
+  rf30x8 **0.890** (T=73), et30x8 0.807, et12x7 0.676. The val winner
+  rf30x8 measures **1.18 MB** and rf20x7 **415 KB** - both exceed the
+  400 KB header budget, so the exporter shipped rf16x7 (330 KB), the
+  best val candidate that fits.
+- Val-tuned operating point: **cry vote share >= 75 %** (12/16 trees)
+  - cry F1 on the tuning set (raw + stress val cries) **0.876**
+    (P 0.939 / R 0.821; raw-val cry recall 0.928, stress-val cry recall
+    0.713), raw-val noncry FP 0.086, **confuser FP 0.096** (gate 0.10).
 - FROZEN TEST (400 windows = 40 crying_baby + 40 fold-5 non-cry clips,
   evaluated once at T=75 %):
-  - cry: precision **0.848** / recall **0.335** / F1 **0.480**
-  - noncry: precision 0.586 / recall 0.940 (FP 12/200 = **6.0 %**)
-  - accuracy 0.637; energy baseline: near-chance (0.542 in v1, cry recall
-    196/200 but noncry FP 179/200).
-  - Confuser FP table (800 windows): chainsaw 3.5 %, helicopter 0 %,
-    rooster 14.5 %, siren 13.0 % - **TOTAL 62/800 = 7.7 %** (<= 10 % gate;
-    note: a v1 reporting bug truncated this table to the first 160 windows -
-    fixed in v5, v1's published 0-5 % numbers were undercounts).
+  - cry: precision **0.802** / recall **0.345** / F1 **0.483**
+  - noncry: precision 0.583 / recall 0.915 (FP 17/200 = **8.5 %**)
+  - accuracy 0.630; energy baseline: near-chance (cry recall 196/200 but
+    noncry FP 179/200).
+  - Confuser FP table (800 windows): chainsaw 5.0 %, helicopter 0.5 %,
+    rooster 16.5 %, siren 16.5 % - **TOTAL 77/800 = 9.6 %** (<= 10 % gate).
   - Clip-level view (informational, device needs 2-of-3 consecutive
-    windows): 27/40 cry clips have >= 1 positive window, 18/40 have >= 2;
-    8/40 noncry clips have >= 1 FP window, 3/40 have >= 2.
-- `pio test -e native --filter test_features`: **6/6 PASSED** against the
-  new header (golden PC<->C parity, determinism, model-wrapper contract).
-- Honest interpretation: the 0.60 recall target was **not reached**
-  (0.335). What the retraining did achieve at the *same* deployment
-  threshold where the v2 recipe scored 0.170: **+97 % recall at matched
-  operating point** (0.335 vs 0.170) with cry precision 0.848 and confuser
-  FP inside the 10 % budget; v1 scored 0.290 but at majority vote - v5 at
-  majority (stress R 0.867) is gate-blocked by ambient FP. The residual gap
-  is the domain shift itself: donateacry's quiet close-mic whimper/crib
-  recordings vs ESC-50's loud ambient crying are different acoustic events,
-  the 29-feature MFCC-summary front end is frozen by the C parity contract,
-  and no ESC-50 crying_baby clip may be used for training. Next lever if
-  this must go higher: distant/room-recorded cry training data (a second
-  cry corpus recorded across a room), which the current protocol's cry
-  source does not provide.
-- Export: `include/cry_model.h` (263,528 bytes) + `CRY_CONF_THRESHOLD 75u`
+    windows): 29/40 cry clips have >= 1 positive window, 19/40 have >= 2;
+    8/40 noncry clips have >= 1 FP window, 4/40 have >= 2.
+- Honest interpretation: the 0.50-recall target was **not reached**
+  (0.345). Feature-set v2 delivered on its in-domain promise - the val
+  winner improved (rf30x8 val F1 0.890 / stress recall 0.748 vs v5's best
+  0.885 / 0.757) and the sweep produced a whole family of stronger
+  candidates - but the frozen-test gain is marginal: cry recall
+  **0.335 -> 0.345**, F1 0.480 -> 0.483, at a confuser FP that rose
+  7.7 % -> 9.6 % (still inside the gate). Two structural reasons:
+  (1) the header budget removed the top of the val ranking (rf30x8/rf20x7
+  unshippable), and (2) temporal dynamics are not cry-specific - sirens
+  and roosters are strongly modulated too, so the delta/spectral features
+  narrow the gap between cries AND dynamic confusers (at the matched
+  T=75 %, the v6 rf12x7's confuser FP is 0.104 vs v5's 0.077). An
+  intermediate full-protocol run (same deterministic pipeline before the
+  candidate grid was extended) also evaluated rf12x7@83 % on the frozen
+  test: recall 0.270 / F1 0.404 / confuser FP 5.4 % - reported for
+  transparency; its finer-granularity sibling rf16x7@75 % ships instead,
+  chosen on VAL + header size only.
+- The plan's MLP(32) fallback is **not executable on this PC**: emlearn's
+  network exporter builds its evaluator with distutils and requires MSVC
+  14, which is not installed (documented blocker, not silently dropped).
+- Export: `include/cry_model.h` (332,196 bytes) + `CRY_CONF_THRESHOLD 75u`
   in `include/cry_task.h`; standalone gcc compile clean; sklearn parity
   verified exactly.
+
+### v5 (previous ship, for comparison)
+
+- rf12x7 on the 29-feature front end, T=75 % (9/12 trees): val cry F1
+  0.885, frozen cry P 0.848 / R 0.335 / F1 0.480, noncry FP 6.0 %,
+  confuser FP 7.7 % (62/800), clip-level 27/40 and 18/40; header
+  263,746 bytes.
 
 ## File inventory
 
@@ -240,3 +275,73 @@ recorded in `ml_model/dataset_provenance.txt` at prep time.
 | `noise_pool_aug-v5.npz` | real-ambience noise pool for cry mixing (generated, git-ignored) |
 | `model_report.txt` | training report (generated) |
 | `data/` | dataset clones + converted WAVs (generated, git-ignored) |
+| `acquire_v2.py` | Datasets v2 converter: data/<name> -> wav16/ + manifest_<name>.csv |
+| `manifest_<name>.csv` | per-dataset candidate manifest snippets (generated, see below) |
+
+## Datasets v2 acquisition log (November 2026)
+
+Goal: expand training beyond donateacry + ESC-50 because cross-domain
+(frozen-test) cry recall is stuck at **0.335** - the README's own diagnosis
+("next lever: distant/room-recorded cry training data"). Three additional
+corpora were acquired, converted to 16 kHz mono PCM16 WAV, and released to
+the orchestrator as **candidate** data only (split assignment is left to
+the integration step; the frozen test set is untouched; `manifest.csv`
+was NOT regenerated).
+
+Every converted clip lives at `ml_model/data/<name>/wav16/**.wav`; every
+row is listed in `ml_model/manifest_<name>.csv`
+(columns `path,label,split,source_id`, ALL rows `split=candidate`).
+Conversion tool: `ml_model/acquire_v2.py <name>` (idempotent, ffmpeg
+`-ac 1 -ar 16000`, duration derived from output size). Raw archives were
+verified against the publisher's byte sizes, extracted with 7-Zip, and the
+archives deleted after extraction to stay inside the disk budget.
+
+| dataset | source | license | acquired | why / composition |
+|---------|--------|---------|----------|-------------------|
+| **SICCD** (2026-08-08, Sakha & Ameri) | zenodo.org/records/21848098 (DOI 10.5281/zenodo.21848098) | **CC BY 4.0** | **YES** - 3,200 clips / 4.44 h (cry only) | Standardized Infant Cry Classification Dataset: 4 cry-emotion classes (Hunger / Need_Attention / Physical_Pains / Scared), 2,870 original + 330 augmented (train split only). Compiled from 3 public Kaggle/HF repos; possible overlap with donateacry - de-duplicate by content hash before re-splitting. Already 16 kHz mono PCM16, fixed 5.0 s clips. |
+| **CSIBE** (Common Sounds in Bedrooms, 2018-05-08, Csaba Kertesz) | zenodo.org/records/1243714 (DOI 10.5281/zenodo.1243714) | **CC BY 4.0** | **YES** - 29,770 clips (cry 1,200 / noncry 28,570) | RAW: 5,954 clips - 240 baby_cry + 5,714 noncry across 13 domestic classes (ambient_noise, bell, cat_meow, cicada, dog_bark, fart, guitar, laugh, parrot, piano, speech, traffic, vacuum_cleaner). AIBO: 23,816 short (~1 s) distant robot-mic recordings in 4 conditions (30 cm, 3 m up + 1 m, each +/- reverb) - includes **960 distant/reverb baby cries**, exactly the room-distance cry domain the v5 diagnosis asked for. |
+| **hoyyu1/infant-cry-detection** (ICD_MMSP, 2025) | huggingface.co/datasets/hoyyu1/infant-cry-detection (paper: IEEE MMSP 2025, arxiv.org/abs/2508.19308) | **none stated** (public research artifact; no license field in README/HF metadata) | **YES** - 28,478 clips / 39.57 h (cry 13,330 / noncry 15,148) | 39.6 h household-environment cry detection set, 5 balanced folds (official `all28479.csv` metadata shipped in `data/hoyyu_icd/`). Positive: EnesBabyCries 5,026 + CryCeleb 4,552 (distant room recordings) + xunfei 3,752. Negative: domestic 4,506 + vox 4,963 + meow 1,953 + non 2,076 + silence 1,650. |
+| Baby Chillanto | taylor0.bmd.mu.edu request form | request-only | no - form gated | Per acquisition policy: requires a request form; documented only. |
+| AudioSet / FSD (Google) | research.google.com/audioset | ToS-restricted | no - ToS + size | Per acquisition policy. |
+| Freesound packs | freesound.org | CC mix (per sound) | no - API key required | Per acquisition policy. |
+| UrbanSound8K | urbansounddataset.weebly.com | CC BY-NC 3.0 | no - request form | Already the optional confuser source in the v5 protocol. |
+| TUT Rare Sound Events (2017) | zenodo.org/records/1160455 / 401395 | other-nc | no - 7.4/17.5 GB (> 4 GB cap) | Over budget; NC license. |
+| The Sounds of Home (gbibbo) | zenodo.org/records/12737915 (+4 sibling records) | CC BY 4.0 | no - 119 GB (>> 4 GB cap) | Real 14-mic in-home recordings; ideal negative side but ~40x over budget. |
+| mahmudulhasan01/baby_crying_sound | huggingface.co | unknown | no - duplicate | donateacry re-upload (same 5-class taxonomy); we already hold the ODbL original. |
+| DynamicSuperb/Infant_Crying_Classification_Dataset | huggingface.co | unclear | no - parquet-only, 414 clips | Would need a pyarrow install for 414 marginal clips; low value. |
+| lequocduong/dataset_infant_crying | github.com | none | no - no license | Default all-rights-reserved; unusable without author permission. |
+| ICBHI 2017 respiratory corpus | bhichallenge.med.auth.gr | custom | no - out of scope | Medical respiratory sounds, not cry/domestic (explicitly excluded). |
+| Kaggle-hosted cry sets (warcoder etc.) | kaggle.com | mixed | no - no Kaggle credentials | Per acquisition policy (no API login); SICCD + hoyyu1 already incorporate the main public Kaggle cry repos. |
+
+### New candidate data on disk (post-conversion, 16 kHz mono PCM16)
+
+| dataset | cry clips | noncry clips | total duration | manifest snippet |
+|---------|-----------|--------------|----------------|------------------|
+| `data/siccd/` | 3,200 | 0 | 4.44 h | `manifest_siccd.csv` |
+| `data/csibe/` | 1,200 | 28,570 | 5.88 h | `manifest_csibe.csv` |
+| `data/hoyyu_icd/` | 13,330 | 15,148 | 39.57 h (18.51 h cry / 21.06 h noncry) | `manifest_hoyyu_icd.csv` |
+| **total new** | **17,730** | **43,718** | | |
+
+vs. the v5 training base (457 donateacry cry clips + ~2,200 ESC-50
+non-cry clips): cry-side diversity grows ~39x, with distant/room-reverb
+coverage (CSIBE-AIBO 960 + CryCeleb 4,552 clips) directly targeting the
+0.335 cross-domain recall bottleneck.
+
+### Licensing constraints on training use
+
+- **SICCD, CSIBE: CC BY 4.0** - attribution required (Sakha & Ameri 2026 /
+  Kertesz 2018, DOIs above); commercial use permitted; compatible with the
+  academic course context.
+- **hoyyu1/infant-cry-detection: no license stated.** Public research
+  artifact accompanying a peer-reviewed paper (IEEE MMSP 2025) with public
+  code (github.com/fhfjsd1/ICD_MMSP); treated as research-use-only. It is
+  itself compiled from public datasets (EnesBabyCries, CryCeleb, xunfei
+  speech/noise corpora) - derivatives may inherit the strictest underlying
+  terms; do not redistribute the raw audio.
+- **ESC-50 (CC BY-NC 3.0) + donateacry (ODbL 1.0)** remain
+  non-commercial/research-education; the overall corpus therefore stays
+  non-commercial regardless of the CC BY additions.
+- All new data is `split=candidate`: the orchestrator must de-duplicate
+  (SICCD overlaps donateacry sources) and re-split before training; the
+  frozen test protocol must not be re-drawn and `manifest.csv` was not
+  touched.

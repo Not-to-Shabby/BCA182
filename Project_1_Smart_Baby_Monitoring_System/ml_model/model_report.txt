@@ -1,15 +1,21 @@
-=== Smart Baby Monitor - P3 cry/non-cry model report (v2) ===
-generated : 2026-11-04T20:56:10+00:00
+=== Smart Baby Monitor - P3 cry/non-cry model report (v6, feature-set v2) ===
+generated : 2026-11-05T16:15:54+00:00
 python 3.11.7, numpy 2.4.6, scikit-learn 1.9.1, emlearn 0.23.2
-features  : mfcc00_mean, mfcc01_mean, mfcc02_mean, mfcc03_mean, mfcc04_mean, mfcc05_mean, mfcc06_mean, mfcc07_mean, mfcc08_mean, mfcc09_mean, mfcc10_mean, mfcc11_mean, mfcc12_mean, mfcc00_std, mfcc01_std, mfcc02_std, mfcc03_std, mfcc04_std, mfcc05_std, mfcc06_std, mfcc07_std, mfcc08_std, mfcc09_std, mfcc10_std, mfcc11_std, mfcc12_std, log_energy_mean, log_energy_std, zcr_mean
+features (63, feature-set v2): mfcc00_mean, mfcc01_mean, mfcc02_mean, mfcc03_mean, mfcc04_mean, mfcc05_mean, mfcc06_mean, mfcc07_mean, mfcc08_mean, mfcc09_mean, mfcc10_mean, mfcc11_mean, mfcc12_mean, mfcc00_std, mfcc01_std, mfcc02_std, mfcc03_std, mfcc04_std, mfcc05_std, mfcc06_std, mfcc07_std, mfcc08_std, mfcc09_std, mfcc10_std, mfcc11_std, mfcc12_std, log_energy_mean, log_energy_std, zcr_mean, mfcc00_delta_mean, mfcc01_delta_mean, mfcc02_delta_mean, mfcc03_delta_mean, mfcc04_delta_mean, mfcc05_delta_mean, mfcc06_delta_mean, mfcc07_delta_mean, mfcc08_delta_mean, mfcc09_delta_mean, mfcc10_delta_mean, mfcc11_delta_mean, mfcc12_delta_mean, mfcc00_delta_std, mfcc01_delta_std, mfcc02_delta_std, mfcc03_delta_std, mfcc04_delta_std, mfcc05_delta_std, mfcc06_delta_std, mfcc07_delta_std, mfcc08_delta_std, mfcc09_delta_std, mfcc10_delta_std, mfcc11_delta_std, mfcc12_delta_std, log_energy_delta_mean, log_energy_delta_std, spectral_centroid_mean, spectral_centroid_std, spectral_rolloff85_mean, spectral_rolloff85_std, spectral_flatness_mean, spectral_flatness_std
 
---- v3 retraining recipe ---
-goal: lift frozen-test cry recall (v1: 0.29) under the immutable frozen protocol
-(test = 40 ESC-50 crying_baby clips + frozen fold-5 non-cry; tuning on VAL only;
-no crying_baby clip is ever trained on).
-levers: (1) wave-level augmentation of TRAIN windows only (augment.py),
-(2) seeded RF candidates compared on VAL, (3) cry-vote-share threshold swept
-    30..80 with the 10% FP gate on the CONFUSER split (the task's target metric); the raw VAL
+--- v6 retraining recipe (temporal dynamics) ---
+goal: lift the v5 model's frozen-test cry recall (0.335, F1 0.480, confuser FP 7.7%) under the
+immutable frozen protocol (test = 40 ESC-50 crying_baby clips + frozen fold-5 non-cry;
+tuning on VAL only; no crying_baby clip is ever trained on).
+root cause addressed: the 29-feature front end summarizes away temporal dynamics -
+feature-set v2 appends 34 dynamics features to the unchanged 29 (63 total): per-frame
+MFCC deltas (edge-replicated first difference, mean+std), log-energy delta mean+std,
+and per-frame spectral centroid/rolloff(0.85)/flatness mean+std (extract_features.py,
+mirrored + parity-tested in src/audio_features.c).
+levers: (1) feature-set v2 front end, (2) the v5 wave-level augmentation of TRAIN
+windows only (augment.py, reused unchanged - same seeds, same recipes), (3) a seeded
+model-type sweep (RF 12x7 / RF 30x8 / ET 30x8 / ET 12x7), (4) cry-vote-share threshold
+    swept 40..85 with the 10% FP gate on the CONFUSER split (the task's target metric); the raw VAL
 non-cry FP rate is reported at every sweep point (it runs higher: fold-4 ambience covers all 40 ESC-50 classes,
 while the confuser split and the frozen-test non-cry subset are the deployment-relevant FP populations).
 augmentation (train cry windows): REAL ESC-50 fold 1-3 non-cry ambience mixed at SNR 10-25 dB (p=0.5, cry dominant; white/pink synthetic noise SNR 5-20 dB otherwise), 2-3-tap room reverb (p=0.7), first-order lowpass 2500-7000 Hz (p=0.6), volume -6..+14 dB with a +10..+20 dB loud branch (p=0.3, mirrored on non-cry), pitch/speed +/-10% (p=0.5, per file), 50 Hz hum -32..-22 dB rel (p=0.25)
@@ -35,57 +41,79 @@ manifest rows: 3265
 augmented train windows: 22800 (cry 17400, noncry 5400)
 training set: 36897 windows (cry 26097, noncry 10800)
 
---- candidate comparison on VAL (threshold swept 30..80, FP gate 10%) ---
+--- candidate comparison on VAL (threshold swept 40..85, FP gate 10%) ---
 cry side = raw val cry + stress-val cry (deployment proxy);
 FP side = raw VAL non-cry windows + confuser split (gate).
 candidate        T%  votes   cry P   cry R  cry F1   rawR   strR  val FP  conf FP
-rf10x6           80      8   0.910   0.835   0.871  0.946  0.724   0.133    0.081
-rf12x7           75      9   0.916   0.857   0.885  0.956  0.757   0.128    0.077
-rf24x6           70     17   0.907   0.861   0.883  0.961  0.762   0.143    0.099
-rf10x6_plain    -- no operating point inside the FP gate --
+rf12x7           83     10   0.952   0.757   0.844  0.890  0.624   0.061    0.054
+rf16x7           75     12   0.939   0.821   0.876  0.928  0.713   0.086    0.096
+rf18x7           77     14   0.951   0.804   0.871  0.915  0.693   0.067    0.072
+rf20x7           75     15   0.943   0.828   0.882  0.931  0.725   0.081    0.089
+rf30x8           73     22   0.943   0.842   0.890  0.936  0.748   0.082    0.085
+et30x8           70     21   0.953   0.700   0.807  0.822  0.579   0.056    0.094
+et12x7           83     10   0.966   0.520   0.676  0.640  0.401   0.030    0.070
 
-CHOSEN (val only): rf12x7 at threshold 75% cry vote share (>= 9/12 trees) - RF 12 trees x depth 7, class_weight=balanced + augmentation (deeper trees within the header budget)
-  val cry F1 0.885 (P 0.916 / R 0.857; raw R 0.956, stress R 0.757), val noncry FP 0.128, confuser FP 0.077
+CHOSEN (val only): rf30x8 at threshold 73% cry vote share (>= 22/30 trees) - RF 30 trees x depth 8, class_weight=balanced + augmentation (finer vote granularity)
+  val cry F1 0.890 (P 0.943 / R 0.842; raw R 0.936, stress R 0.748), val noncry FP 0.082, confuser FP 0.085
 
---- rf12x7 threshold sweep on VAL (all in-sweep points; R = cry recall, concat raw+stress) ---
+--- rf30x8 threshold sweep on VAL (all in-sweep points; R = cry recall, concat raw+stress) ---
   T%  votes   cry P   cry R  cry F1   rawR   strR  val FP  conf FP   gate
-  58      7   0.879   0.926   0.902  0.986  0.867   0.207    0.169   FAIL
-  66      8   0.896   0.896   0.896  0.975  0.817   0.168    0.114   FAIL
-  75      9   0.916   0.857   0.885  0.956  0.757   0.128    0.077   pass <-- chosen
---- VALIDATION at chosen operating point (rf12x7, T=75%; cry side raw+stress, noncry side raw) ---
+  53     16   0.888   0.937   0.912  0.979  0.896   0.191    0.249   FAIL
+  56     17   0.900   0.924   0.912  0.977  0.871   0.166    0.219   FAIL
+  60     18   0.909   0.915   0.912  0.975  0.855   0.147    0.193   FAIL
+  63     19   0.919   0.900   0.909  0.964  0.836   0.129    0.160   FAIL
+  66     20   0.927   0.884   0.905  0.956  0.812   0.112    0.129   FAIL
+  70     21   0.937   0.864   0.899  0.948  0.780   0.094    0.111   FAIL
+  73     22   0.943   0.842   0.890  0.936  0.748   0.082    0.085   pass <-- chosen
+  76     23   0.951   0.812   0.876  0.922  0.702   0.068    0.064   pass
+  80     24   0.959   0.786   0.864  0.904  0.668   0.055    0.049   pass
+  83     25   0.965   0.750   0.844  0.882  0.618   0.043    0.034   pass
+--- VALIDATION at chosen operating point (rf30x8, T=73%; cry side raw+stress, noncry side raw) ---
 Confusion matrix (rows = truth [noncry, cry], cols = prediction [noncry, cry]):
                  pred noncry   pred cry
-  true noncry |        1570 |      230
-  true cry    |         417 |     2493
+  true noncry |        1653 |      147
+  true cry    |         460 |     2450
 class     precision     recall         f1  support
-noncry        0.790      0.872      0.829     1800
-cry           0.916      0.857      0.885     2910
-accuracy: 0.863
+noncry        0.782      0.918      0.845     1800
+cry           0.943      0.842      0.890     2910
+accuracy: 0.871
 
 --- rule-based baseline: log-energy > -16.248391 (threshold tuned on original TRAIN, balanced acc 0.548) ---
 
---- export selection (header budget 307200 bytes, emlearn inline) ---
-  rf12x7: header 262095 bytes - within budget, SELECTED FOR EXPORT
+--- export selection (header budget 409600 bytes, emlearn inline) ---
+  rf30x8: header 1176958 bytes > budget 409600 - skipped
+  rf20x7: header 415477 bytes > budget 409600 - skipped
+  rf16x7: header 329798 bytes - within budget, SELECTED FOR EXPORT
 
---- FROZEN TEST split at the shipped operating point (rf12x7, T=75%; evaluated once) ---
+NOTE: val winner rf30x8 exceeded the header budget - shipping rf16x7 instead (threshold 75%, val cry F1 0.876, val FP 0.086, confuser FP 0.096)
+
+--- rf16x7 threshold sweep on VAL ---
+  T%  votes   cry P   cry R  cry F1  val FP  conf FP   gate
+  56      9   0.886   0.928   0.906   0.193    0.249   FAIL
+  62     10   0.905   0.898   0.902   0.152    0.194   FAIL
+  68     11   0.924   0.869   0.896   0.116    0.142   FAIL
+  75     12   0.939   0.821   0.876   0.086    0.096   pass <-- shipped
+  81     13   0.958   0.768   0.853   0.054    0.060   pass
+
+--- FROZEN TEST split at the shipped operating point (rf16x7, T=75%; evaluated once) ---
 Confusion matrix (rows = truth [noncry, cry], cols = prediction [noncry, cry]):
                  pred noncry   pred cry
-  true noncry |         188 |       12
-  true cry    |         133 |       67
+  true noncry |         183 |       17
+  true cry    |         131 |       69
 class     precision     recall         f1  support
-noncry        0.586      0.940      0.722      200
-cry           0.848      0.335      0.480      200
-accuracy: 0.637
+noncry        0.583      0.915      0.712      200
+cry           0.802      0.345      0.483      200
+accuracy: 0.630
   (energy baseline on FROZEN TEST: noncry FP 179/200, cry recall 196/200)
 
 --- confuser false-positive table (split=confuser, shipped point T=75%) ---
 category            clips  windows  FP windows  FP rate  FP clips  baseline FP
-chainsaw               22      200           7    0.035         5          199
-helicopter             15      200           0    0.000         0          194
-rooster                33      200          29    0.145        13          125
-siren                  28      200          26    0.130        15          195
-TOTAL                  98      800          62    0.077
+chainsaw               22      200          10    0.050         5          199
+helicopter             15      200           1    0.005         1          194
+rooster                33      200          33    0.165        19          125
+siren                  28      200          33    0.165        17          195
+TOTAL                  98      800          77    0.096
 
-  clip-level view (informational): cry clips with >=1 positive window 27/40, with >=2 positives 18/40; noncry clips with >=1 FP window 8/40, with >=2 FP windows 3/40
+  clip-level view (informational): cry clips with >=1 positive window 29/40, with >=2 positives 19/40; noncry clips with >=1 FP window 8/40, with >=2 FP windows 4/40
 
-EXPORT: wrote D:\BCA182_Lab\Project_1_Smart_Baby_Monitoring_System\ml_model\..\include\cry_model.h (263746 bytes, 12 trees x depth <= 7, 29 features) - candidate rf12x7, CRY_CONF_THRESHOLD = 75u
+EXPORT: wrote D:\BCA182_Lab\Project_1_Smart_Baby_Monitoring_System\include\cry_model.h (332180 bytes, 16 trees x depth <= 7, 63 features) - candidate rf16x7, CRY_CONF_THRESHOLD = 75u

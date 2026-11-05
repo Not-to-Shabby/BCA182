@@ -10,8 +10,8 @@ test/test_features/feature_golden.h containing:
 
   golden_window[16000]     the int16 window (exactly what the device ring
                            delivers to audio_features_compute()),
-  golden_features[29]      the expected 29-feature vector (float32),
-  GOLDEN_FEATURE_NAMES[29] feature names in FEATURE_NAMES order,
+  golden_features[63]      the expected 63-feature vector (float32),
+  GOLDEN_FEATURE_NAMES[63] feature names in FEATURE_NAMES order,
   GOLDEN_LOG_ENERGY_MEAN / GOLDEN_ZCR_MEAN convenience defines.
 
 Deterministic synthetic window formula (fixed constants, fixed seed):
@@ -100,8 +100,16 @@ def build_header(window, feats):
     ap(" * (ml_model/extract_features.py -- the exact int16/32768 conversion")
     ap(" * the device pipeline mirrors; int16/32768 is exact in float32, so")
     ap(" * both sides start from bit-identical samples).  Feature order is")
-    ap(" * FEATURE_NAMES: mfcc00_mean..mfcc12_mean, mfcc00_std..mfcc12_std,")
-    ap(" * log_energy_mean, log_energy_std, zcr_mean.  test/test_features")
+    ap(" * FEATURE_NAMES (feature-set v2, 63 features): indices 0-28 the v1")
+    ap(" * block (mfcc00_mean..mfcc12_mean, mfcc00_std..mfcc12_std,")
+    ap(" * log_energy_mean, log_energy_std, zcr_mean), then the v2 temporal")
+    ap(" * dynamics 29-62 (mfcc00_delta_mean..mfcc12_delta_mean,")
+    ap(" * mfcc00_delta_std..mfcc12_delta_std, log_energy_delta_mean/std,")
+    ap(" * spectral_centroid_mean/std, spectral_rolloff85_mean/std,")
+    ap(" * spectral_flatness_mean/std).  The window is stationary plus noise,")
+    ap(" * so the delta features exercise the edge-replication rule on")
+    ap(" * near-constant frame sequences and the spectral features carry")
+    ap(" * genuine broadband values.  test/test_features")
     ap(" * requires |C - golden| <= max(1e-3, 1e-3*|golden|) per feature.")
     ap(" */")
     ap("#ifndef FEATURE_GOLDEN_H_")
@@ -124,7 +132,7 @@ def build_header(window, feats):
     ap("};")
     ap("")
 
-    ap("/* Expected 29-feature vector (float32 literals, FEATURE_NAMES order). */")
+    ap("/* Expected 63-feature vector (float32 literals, FEATURE_NAMES order). */")
     ap("static const float golden_features[GOLDEN_FEATURE_COUNT] = {")
     for i, name in enumerate(ef.FEATURE_NAMES):
         comma = "," if i + 1 < len(ef.FEATURE_NAMES) else ""
@@ -155,7 +163,8 @@ def main():
     # PC parity path: identical conversion to load_wav() (int16/32768,
     # exact) then the real trainer extract_window().
     feats = ef.extract_window(window.astype(np.float64) / 32768.0)
-    assert feats.shape == (29,) and feats.dtype == np.float32
+    assert feats.shape == (len(ef.FEATURE_NAMES),) and feats.dtype == np.float32
+    assert len(ef.FEATURE_NAMES) == 63
     assert bool(np.isfinite(feats).all())
 
     header = build_header(window, feats)
@@ -167,7 +176,7 @@ def main():
           % (OUT_PATH, len(header), header.count("\n") + 1))
     print("  window : %d int16 samples (peak %d)"
           % (len(window), int(np.abs(window).max())))
-    print("  features (29):")
+    print("  features (%d):" % len(ef.FEATURE_NAMES))
     for i, name in enumerate(ef.FEATURE_NAMES):
         print("    %02d %-16s %.7g" % (i, name, float(feats[i])))
     return 0

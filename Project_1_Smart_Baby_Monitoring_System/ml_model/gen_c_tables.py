@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 gen_c_tables.py - emit include/audio_features_tables.h, the flash-resident
-coefficient tables for the on-device 29-feature MFCC front end
+coefficient tables for the on-device 63-feature MFCC front end
 (src/audio_features.c).
 
 The tables are the EXACT matrices from ml_model/extract_features.py (the
@@ -19,6 +19,14 @@ source of truth -- no formulas are re-typed here:
                                D[k,n] = sqrt(2/40)*cos(pi*k*(2n+1)/80),
                                row 0 scaled by 1/sqrt(2)
                                (== scipy dct(..., norm='ortho') as a matrix)
+
+Feature-set v2 note: the temporal-dynamics features appended after the
+original 29 (MFCC deltas, log-energy delta, spectral centroid/rolloff/
+flatness) need NO coefficient tables -- deltas are pure differences of the
+already-computed per-frame MFCC/log-energy sequences and the spectral-shape
+features are computed directly from the rfft power spectrum with the single
+constant AUDIO_TABLES_BIN_HZ (rfft bin width, emitted below from
+extract_features.FS / extract_features.N_FFT).
 
 Numerical contract: every value is the round-to-nearest float32 of the
 trainer's float64 matrix ("no rounding beyond float32 storage").  Each
@@ -130,7 +138,7 @@ def build_header(hann, mel, dct):
     ap("/**")
     ap(" * @file audio_features_tables.h")
     ap(" * @brief AUTO-GENERATED coefficient tables for the on-device")
-    ap(" *        29-feature MFCC front end (src/audio_features.c).")
+    ap(" *        63-feature MFCC front end (src/audio_features.c).")
     ap(" *        DO NOT EDIT BY HAND -- regenerate instead:")
     ap(" *        C:/Users/Perch/.platformio/penv/Scripts/python.exe \\")
     ap(" *            ml_model/gen_c_tables.py")
@@ -158,6 +166,13 @@ def build_header(hann, mel, dct):
     ap(" *   audio_feat_dct_mat[13][40]  orthonormal DCT-II (DCT_MAT):")
     ap(" *                               D[k,n] = sqrt(2/40)*cos(pi*k*(2n+1)/80),")
     ap(" *                               row 0 scaled by 1/sqrt(2)")
+    ap(" *")
+    ap(" * Feature-set v2: the temporal-dynamics features (MFCC deltas,")
+    ap(" * log-energy delta, spectral centroid/rolloff/flatness) need no")
+    ap(" * tables -- deltas are differences of computed sequences and the")
+    ap(" * spectral-shape features use only AUDIO_TABLES_BIN_HZ (the rfft bin")
+    ap(" * width, bin k sits at k * BIN_HZ Hz), emitted from the trainer")
+    ap(" * constants FS / N_FFT.")
     ap(" */")
     ap("#ifndef AUDIO_FEATURES_TABLES_H_")
     ap("#define AUDIO_FEATURES_TABLES_H_")
@@ -168,6 +183,8 @@ def build_header(hann, mel, dct):
     ap("#define AUDIO_TABLES_N_MELS  40   /* N_MELS: mel filters             */")
     ap("#define AUDIO_TABLES_N_BINS  257  /* N_FFT/2 + 1 rfft bins           */")
     ap("#define AUDIO_TABLES_N_MFCC  13   /* N_MFCC: coefficients kept       */")
+    ap("#define AUDIO_TABLES_BIN_HZ  %.10g  /* FS/N_FFT: rfft bin width [Hz] */"
+       % (float(ef.FS) / float(ef.N_FFT)))
 
     emit_1d(
         L,

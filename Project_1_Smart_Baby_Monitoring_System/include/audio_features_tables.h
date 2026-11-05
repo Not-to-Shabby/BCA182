@@ -1,7 +1,7 @@
 /**
  * @file audio_features_tables.h
  * @brief AUTO-GENERATED coefficient tables for the on-device
- *        29-feature MFCC front end (src/audio_features.c).
+ *        63-feature MFCC front end (src/audio_features.c).
  *        DO NOT EDIT BY HAND -- regenerate instead:
  *        C:/Users/Perch/.platformio/penv/Scripts/python.exe \
  *            ml_model/gen_c_tables.py
@@ -29,6 +29,13 @@
  *   audio_feat_dct_mat[13][40]  orthonormal DCT-II (DCT_MAT):
  *                               D[k,n] = sqrt(2/40)*cos(pi*k*(2n+1)/80),
  *                               row 0 scaled by 1/sqrt(2)
+ *
+ * Feature-set v2: the temporal-dynamics features (MFCC deltas,
+ * log-energy delta, spectral centroid/rolloff/flatness) need no
+ * tables -- deltas are differences of computed sequences and the
+ * spectral-shape features use only AUDIO_TABLES_BIN_HZ (the rfft bin
+ * width, bin k sits at k * BIN_HZ Hz), emitted from the trainer
+ * constants FS / N_FFT.
  */
 #ifndef AUDIO_FEATURES_TABLES_H_
 #define AUDIO_FEATURES_TABLES_H_
@@ -39,6 +46,7 @@
 #define AUDIO_TABLES_N_MELS  40   /* N_MELS: mel filters             */
 #define AUDIO_TABLES_N_BINS  257  /* N_FFT/2 + 1 rfft bins           */
 #define AUDIO_TABLES_N_MFCC  13   /* N_MFCC: coefficients kept       */
+#define AUDIO_TABLES_BIN_HZ  31.25  /* FS/N_FFT: rfft bin width [Hz] */
 
 /* Periodic Hann window, w[k] = 0.5 - 0.5*cos(2*pi*k/512) (HANN). */
 static const float audio_feat_hann512[AUDIO_TABLES_N_FFT] = {

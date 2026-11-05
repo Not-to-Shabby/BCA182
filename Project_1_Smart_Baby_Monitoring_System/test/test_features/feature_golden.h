@@ -16,8 +16,16 @@
  * (ml_model/extract_features.py -- the exact int16/32768 conversion
  * the device pipeline mirrors; int16/32768 is exact in float32, so
  * both sides start from bit-identical samples).  Feature order is
- * FEATURE_NAMES: mfcc00_mean..mfcc12_mean, mfcc00_std..mfcc12_std,
- * log_energy_mean, log_energy_std, zcr_mean.  test/test_features
+ * FEATURE_NAMES (feature-set v2, 63 features): indices 0-28 the v1
+ * block (mfcc00_mean..mfcc12_mean, mfcc00_std..mfcc12_std,
+ * log_energy_mean, log_energy_std, zcr_mean), then the v2 temporal
+ * dynamics 29-62 (mfcc00_delta_mean..mfcc12_delta_mean,
+ * mfcc00_delta_std..mfcc12_delta_std, log_energy_delta_mean/std,
+ * spectral_centroid_mean/std, spectral_rolloff85_mean/std,
+ * spectral_flatness_mean/std).  The window is stationary plus noise,
+ * so the delta features exercise the edge-replication rule on
+ * near-constant frame sequences and the spectral features carry
+ * genuine broadband values.  test/test_features
  * requires |C - golden| <= max(1e-3, 1e-3*|golden|) per feature.
  */
 #ifndef FEATURE_GOLDEN_H_
@@ -26,7 +34,7 @@
 #include <stdint.h>
 
 #define GOLDEN_WINDOW_LEN    16000u
-#define GOLDEN_FEATURE_COUNT 29u
+#define GOLDEN_FEATURE_COUNT 63u
 
 /* The synthetic window (device-int16 samples). */
 static const int16_t golden_window[GOLDEN_WINDOW_LEN] = {
@@ -1366,7 +1374,7 @@ static const int16_t golden_window[GOLDEN_WINDOW_LEN] = {
     -2255, -2644, -2865, -1402
 };
 
-/* Expected 29-feature vector (float32 literals, FEATURE_NAMES order). */
+/* Expected 63-feature vector (float32 literals, FEATURE_NAMES order). */
 static const float golden_features[GOLDEN_FEATURE_COUNT] = {
     /* 00 mfcc00_mean      */ -57.3075027f,
     /* 01 mfcc01_mean      */ -0.614859521f,
@@ -1396,7 +1404,41 @@ static const float golden_features[GOLDEN_FEATURE_COUNT] = {
     /* 25 mfcc12_std       */ 0.600851595f,
     /* 26 log_energy_mean  */ 0.187325105f,
     /* 27 log_energy_std   */ 0.0074230372f,
-    /* 28 zcr_mean         */ 0.0888646469f
+    /* 28 zcr_mean         */ 0.0888646469f,
+    /* 29 mfcc00_delta_mean */ 0.0172048286f,
+    /* 30 mfcc01_delta_mean */ 0.0376481824f,
+    /* 31 mfcc02_delta_mean */ 0.0422305986f,
+    /* 32 mfcc03_delta_mean */ 0.0415996425f,
+    /* 33 mfcc04_delta_mean */ 0.0418519974f,
+    /* 34 mfcc05_delta_mean */ 0.030146515f,
+    /* 35 mfcc06_delta_mean */ 0.00145306671f,
+    /* 36 mfcc07_delta_mean */ 0.00788809452f,
+    /* 37 mfcc08_delta_mean */ 0.00395476678f,
+    /* 38 mfcc09_delta_mean */ 0.0116342707f,
+    /* 39 mfcc10_delta_mean */ -0.00209799875f,
+    /* 40 mfcc11_delta_mean */ -0.00878051296f,
+    /* 41 mfcc12_delta_mean */ -0.00131108437f,
+    /* 42 mfcc00_delta_std */ 0.424348414f,
+    /* 43 mfcc01_delta_std */ 0.531938434f,
+    /* 44 mfcc02_delta_std */ 0.582518876f,
+    /* 45 mfcc03_delta_std */ 0.457641363f,
+    /* 46 mfcc04_delta_std */ 0.5343768f,
+    /* 47 mfcc05_delta_std */ 0.400292784f,
+    /* 48 mfcc06_delta_std */ 0.340269864f,
+    /* 49 mfcc07_delta_std */ 0.402215838f,
+    /* 50 mfcc08_delta_std */ 0.526078224f,
+    /* 51 mfcc09_delta_std */ 0.436790854f,
+    /* 52 mfcc10_delta_std */ 0.465635866f,
+    /* 53 mfcc11_delta_std */ 0.338047415f,
+    /* 54 mfcc12_delta_std */ 0.410691917f,
+    /* 55 log_energy_delta_mean */ -0.000145124301f,
+    /* 56 log_energy_delta_std */ 0.00523481984f,
+    /* 57 spectral_centroid_mean */ 764.689087f,
+    /* 58 spectral_centroid_std */ 5.36804247f,
+    /* 59 spectral_rolloff85_mean */ 2000.0f,
+    /* 60 spectral_rolloff85_std */ 0.0f,
+    /* 61 spectral_flatness_mean */ 0.00286646932f,
+    /* 62 spectral_flatness_std */ 0.000260029105f
 };
 
 /* Feature names in order (for assertion messages). */
@@ -1429,7 +1471,41 @@ static const char *const GOLDEN_FEATURE_NAMES[GOLDEN_FEATURE_COUNT] = {
     "mfcc12_std",
     "log_energy_mean",
     "log_energy_std",
-    "zcr_mean"
+    "zcr_mean",
+    "mfcc00_delta_mean",
+    "mfcc01_delta_mean",
+    "mfcc02_delta_mean",
+    "mfcc03_delta_mean",
+    "mfcc04_delta_mean",
+    "mfcc05_delta_mean",
+    "mfcc06_delta_mean",
+    "mfcc07_delta_mean",
+    "mfcc08_delta_mean",
+    "mfcc09_delta_mean",
+    "mfcc10_delta_mean",
+    "mfcc11_delta_mean",
+    "mfcc12_delta_mean",
+    "mfcc00_delta_std",
+    "mfcc01_delta_std",
+    "mfcc02_delta_std",
+    "mfcc03_delta_std",
+    "mfcc04_delta_std",
+    "mfcc05_delta_std",
+    "mfcc06_delta_std",
+    "mfcc07_delta_std",
+    "mfcc08_delta_std",
+    "mfcc09_delta_std",
+    "mfcc10_delta_std",
+    "mfcc11_delta_std",
+    "mfcc12_delta_std",
+    "log_energy_delta_mean",
+    "log_energy_delta_std",
+    "spectral_centroid_mean",
+    "spectral_centroid_std",
+    "spectral_rolloff85_mean",
+    "spectral_rolloff85_std",
+    "spectral_flatness_mean",
+    "spectral_flatness_std"
 };
 
 /* Convenience accessors for single-feature checks. */

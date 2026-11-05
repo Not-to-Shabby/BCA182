@@ -10,6 +10,7 @@ android_app/build/
 ml_model/data/
 ml_model/*.csv
 !ml_model/manifest.csv
+!ml_model/manifest_*.csv
 *.wav
 *.m4a
 __pycache__/

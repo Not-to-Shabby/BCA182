@@ -1,6 +1,6 @@
 /**
  * @file audio_features.c
- * @brief On-device 29-feature extractor -- bit-faithful C mirror of
+ * @brief On-device 63-feature extractor -- bit-faithful C mirror of
  *        ml_model/extract_features.py (the PC-side trainer front end).
  *
  * Pure C (stdint + math only, no RTOS headers) so the same file compiles on
@@ -35,25 +35,49 @@
  *      adjacent sign changes among the N_FFT-1 = 511 pairs.  IEEE
  *      signed-zero rules (x*0.0 -> +0, (-x)*0.0 -> -0) make the C sign bits
  *      identical to numpy's signbit even at the hann[0] == 0 tap.
- *  9. aggregate        per 1 s window over the 61 frames: population std
- *      (ddof=0) of each MFCC, mean/std of frame log-energy, mean frame ZCR,
- *      emitted in FEATURE_NAMES order (mfcc00_mean..mfcc12_mean,
- *      mfcc00_std..mfcc12_std, log_energy_mean, log_energy_std, zcr_mean).
+ *  9. deltas           feature-set v2 temporal dynamics: per-frame first
+ *      difference with EDGE REPLICATION, d[t] = (m'[t+1] - m'[t-1]) / 2
+ *      where m' pads the frame sequence with a copy of its first/last
+ *      frame (interior t: (m[t+1]-m[t-1])/2; d[0] = (m[1]-m[0])/2;
+ *      d[60] = (m[60]-m[59])/2), applied to each of the 13 MFCC frame
+ *      sequences and to the log-energy sequence
+ *      (extract_features._first_delta).
+ *  10. spectral shape  per frame on the raw 257-bin power spectrum (bin k
+ *      centered at k * 31.25 Hz = k * AUDIO_TABLES_BIN_HZ):
+ *      centroid = sum_k(f_k * P_k) / sum_k(P_k); rolloff(0.85) = frequency
+ *      of the first bin whose running power sum reaches 0.85 * total
+ *      (AF_ROLLOFF_FRAC); flatness = exp(mean_k(log P_k)) / mean_k(P_k).
+ *      A zero-power frame (digital silence) defines all three as 0, and a
+ *      single zero-power bin makes flatness 0 (-inf log mean) -- exactly
+ *      extract_features._spectral_shape, guards included.
+ *  11. aggregate       per 1 s window over the 61 frames, population std
+ *      (ddof=0) everywhere, emitted in FEATURE_NAMES order:
+ *        0-12   mean of each MFCC            (v1 block, unchanged)
+ *        13-25  std of each MFCC
+ *        26/27  log-energy mean/std
+ *        28     mean frame ZCR
+ *        29-41  mean of each MFCC delta      (v2 temporal dynamics)
+ *        42-54  std of each MFCC delta
+ *        55/56  log-energy-delta mean/std
+ *        57/58  spectral centroid mean/std
+ *        59/60  spectral rolloff(0.85) mean/std
+ *        61/62  spectral flatness mean/std
  *
  * Parity is enforced by test/test_features against golden vectors produced
  * by ml_model/gen_feature_golden.py running the real Python pipeline.
  *
  * Memory model: no malloc anywhere.  audio_features_init() fills a
  * 256-entry complex twiddle table; audio_features_compute() uses a private
- * static workspace (about 4.1 KB with the twiddles) instead of the stack
- * so small Zephyr thread stacks are safe.  On the board the twiddles and
- * the frame buffers are placed in the unused 64 KB DTCM region
- * (AF_DTCM_WORKSPACE) so the extractor adds effectively nothing to the
- * nearly-full main SRAM region.  The workspace is fully rewritten on every
- * call and never carries information between calls, and no configuration
- * state exists outside init(), so results depend only on the input window
- * (deterministic).  Not reentrant: the single intended caller is the cry
- * task.
+ * static workspace (about 9.5 KB with the twiddles and the per-frame MFCC /
+ * log-energy history needed for the v2 deltas) instead of the stack so
+ * small Zephyr thread stacks are safe.  On the board the twiddles, the
+ * frame buffers and the histories are placed in the unused 64 KB DTCM
+ * region (AF_DTCM_WORKSPACE) so the extractor adds effectively nothing to
+ * the nearly-full main SRAM region.  The workspace is fully rewritten on
+ * every call and never carries information between calls, and no
+ * configuration state exists outside init(), so results depend only on the
+ * input window (deterministic).  Not reentrant: the single intended caller
+ * is the cry task.
  */
 
 #include <stdint.h>
@@ -73,22 +97,46 @@
 #define AF_ZCR_PAIRS        511u    /* N_FFT - 1 adjacent pairs per frame    */
 #define AF_LOG_FLOOR_MEL    1e-10   /* LOG_FLOOR_MEL   (mel energy floor)    */
 #define AF_LOG_FLOOR_ENERGY 1e-12   /* LOG_FLOOR_ENERGY (frame energy floor) */
+#define AF_BIN_HZ           ((double)AUDIO_TABLES_BIN_HZ) /* FS/N_FFT = 31.25 */
+#define AF_ROLLOFF_FRAC     0.85    /* ROLLOFF_FRAC (spectral rolloff)       */
+
+/* Output layout offsets = FEATURE_NAMES order (extract_features.py, v2). */
+#define AF_IDX_MFCC_MEAN     0u     /* [0..12]  mean of each MFCC            */
+#define AF_IDX_MFCC_STD      13u    /* [13..25] population std of each MFCC  */
+#define AF_IDX_LE_MEAN       26u    /* mean frame log-energy                 */
+#define AF_IDX_LE_STD        27u    /* std of frame log-energy               */
+#define AF_IDX_ZCR_MEAN      28u    /* mean frame zero-crossing rate         */
+#define AF_IDX_MFCCD_MEAN    29u    /* [29..41] mean of each MFCC delta      */
+#define AF_IDX_MFCCD_STD     42u    /* [42..54] std of each MFCC delta       */
+#define AF_IDX_LED_MEAN      55u    /* mean log-energy delta                 */
+#define AF_IDX_LED_STD       56u    /* std of log-energy delta               */
+#define AF_IDX_CENTROID_MEAN 57u    /* spectral centroid mean [Hz]           */
+#define AF_IDX_CENTROID_STD  58u    /* spectral centroid std                 */
+#define AF_IDX_ROLLOFF_MEAN  59u    /* spectral rolloff(0.85) mean [Hz]      */
+#define AF_IDX_ROLLOFF_STD   60u    /* spectral rolloff(0.85) std            */
+#define AF_IDX_FLATNESS_MEAN 61u    /* spectral flatness mean                */
+#define AF_IDX_FLATNESS_STD  62u    /* spectral flatness std                 */
 
 _Static_assert(AUDIO_TABLES_N_FFT == 512, "table geometry: N_FFT");
 _Static_assert(AUDIO_TABLES_HOP == 256, "table geometry: HOP");
 _Static_assert(AUDIO_TABLES_N_MELS == 40, "table geometry: N_MELS");
 _Static_assert(AUDIO_TABLES_N_BINS == 257, "table geometry: N_BINS");
 _Static_assert(AUDIO_TABLES_N_MFCC == 13, "table geometry: N_MFCC");
+_Static_assert(AUDIO_TABLES_BIN_HZ > 31.24 && AUDIO_TABLES_BIN_HZ < 31.26,
+               "table geometry: BIN_HZ");
+_Static_assert(AUDIO_FEAT_COUNT == 63u, "feature layout: AUDIO_FEAT_COUNT");
+_Static_assert(AF_IDX_FLATNESS_STD + 1u == AUDIO_FEAT_COUNT,
+               "feature layout: last offset");
 
 /* On the Zephyr/STM32 build the FFT workspace lives in the otherwise
  * unused 64 KB DTCM region (core-coupled, zero wait states, unreachable
  * by DMA - fine: this data is CPU-only) instead of the main SRAM region,
  * whose budget is nearly full.  This keeps the board RAM footprint of the
  * extractor at effectively zero.  Everything placed there is fully
- * written before it is read (twiddles by init(), the frame buffers by
- * compute()), so no startup zeroing is required (dtcm_noinit semantics).
- * On the host build (non-ARM toolchain) the attribute compiles out and
- * these are plain statics. */
+ * written before it is read (twiddles by init(), the frame buffers and
+ * the per-frame histories by compute()), so no startup zeroing is
+ * required (dtcm_noinit semantics).  On the host build (non-ARM
+ * toolchain) the attribute compiles out and these are plain statics. */
 #if defined(__arm__)
 #define AF_DTCM_WORKSPACE __attribute__((section(".dtcm_noinit")))
 #else
@@ -99,6 +147,11 @@ _Static_assert(AUDIO_TABLES_N_MFCC == 13, "table geometry: N_MFCC");
 static AF_DTCM_WORKSPACE float twiddle_re[AF_N_TWIDDLE];
 static AF_DTCM_WORKSPACE float twiddle_im[AF_N_TWIDDLE];
 static uint8_t twiddles_ready;
+
+/* Per-frame histories for the v2 deltas, coefficient-major so each MFCC
+ * sequence is contiguous (61 floats per coefficient). */
+static AF_DTCM_WORKSPACE float mfcc_hist[AF_N_MFCC][AF_N_FRAMES];
+static AF_DTCM_WORKSPACE float le_hist[AF_N_FRAMES];
 
 void audio_features_init(void)
 {
@@ -162,6 +215,41 @@ static void fft512_inplace(float *re, float *im)
     }
 }
 
+/* Population std (ddof=0) from accumulated value and square sums, with the
+ * rounding-residue clamp the trainer relies on for constant frames. */
+static float af_std_from_sums(double sq_sum, double mean)
+{
+    double var = sq_sum / (double)AF_N_FRAMES - mean * mean;
+    if (var < 0.0) {
+        var = 0.0; /* clamp rounding residue for constant frames */
+    }
+    return (float)sqrt(var);
+}
+
+/* Mean + population std of the first difference (edge replication) of one
+ * per-frame sequence: d[t] = (m'[t+1] - m'[t-1]) / 2 where m' pads the
+ * sequence with copies of its first/last element -- exactly
+ * extract_features._first_delta() followed by mean/std aggregation. */
+static void af_delta_stats(const float *hist, double *out_mean,
+                           double *out_std)
+{
+    double sum = 0.0;
+    double sq = 0.0;
+
+    for (uint32_t t = 0u; t < AF_N_FRAMES; t++) {
+        const double left = (t == 0u) ? (double)hist[0]
+                                      : (double)hist[t - 1u];
+        const double right = (t == AF_N_FRAMES - 1u)
+                                 ? (double)hist[AF_N_FRAMES - 1u]
+                                 : (double)hist[t + 1u];
+        const double d = 0.5 * (right - left);
+        sum += d;
+        sq += d * d;
+    }
+    *out_mean = sum / (double)AF_N_FRAMES;
+    *out_std = af_std_from_sums(sq, *out_mean);
+}
+
 void audio_features_compute(const int16_t *window, uint32_t n, float *out)
 {
     /* Private workspace: static instead of ~4.1 KB of stack so small
@@ -176,6 +264,15 @@ void audio_features_compute(const int16_t *window, uint32_t n, float *out)
     double le_sum = 0.0;
     double le_sq = 0.0;
     double zcr_sum = 0.0;
+    /* v2 spectral-shape accumulators (mean + population std per feature). */
+    double cent_sum = 0.0;
+    double cent_sq = 0.0;
+    double roll_sum = 0.0;
+    double roll_sq = 0.0;
+    double flat_sum = 0.0;
+    double flat_sq = 0.0;
+    double dm;
+    double ds;
     const double n_frames = (double)AF_N_FRAMES;
     uint32_t i;
 
@@ -227,6 +324,45 @@ void audio_features_compute(const int16_t *window, uint32_t n, float *out)
                         (1.0f / 512.0f);
         }
 
+        /* (2b) v2 spectral shape on the raw power spectrum (stage 10 of
+         * the file header).  Accumulated in double for parity with
+         * numpy's float64 reductions.  A zero-power frame contributes 0
+         * to every accumulator (guards -> all three features 0). */
+        {
+            double p_sum = 0.0;
+            double wf_sum = 0.0;
+            double log_sum = 0.0;
+
+            for (i = 0u; i < AF_N_BINS; i++) {
+                const double p = (double)fft_re[i];
+                p_sum += p;
+                wf_sum += p * ((double)i * AF_BIN_HZ);
+                log_sum += log(p);  /* log(0) = -inf, as numpy: geo -> 0 */
+            }
+            if (p_sum > 0.0) {
+                const double centroid = wf_sum / p_sum;
+                const double geo = exp(log_sum / (double)AF_N_BINS);
+                const double flat = geo / (p_sum / (double)AF_N_BINS);
+                double roll = 0.0;
+                double acc = 0.0;
+
+                for (i = 0u; i < AF_N_BINS; i++) {
+                    acc += (double)fft_re[i];
+                    if (acc >= AF_ROLLOFF_FRAC * p_sum) {
+                        break;
+                    }
+                }
+                roll = (double)i * AF_BIN_HZ; /* p_sum >= 0.85*p_sum */
+
+                cent_sum += centroid;
+                cent_sq += centroid * centroid;
+                roll_sum += roll;
+                roll_sq += roll * roll;
+                flat_sum += flat;
+                flat_sq += flat * flat;
+            }
+        }
+
         /* (3) 40-mel filterbank + natural log with the 1e-10 floor.
          * Accumulated in double for parity with numpy's float64 BLAS. */
         for (uint32_t m = 0u; m < AF_N_MELS; m++) {
@@ -238,7 +374,8 @@ void audio_features_compute(const int16_t *window, uint32_t n, float *out)
             mel_log[m] = log(acc + AF_LOG_FLOOR_MEL);
         }
 
-        /* (4) orthonormal DCT-II -> 13 MFCCs; accumulate window sums. */
+        /* (4) orthonormal DCT-II -> 13 MFCCs; accumulate window sums and
+         * keep the frame sequence for the v2 deltas (stage 9). */
         for (uint32_t j = 0u; j < AF_N_MFCC; j++) {
             const float *dct_row = audio_feat_dct_mat[j];
             double v = 0.0;
@@ -247,6 +384,7 @@ void audio_features_compute(const int16_t *window, uint32_t n, float *out)
             }
             mfcc_sum[j] += v;
             mfcc_sq[j] += v * v;
+            mfcc_hist[j][f] = (float)v;
         }
 
         /* (5) frame log-energy (time-domain windowed energy, 1e-12 floor)
@@ -255,28 +393,46 @@ void audio_features_compute(const int16_t *window, uint32_t n, float *out)
             const double le = log(energy + AF_LOG_FLOOR_ENERGY);
             le_sum += le;
             le_sq += le * le;
+            le_hist[f] = (float)le;
             zcr_sum += (double)zcr_changes / (double)AF_ZCR_PAIRS;
         }
     }
 
-    /* (6) aggregate: population std (ddof=0), FEATURE_NAMES order. */
+    /* (6) aggregate the v1 block: population std (ddof=0), FEATURE_NAMES
+     * order, indices 0-28 unchanged from feature-set v1. */
     for (uint32_t j = 0u; j < AF_N_MFCC; j++) {
         const double mean = mfcc_sum[j] / n_frames;
-        double var = mfcc_sq[j] / n_frames - mean * mean;
-        if (var < 0.0) {
-            var = 0.0; /* clamp rounding residue for constant frames */
-        }
-        out[j] = (float)mean;
-        out[AF_N_MFCC + j] = (float)sqrt(var);
+        out[AF_IDX_MFCC_MEAN + j] = (float)mean;
+        out[AF_IDX_MFCC_STD + j] = af_std_from_sums(mfcc_sq[j], mean);
     }
     {
         const double le_mean = le_sum / n_frames;
-        double le_var = le_sq / n_frames - le_mean * le_mean;
-        if (le_var < 0.0) {
-            le_var = 0.0;
-        }
-        out[26u] = (float)le_mean;
-        out[27u] = (float)sqrt(le_var);
+        out[AF_IDX_LE_MEAN] = (float)le_mean;
+        out[AF_IDX_LE_STD] = af_std_from_sums(le_sq, le_mean);
     }
-    out[28u] = (float)(zcr_sum / n_frames);
+    out[AF_IDX_ZCR_MEAN] = (float)(zcr_sum / n_frames);
+
+    /* (7) v2 deltas: MFCC delta mean/std (29-54) and log-energy delta
+     * mean/std (55-56) from the per-frame histories. */
+    for (uint32_t j = 0u; j < AF_N_MFCC; j++) {
+        af_delta_stats(mfcc_hist[j], &dm, &ds);
+        out[AF_IDX_MFCCD_MEAN + j] = (float)dm;
+        out[AF_IDX_MFCCD_STD + j] = (float)ds;
+    }
+    af_delta_stats(le_hist, &dm, &ds);
+    out[AF_IDX_LED_MEAN] = (float)dm;
+    out[AF_IDX_LED_STD] = (float)ds;
+
+    /* (8) v2 spectral-shape aggregates (57-62). */
+    {
+        const double cent_mean = cent_sum / n_frames;
+        const double roll_mean = roll_sum / n_frames;
+        const double flat_mean = flat_sum / n_frames;
+        out[AF_IDX_CENTROID_MEAN] = (float)cent_mean;
+        out[AF_IDX_CENTROID_STD] = af_std_from_sums(cent_sq, cent_mean);
+        out[AF_IDX_ROLLOFF_MEAN] = (float)roll_mean;
+        out[AF_IDX_ROLLOFF_STD] = af_std_from_sums(roll_sq, roll_mean);
+        out[AF_IDX_FLATNESS_MEAN] = (float)flat_mean;
+        out[AF_IDX_FLATNESS_STD] = af_std_from_sums(flat_sq, flat_mean);
+    }
 }

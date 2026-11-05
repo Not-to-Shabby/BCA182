@@ -30,16 +30,49 @@ Pipeline (all stages deterministic, fixed constants, no RNG):
   7. DCT-II          orthonormal DCT-II (equal to scipy dct norm='ortho'),
                      hand-built matrix DCT_MAT (13 x 40) -> 13 MFCCs
   8. aggregate       per 1 s (16000-sample, non-overlapping) window over its
-                     61 frames: mean+std of each of 13 MFCCs (26) + mean and
-                     std of frame log-energy (2) + mean frame ZCR (1) = 29
-                     features. std is the population std (ddof=0).
+                     61 frames.  Feature-set v2 (63 features) = the original
+                     29 per-window summary statistics (indices 0-28, meaning
+                     unchanged) PLUS temporal-dynamics features appended
+                     after them:
+
+    0-28   v1 summary (unchanged)
+           0-12  mean of each MFCC over the 61 frames
+           13-25 population std (ddof=0) of each MFCC
+           26    mean frame log-energy
+           27    std of frame log-energy
+           28    mean frame ZCR (sign changes / 511 pairs)
+    29-55  MFCC DELTAS (temporal dynamics of the spectral envelope):
+           per-frame first difference of the MFCC frame sequence with EDGE
+           REPLICATION, d[t] = (m'[t+1] - m'[t-1]) / 2 where m' pads the
+           61-frame MFCC matrix by replicating the first/last frame
+           (interior t: (m[t+1]-m[t-1])/2; d[0] = (m[1]-m[0])/2;
+           d[60] = (m[60]-m[59])/2).
+           29-41 mean of each MFCC delta over the 61 frames
+           42-54 population std of each MFCC delta
+    55-56  LOG-ENERGY DELTA: same central-difference-with-edge-replication
+           operator applied to the per-frame log-energy sequence
+           (55 = mean, 56 = population std) - captures loudness dynamics
+           (cry rhythm) that the static mean/std summaries average away.
+    57-62  SPECTRAL SHAPE dynamics, per frame on the raw 257-bin rfft power
+           spectrum (bin k = k * BIN_HZ Hz, BIN_HZ = 16000/512 = 31.25):
+           - centroid (Hz): sum_k f_k * P[k] / sum_k P[k]; defined 0 when
+             the frame power sums to 0 (digital silence).
+           - rolloff (Hz): ROLLOFF_FRAC = 0.85 cumulative-power point, i.e.
+             the frequency f_k* of the first bin whose running sum reaches
+             0.85 * total power (0 for a zero-power frame).
+           - flatness: geometric/arithmetic mean of the power spectrum,
+             exp(mean_k log P[k]) / mean_k P[k] (0 for a zero-power frame;
+             a single 0-power bin makes the geometric mean 0, documented).
+           57/58 centroid mean/std, 59/60 rolloff mean/std,
+           61/62 flatness mean/std.  std is the population std (ddof=0)
+           everywhere.
 
 CLI:
   python extract_features.py --selftest    shape/determinism/sanity asserts
 
 Library API used by train_cry_model.py:
-  FEATURE_NAMES                  list of the 29 feature names, in order
-  extract_window(samples_16k)    16000-sample window -> (29,) float32 vector
+  FEATURE_NAMES                  list of the 63 feature names, in order
+  extract_window(samples_16k)    16000-sample window -> (63,) float32 vector
   load_wav(path)                 WAV file -> (samples, fs)
   resample_to_16k(x, fs)         arbitrary-rate samples -> 16 kHz samples
   extract_file_windows(path)     file -> list of 1 s window feature vectors
@@ -47,6 +80,7 @@ Library API used by train_cry_model.py:
 
 import os
 import sys
+import time
 import wave
 
 import numpy as np
@@ -67,12 +101,36 @@ RESAMPLE_BLOCK = 20000     # output samples computed per block (memory bound)
 
 HANN = (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(N_FFT) / N_FFT)).astype(np.float64)
 
+BIN_HZ = FS / N_FFT        # rfft bin width [Hz] (31.25 at 16 kHz / 512)
+BIN_FREQS = np.arange(N_FFT // 2 + 1) * BIN_HZ   # bin k center frequency [Hz]
+ROLLOFF_FRAC = 0.85        # spectral-rolloff cumulative-power fraction
+
 FEATURE_NAMES = (
     [f"mfcc{i:02d}_mean" for i in range(N_MFCC)]
     + [f"mfcc{i:02d}_std" for i in range(N_MFCC)]
     + ["log_energy_mean", "log_energy_std", "zcr_mean"]
+    + [f"mfcc{i:02d}_delta_mean" for i in range(N_MFCC)]
+    + [f"mfcc{i:02d}_delta_std" for i in range(N_MFCC)]
+    + ["log_energy_delta_mean", "log_energy_delta_std"]
+    + ["spectral_centroid_mean", "spectral_centroid_std",
+       "spectral_rolloff85_mean", "spectral_rolloff85_std",
+       "spectral_flatness_mean", "spectral_flatness_std"]
 )
-assert len(FEATURE_NAMES) == 29
+assert len(FEATURE_NAMES) == 63
+
+# Feature index offsets (v1 block must keep indices 0-28).
+IDX_MFCC_MEAN = 0
+IDX_MFCC_STD = 13
+IDX_LOG_ENERGY_MEAN = 26
+IDX_LOG_ENERGY_STD = 27
+IDX_ZCR_MEAN = 28
+IDX_MFCC_DELTA_MEAN = 29
+IDX_MFCC_DELTA_STD = 42
+IDX_LOG_ENERGY_DELTA_MEAN = 55
+IDX_LOG_ENERGY_DELTA_STD = 56
+IDX_CENTROID_MEAN = 57
+IDX_ROLLOFF_MEAN = 59
+IDX_FLATNESS_MEAN = 61
 
 
 class UnsupportedAudio(Exception):
@@ -148,15 +206,28 @@ def load_wav(path):
             f"non-WAV container '{ext}' cannot be read by stdlib wave "
             f"(run dataset_prep.py ffmpeg conversion first): {path}")
     try:
-        with wave.open(path, "rb") as w:
-            nch = w.getnchannels()
-            width = w.getsampwidth()
-            fs = w.getframerate()
-            nframes = w.getnframes()
-            if w.getcomptype() != "NONE":
-                raise UnsupportedAudio(f"compressed WAV (comptype "
-                                       f"{w.getcomptype()}) unsupported: {path}")
-            raw = w.readframes(nframes)
+        raw = None
+        # Retry transient OS errors: a parallel process may briefly lock
+        # files/directories under ml_model/data/ (Windows sharing
+        # violations surface as OSError from wave.open).  A genuinely
+        # missing file also raises OSError (FileNotFoundError) - the retry
+        # costs ~0.5 s and the caller's skip logic is unchanged.
+        for attempt in range(3):
+            try:
+                with wave.open(path, "rb") as w:
+                    nch = w.getnchannels()
+                    width = w.getsampwidth()
+                    fs = w.getframerate()
+                    nframes = w.getnframes()
+                    if w.getcomptype() != "NONE":
+                        raise UnsupportedAudio(f"compressed WAV (comptype "
+                                               f"{w.getcomptype()}) unsupported: {path}")
+                    raw = w.readframes(nframes)
+                break
+            except OSError as exc:
+                if attempt == 2:
+                    raise
+                time.sleep(0.25)
     except wave.Error as exc:
         raise UnsupportedAudio(f"wave module cannot parse {path}: {exc}") from exc
 
@@ -225,11 +296,49 @@ def resample_to_16k(x, fs_in):
 
 
 # ------------------------------------------------------------- frames ------
+def _first_delta(series):
+    """First difference along axis 0 with edge replication (documented in the
+    module docstring): d[t] = (m'[t+1] - m'[t-1]) / 2 where m' is the input
+    sequence padded by replicating its first and last frame.  A single-frame
+    input yields zeros (nothing to difference)."""
+    m = np.asarray(series, dtype=np.float64)
+    if m.ndim == 1:                       # 1-D series: difference per element
+        return _first_delta(m[:, None])[:, 0]
+    if m.shape[0] < 2:
+        return np.zeros_like(m)
+    padded = np.vstack([m[:1], m, m[-1:]])
+    return (padded[2:] - padded[:-2]) * 0.5
+
+
+def _spectral_shape(power):
+    """Per-frame spectral shape on the raw rfft power spectrum.
+
+    power: (n_frames, 257) power spectrum (bin k = k * BIN_HZ Hz).
+    Returns (centroid, rolloff, flatness) in Hz/Hz/linear, all finite:
+    a frame whose power sums to 0 (digital silence) defines all three as 0
+    (guards mirror the C implementation in src/audio_features.c 1:1); a
+    frame with any exactly-zero power bin has geometric mean 0 -> flatness
+    0 (log(0) = -inf -> exp -> 0, same in C)."""
+    n_bins = power.shape[1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        p_sum = power.sum(axis=1)
+        safe_sum = np.where(p_sum > 0.0, p_sum, 1.0)
+        centroid = np.where(p_sum > 0.0,
+                            (power * BIN_FREQS).sum(axis=1) / safe_sum, 0.0)
+        cum = np.cumsum(power, axis=1)
+        idx = (cum < ROLLOFF_FRAC * p_sum[:, None]).sum(axis=1)
+        rolloff = idx * BIN_HZ                              # 0-power -> idx 0
+        geo = np.exp(np.log(power).sum(axis=1) / n_bins)
+        flatness = np.where(p_sum > 0.0, geo / (p_sum / n_bins), 0.0)
+    return centroid, rolloff, flatness
+
+
 def _frame_features(x):
-    """16000-sample 1 s window -> (n_frames, 13) MFCCs, log-energies, ZCRs."""
+    """16000-sample 1 s window -> per-frame MFCCs (n, 13), log-energies,
+    ZCRs, spectral centroid/rolloff/flatness (n,)."""
     n_frames = 1 + (len(x) - N_FFT) // HOP
     if n_frames <= 0:
-        return None, None, None
+        return None, None, None, None, None, None
     idx = np.arange(N_FFT)[None, :] + HOP * np.arange(n_frames)[:, None]
     frames = x[idx] * HANN[None, :]
 
@@ -244,26 +353,41 @@ def _frame_features(x):
 
     signs = np.signbit(frames)                              # Lab 4 convention
     zcr = (signs[:, 1:] != signs[:, :-1]).mean(axis=1)
-    return mfcc, log_energy, zcr
+
+    centroid, rolloff, flatness = _spectral_shape(power)
+    return mfcc, log_energy, zcr, centroid, rolloff, flatness
 
 
 def extract_window(samples_16k):
     """Aggregate one exactly-1 s (16000-sample) 16 kHz mono window into the
-    29-feature vector in FEATURE_NAMES order (float32).
+    63-feature vector in FEATURE_NAMES order (float32).
 
-    Features: MFCC mean/std over the window's 61 frames (2x13), mean/std of
-    per-frame log-energy (2), mean per-frame ZCR (1) = 29. Raises ValueError
-    for any other window length - callers slice fixed 1 s windows.
+    Features (see the module docstring for exact definitions): the v1
+    29-summary block (MFCC mean/std 2x13, log-energy mean/std, mean ZCR)
+    at indices 0-28, then MFCC-delta mean/std (2x13), log-energy-delta
+    mean/std (2), and spectral centroid/rolloff(0.85)/flatness mean/std
+    (2x3) appended as indices 29-62.  Raises ValueError for any other
+    window length - callers slice fixed 1 s windows.
     """
     x = np.asarray(samples_16k, dtype=np.float64)
     if len(x) != WINDOW_SAMPLES:
         raise ValueError(f"extract_window expects exactly {WINDOW_SAMPLES} "
                          f"samples (1 s at 16 kHz), got {len(x)}")
-    mfcc, log_energy, zcr = _frame_features(x)
+    mfcc, log_energy, zcr, centroid, rolloff, flatness = _frame_features(x)
+    d_mfcc = _first_delta(mfcc)
+    d_le = _first_delta(log_energy)
     return np.concatenate([
+        # ---- v1 block, indices 0-28 (order and meaning unchanged) ----
         mfcc.mean(axis=0),
         mfcc.std(axis=0),                                   # population std
         [log_energy.mean(), log_energy.std(), zcr.mean()],
+        # ---- v2 temporal dynamics, indices 29-62 ----
+        d_mfcc.mean(axis=0),
+        d_mfcc.std(axis=0),
+        [d_le.mean(), d_le.std()],
+        [centroid.mean(), centroid.std()],
+        [rolloff.mean(), rolloff.std()],
+        [flatness.mean(), flatness.std()],
     ]).astype(np.float32)
 
 
@@ -305,12 +429,47 @@ def _selftest() -> int:
     sig = rng.normal(0.0, 0.05, WINDOW_SAMPLES).astype(np.float32)
     f1 = extract_window(sig)
     f2 = extract_window(sig.copy())
-    check("feature vector shape (29,)", f1.shape == (29,))
+    check("feature vector shape (63,)", f1.shape == (63,))
     check("dtype float32", f1.dtype == np.float32)
     check("all finite", bool(np.isfinite(f1).all()))
     check("bit-exact determinism", np.array_equal(f1, f2))
     check("silence window finite", bool(np.isfinite(
         extract_window(np.zeros(WINDOW_SAMPLES, np.float32))).all()))
+
+    # 2b. v2 feature definitions ----------------------------------------------
+    f_sil = extract_window(np.zeros(WINDOW_SAMPLES, np.float32))
+    check("silence: v1 block intact (mfcc00 = sqrt(40)*log(1e-10))",
+          abs(float(f_sil[0]) - np.sqrt(40.0) * np.log(1e-10)) < 1e-3
+          and abs(float(f_sil[26]) - np.log(1e-12)) < 1e-3)
+    check("silence: deltas + spectral shape guard to 0",
+          bool((np.abs(f_sil[29:]) < 1e-6).all()))
+
+    t = np.arange(WINDOW_SAMPLES) / FS
+    steady = extract_window((0.2 * np.sin(2 * np.pi * 500.0 * t))
+                            .astype(np.float32))
+    sweep_f = 400.0 + 500.0 * t / 1.0                    # 400 -> 900 Hz
+    swept = extract_window((0.2 * np.sin(2 * np.pi * np.cumsum(sweep_f) / FS))
+                           .astype(np.float32))
+    d_std_steady = float(steady[42:55].max())
+    d_std_swept = float(swept[42:55].max())
+    check("steady tone has near-frozen MFCC deltas", d_std_steady < 0.05,
+          f"max delta std {d_std_steady:.4f}")
+    check("swept tone excites MFCC deltas (temporal dynamics)",
+          d_std_swept > 0.10 and d_std_swept > 5.0 * d_std_steady,
+          f"max delta std {d_std_swept:.4f}")
+    check("centroid tracks tone frequency",
+          abs(float(steady[57]) - 500.0) < 150.0,
+          f"centroid {float(steady[57]):.1f} Hz vs 500 Hz tone")
+    # A pure tone leaks only into the two adjacent bins (periodic Hann),
+    # so cumulative power first reaches 85 % one bin above the tone.
+    check("rolloff(0.85) of a pure tone lands one bin above it",
+          abs(float(steady[59]) - 531.25) <= BIN_HZ,
+          f"rolloff {float(steady[59]):.1f} Hz (tone bin 500.0 Hz)")
+    check("flatness of tone << flatness of noise",
+          float(steady[61]) < 0.5 * float(f1[61]),
+          f"tone {float(steady[61]):.4f} vs noise {float(f1[61]):.4f}")
+    check("delta-mean of constant signal ~ 0",
+          abs(float(steady[55])) < 1e-6)
 
     # 3. resampler ------------------------------------------------------------
     t = np.arange(int(1.5 * 44100)) / 44100.0

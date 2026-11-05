@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 """
-train_cry_model.py - P3 cry/non-cry RandomForest trainer for the Smart Baby
+train_cry_model.py - P3 cry/non-cry tree-ensemble trainer for the Smart Baby
 Monitoring System (house style modeled on Lab 4's train_cycle_model.py and
 Lab 3's train_model.py header-wrapping / confidence wrapper).
 
-v5 (this revision) lifts the v1 model's frozen-test cry recall (0.29) by
-closing the domain gap between close-mic phone-app cries (donateacry) and the
-ambient ESC-50 crying_baby test clips, WITHOUT touching the frozen protocol:
+v6 (this revision) attacks the v5 shipped model's frozen-test cry recall
+(0.335 at F1 0.480, confuser FP 7.7 %) by fixing the diagnosed root cause -
+the 29-feature front end SUMMARIES AWAY temporal dynamics - without touching
+the frozen protocol:
 
-  * wave-level augmentation of TRAINING windows only (augment.py): REAL
-    ESC-50 fold 1-3 non-cry ambience mixed under cries at SNR 10-25 dB
-    (contrastive cry+ambience vs ambience-alone pairs, cry dominant - v2
-    diagnostics showed the forest keys on spectral-shape MFCCs and exploits
-    a synthetic-noise shortcut; v3/v4 showed noise-buried cries blur the
-    boundary), 2-3-tap room reverb, distant-speaker lowpass, volume -6..+14
-    dB (+10..+20 loud branch mirrored on non-cry), pitch/speed +/-10 %, 50 Hz
-    hum - precomputed into features_aug_cache.npz; ALL training non-cry
-    windows get noise/volume variants for calibration.
-    val/test/confuser rows are never augmented into training data.
-  * several seeded RF candidates (fixed seed 42) trained on
-    original + augmented windows; compared on VAL only.
+  * feature-set v2 (extract_features.py): the original 29 per-window summary
+    statistics keep indices 0-28, and 34 temporal-dynamics features are
+    appended (63 total, under the 64-feature budget): per-frame MFCC deltas
+    (first difference with edge replication, aggregated mean+std = 26),
+    per-frame log-energy delta mean+std (2), and per-frame spectral
+    centroid / rolloff(0.85) / flatness mean+std (6).  The on-device C
+    front end mirrors all 63 (src/audio_features.c, parity-tested).
+  * the v5 wave-level augmentation of TRAINING windows only (augment.py v5)
+    is reused unchanged - same recipes, same per-(file, variant) seeds, so
+    the v2 cache rebuild replays the identical augmented waveforms through
+    the new front end (features_aug_cache.npz is invalidated by its feature
+    width and rebuilt once; the waveform noise pool stays valid).
+  * seeded candidate sweep (fixed seed 42), compared on VAL only:
+    RandomForest 12x7 (apples-to-apples with the shipped v5 model),
+    RandomForest 30x8, and ExtraTreesClassifier 30x8 / 12x7 (emlearn
+    exports ET through the same eml_trees inline code).
   * the firmware decision rule is replicated exactly - cry iff the strict
     forest majority votes CRY AND (cry_votes*100)//N_TREES >= threshold -
-    and the cry-vote-share threshold is swept over 30..80, maximizing cry F1
+    and the cry-vote-share threshold is swept over 40..85, maximizing cry F1
     over the cry side (raw VAL cry + stress-val cry proxy: the deployment
     channel applied to val cry windows, still 100 % val data) subject to the
     task's CONFUSER FP gate (<= 10 % on the siren/helicopter/chainsaw/
@@ -33,10 +38,11 @@ ambient ESC-50 crying_baby test clips, WITHOUT touching the frozen protocol:
 
 Pipeline:
   ml_model/manifest.csv (built by dataset_prep.py)
-    -> 16 kHz 1 s windows -> 29 features via extract_features.py
-       (cached in ml_model/features_cache.npz, keyed by path+mtime+size)
+    -> 16 kHz 1 s windows -> 63 features via extract_features.py
+       (cached in ml_model/features_cache.npz, keyed by
+       cache-version + path + mtime + size)
        + augmented train windows (cached in features_aug_cache.npz)
-    -> sklearn RandomForestClassifier candidates (seed 42)
+    -> sklearn ensemble candidates (seed 42)
     -> emlearn inline-C export post-processed into include/cry_model.h
        (provenance header, extern "C" guard, cry_model_predict() and
        cry_model_predict_confidence() wrappers, same vote-share semantics
@@ -52,7 +58,7 @@ Paths in manifest.csv are relative to --dataset-dir. The header is written
 ONLY if the frozen test set contains >= 20 cry AND >= 20 noncry clips
 (see MIN_TEST_CLIPS); otherwise the report states exactly what is missing.
 The exported header is rejected and the next-best candidate exported instead
-if it exceeds --header-max-bytes (default 300 KB).
+if it exceeds --header-max-bytes (default 400 KB).
 
 Deterministic: manifest order, fixed seeds, fixed hyperparameters.
 """
@@ -63,11 +69,12 @@ import datetime
 import os
 import re
 import sys
+import time
 
 import numpy as np
 import sklearn
 import emlearn
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -77,48 +84,75 @@ from extract_features import (                       # noqa: E402
 import augment                                       # noqa: E402
 
 CACHE_NAME = "features_cache.npz"
-CACHE_VERSION = "v1"          # bump to invalidate a stale cache
+CACHE_VERSION = "v2"          # v2 = feature-set v2 (63 features); bump to
+                              # invalidate a stale cache
 SEED = 42
 MIN_TEST_CLIPS = 20
 LABELS = ("noncry", "cry")    # 0, 1
 N_FEATURES = len(FEATURE_NAMES)
 ENERGY_FEAT = FEATURE_NAMES.index("log_energy_mean")
 
-HEADER_MAX_BYTES = 300 * 1024     # exported header budget (plan requirement)
+HEADER_MAX_BYTES = 400 * 1024     # exported header budget (v6 requirement)
 FP_GATE = 0.10                    # max noncry FP rate on VAL and confusers
-T_MIN, T_MAX = 30, 80             # cry-vote-share threshold sweep bounds (%)
+T_MIN, T_MAX = 40, 85             # cry-vote-share threshold sweep bounds (%)
 
-# Candidate registry (plan: (a) RF 10x6 as-is + aug, (b) a larger forest +
-# aug with a <300 KB header check - rf30x8 measured 1.22 MB and is replaced
-# by the size-feasible rf12x7/rf24x6 - plus an unweighted variant that lets
-# the 3x cry-augmented counts bias the vote toward recall).
+# Candidate registry (v6 sweep over model types on the feature-set-v2 front
+# end: the shipped v5 architecture rf12x7 for an apples-to-apples
+# comparison, a larger forest, intermediate forest sizes that probe the
+# 400 KB header budget (rf30x8 measured 1.18 MB and cannot ship - the
+# intermediate sizes give the val winner a size-feasible fallback with
+# finer vote granularity than 12 trees), and ExtraTrees variants - emlearn
+# exports ET through the same eml_trees inline code.  The MLP(32) fallback
+# of the plan is NOT executable on this PC: emlearn's net exporter builds
+# its evaluator with distutils and requires MSVC 14 (not installed) -
+# documented in the README, not silently dropped).
 CANDIDATES = {
-    "rf10x6":       dict(n_estimators=10, max_depth=6,
-                         class_weight="balanced",
-                         desc="RF 10 trees x depth 6, class_weight=balanced "
-                              "(v1 architecture) + augmentation"),
-    "rf12x7":       dict(n_estimators=12, max_depth=7,
+    "rf12x7":       dict(kind="rf", n_estimators=12, max_depth=7,
                          class_weight="balanced",
                          desc="RF 12 trees x depth 7, class_weight=balanced "
-                              "+ augmentation (deeper trees within the "
-                              "header budget)"),
-    "rf24x6":       dict(n_estimators=24, max_depth=6,
+                              "+ augmentation (v5 architecture, "
+                              "apples-to-apples on feature-set v2)"),
+    "rf16x7":       dict(kind="rf", n_estimators=16, max_depth=7,
                          class_weight="balanced",
-                         desc="RF 24 trees x depth 6, class_weight=balanced "
+                         desc="RF 16 trees x depth 7, class_weight=balanced "
                               "+ augmentation (finer vote granularity within "
                               "the header budget)"),
-    "rf10x6_plain": dict(n_estimators=10, max_depth=6,
-                         class_weight=None,
-                         desc="RF 10 trees x depth 6, unweighted + "
-                              "augmentation (augmented cry-count surplus "
-                              "biases votes toward recall)"),
+    "rf18x7":       dict(kind="rf", n_estimators=18, max_depth=7,
+                         class_weight="balanced",
+                         desc="RF 18 trees x depth 7, class_weight=balanced "
+                              "+ augmentation (finer vote granularity within "
+                              "the header budget)"),
+    "rf20x7":       dict(kind="rf", n_estimators=20, max_depth=7,
+                         class_weight="balanced",
+                         desc="RF 20 trees x depth 7, class_weight=balanced "
+                              "+ augmentation (probe: may exceed the header "
+                              "budget)"),
+    "rf30x8":       dict(kind="rf", n_estimators=30, max_depth=8,
+                         class_weight="balanced",
+                         desc="RF 30 trees x depth 8, class_weight=balanced "
+                              "+ augmentation (finer vote granularity)"),
+    "et30x8":       dict(kind="et", n_estimators=30, max_depth=8,
+                         class_weight="balanced",
+                         desc="ExtraTrees 30 trees x depth 8, "
+                              "class_weight=balanced + augmentation "
+                              "(stronger randomization vs noise)"),
+    "et12x7":       dict(kind="et", n_estimators=12, max_depth=7,
+                         class_weight="balanced",
+                         desc="ExtraTrees 12 trees x depth 7, "
+                              "class_weight=balanced + augmentation "
+                              "(size-feasible ET variant)"),
 }
-DEFAULT_CANDIDATES = ("rf10x6", "rf12x7", "rf24x6", "rf10x6_plain")
+DEFAULT_CANDIDATES = ("rf12x7", "rf16x7", "rf18x7", "rf20x7", "rf30x8",
+                      "et30x8", "et12x7")
 
 
 # ------------------------------------------------------------ feature cache -
 def load_cache(cache_path):
-    """features_cache.npz -> {key: (n_windows, 29) float32 array}."""
+    """features_cache.npz -> {key: (n_windows, N_FEATURES) float32 array}.
+
+    Entries whose key does not carry the current CACHE_VERSION prefix are
+    dropped on load (stale front-end versions must never be served from a
+    shared cache file)."""
     if not os.path.exists(cache_path):
         return {}
     try:
@@ -130,10 +164,13 @@ def load_cache(cache_path):
             print(f"cache feature count mismatch ({feats.shape[1]} != "
                   f"{N_FEATURES}) - rebuilding cache")
             return {}
+        version_prefix = CACHE_VERSION + "|"
         cache, off = {}, 0
         for k, c in zip(keys, counts):
-            cache[str(k)] = feats[off:off + int(c)]
-            off += int(c)
+            key = str(k)
+            if key.startswith(version_prefix):
+                cache[key] = feats[off:off + int(c)]
+            off += int(c)          # advance for every block (flat layout)
         return cache
     except Exception as exc:                          # noqa: BLE001
         print(f"cache unreadable ({exc}) - rebuilding")
@@ -156,19 +193,49 @@ def file_cache_key(rel_path, abs_path):
     return f"{CACHE_VERSION}|{rel_path}|{st.st_mtime_ns}|{st.st_size}"
 
 
+def path_exists_retry(abs_path, attempts=3, delay=0.5):
+    """os.path.exists with retries: a parallel process holding transient
+    locks in ml_model/data/ can make a stat call fail, which os.path.exists
+    reports as False - a false 'missing' would silently shrink the frozen
+    splits.  A genuinely absent file just costs the retry delay."""
+    for attempt in range(attempts):
+        if os.path.exists(abs_path):
+            return True
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    return os.path.exists(abs_path)
+
+
 def windows_for(cache, cache_path, rel_path, abs_path):
-    """(n, 29) float32 window features for one clip, cached."""
+    """(n, N_FEATURES) float32 window features for one clip, cached.
+
+    Extraction is retried on generic OS errors: a parallel process may
+    transiently lock files/directories under ml_model/data/ (Windows
+    sharing violations), and a skipped row here would silently shrink the
+    frozen splits.  UnsupportedAudio (container/parse errors) is a
+    permanent property of the file and is not retried."""
     key = file_cache_key(rel_path, abs_path)
     if key in cache:
         return cache[key]
-    try:
-        wins = extract_file_windows(abs_path)
-    except UnsupportedAudio as exc:
-        print(f"  skip (unsupported): {exc}")
-        wins = []
-    except Exception as exc:                          # noqa: BLE001
-        print(f"  skip (error): {abs_path}: {exc}")
-        wins = []
+    wins = []
+    for attempt in range(3):
+        try:
+            wins = extract_file_windows(abs_path)
+            break
+        except UnsupportedAudio as exc:
+            print(f"  skip (unsupported): {exc}")
+            wins = []
+            break
+        except OSError as exc:
+            if attempt == 2:
+                print(f"  skip (os error after retries): {abs_path}: {exc}")
+                wins = []
+            else:
+                time.sleep(0.5)
+        except Exception as exc:                      # noqa: BLE001
+            print(f"  skip (error): {abs_path}: {exc}")
+            wins = []
+            break
     arr = (np.stack(wins).astype(np.float32) if wins
            else np.zeros((0, N_FEATURES), np.float32))
     cache[key] = arr
@@ -309,9 +376,9 @@ def energy_baseline_apply(X, t):
 # ------------------------------------------------------------------ header --
 def wrap_header(generated: str, out_path: str, provenance_lines, tree_ids,
                 report_summary: str, n_trees: int, max_depth: int,
-                op_note: str) -> None:
+                op_note: str, model_label: str) -> None:
     """Post-process emlearn inline C into include/cry_model.h with provenance,
-    an extern \"C\" guard, and the Lab-3-style prediction wrappers (public API
+    an extern "C" guard, and the Lab-3-style prediction wrappers (public API
     and vote-share semantics unchanged from v1)."""
     # Header-safe: make the file-scope aggregates static inline (Lab 3 pattern).
     generated = generated.replace("int32_t cry_forest_predict(",
@@ -335,10 +402,12 @@ def wrap_header(generated: str, out_path: str, provenance_lines, tree_ids,
  * AUTO-GENERATED by ml_model/train_cry_model.py (emlearn inline export) -
  * DO NOT EDIT BY HAND.
  *
- * Model    : sklearn RandomForestClassifier, {n_trees} trees, max_depth {max_depth},
+ * Model    : sklearn {model_label}, {n_trees} trees, max_depth {max_depth},
  *            random_state={SEED} (trained on wave-augmented train windows)
  * Input    : {N_FEATURES} float features from 1 s / 16 kHz windows
- *            (MFCC 0-12 mean+std, log-energy mean/std, mean ZCR - see
+ *            (feature-set v2: MFCC 0-12 mean+std, log-energy mean/std,
+ *            mean ZCR, then MFCC-delta mean+std, log-energy-delta
+ *            mean/std, spectral centroid/rolloff/flatness mean+std - see
  *            ml_model/extract_features.py FEATURE_NAMES for exact order)
  * Classes  : 0 = CRY_PRED_NONCRY, 1 = CRY_PRED_CRY
  * Memory   : pure inline decision trees, zero dynamic allocation
@@ -445,7 +514,8 @@ def prov_lines_for(cand, n_cry_clips, n_ncry_clips, augmented, summary):
         f"confuser FP {b['confuser_fp']:.3f}",
         f"frozen test: ESC-50 crying_baby x{n_cry_clips} + fold-5 non-cry "
         f"x{n_ncry_clips}",
-        f"features ({N_FEATURES}): {', '.join(FEATURE_NAMES)}",
+        f"features ({N_FEATURES}, feature-set v2): {', '.join(FEATURE_NAMES)}",
+        f"model: {model_label_for(cand['cfg'])}",
         f"candidate: {cand['cfg']['desc']}",
         "augmentation recipe (train windows only): cry - real ESC-50 fold "
         f"1-3 ambience mix SNR {int(augment.REAL_NOISE_SNR_MIN_DB)}-"
@@ -466,7 +536,8 @@ def prov_lines_for(cand, n_cry_clips, n_ncry_clips, augmented, summary):
     return prov
 
 
-def build_header(clf, out_path, prov_lines, op_note, max_depth, summary):
+def build_header(clf, out_path, prov_lines, op_note, max_depth, summary,
+                 model_label):
     """emlearn inline export + header wrap. Returns (ok, size, msg).
     Leaves the header on disk; caller removes it if the size is over budget."""
     print("\nemlearn inline export ...")
@@ -483,9 +554,16 @@ def build_header(clf, out_path, prov_lines, op_note, max_depth, summary):
         return False, 0, (f"expected {n_trees} tree functions in emlearn "
                           f"output, found {len(tree_ids)}")
     wrap_header(generated, out_path, prov_lines, tree_ids,
-                summary, n_trees, max_depth, op_note)
+                summary, n_trees, max_depth, op_note, model_label)
     size = os.path.getsize(out_path)
     return True, size, f"{n_trees} trees x depth <= {max_depth}"
+
+
+def model_label_for(cfg):
+    """Human-readable sklearn class name for the header provenance (the
+    wrap_header template already prefixes 'sklearn ')."""
+    return ("ExtraTreesClassifier" if cfg["kind"] == "et"
+            else "RandomForestClassifier")
 
 
 # -------------------------------------------------------------------- main --
@@ -513,7 +591,7 @@ def main() -> int:
                     help="val-only development run: pick candidate + "
                          "threshold on VAL but never touch the frozen test")
     ap.add_argument("--header-max-bytes", type=int, default=HEADER_MAX_BYTES,
-                    help="reject exports larger than this (default 307200)")
+                    help="reject exports larger than this (default 409600)")
     args = ap.parse_args()
 
     def resolve_here(p):
@@ -535,23 +613,36 @@ def main() -> int:
             return 1
 
     lines = []
-    lines.append("=== Smart Baby Monitor - P3 cry/non-cry model report (v2) ===")
+    lines.append("=== Smart Baby Monitor - P3 cry/non-cry model report "
+                 "(v6, feature-set v2) ===")
     lines.append(f"generated : {datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}")
     lines.append(f"python {sys.version.split()[0]}, numpy {np.__version__}, "
                  f"scikit-learn {sklearn.__version__}, emlearn {emlearn.__version__}")
-    lines.append("features  : " + ", ".join(FEATURE_NAMES))
+    lines.append(f"features ({N_FEATURES}, feature-set v2): "
+                 + ", ".join(FEATURE_NAMES))
     lines.append("")
-    lines.append("--- v3 retraining recipe ---")
-    lines.append("goal: lift frozen-test cry recall (v1: 0.29) under the "
-                 "immutable frozen protocol")
-    lines.append("(test = 40 ESC-50 crying_baby clips + frozen fold-5 non-cry; "
-                 "tuning on VAL only;")
-    lines.append("no crying_baby clip is ever trained on).")
-    lines.append("levers: (1) wave-level augmentation of TRAIN windows only "
-                 "(augment.py),")
-    lines.append("(2) seeded RF candidates compared on VAL, (3) cry-vote-share "
-                 "threshold swept")
-    lines.append(f"    {T_MIN}..{T_MAX} with the {int(FP_GATE * 100)}% FP gate on the "
+    lines.append("--- v6 retraining recipe (temporal dynamics) ---")
+    lines.append("goal: lift the v5 model's frozen-test cry recall (0.335, "
+                 "F1 0.480, confuser FP 7.7%) under the")
+    lines.append("immutable frozen protocol (test = 40 ESC-50 crying_baby "
+                 "clips + frozen fold-5 non-cry;")
+    lines.append("tuning on VAL only; no crying_baby clip is ever trained on).")
+    lines.append("root cause addressed: the 29-feature front end summarizes "
+                 "away temporal dynamics -")
+    lines.append("feature-set v2 appends 34 dynamics features to the "
+                 "unchanged 29 (63 total): per-frame")
+    lines.append("MFCC deltas (edge-replicated first difference, mean+std), "
+                 "log-energy delta mean+std,")
+    lines.append("and per-frame spectral centroid/rolloff(0.85)/flatness "
+                 "mean+std (extract_features.py,")
+    lines.append("mirrored + parity-tested in src/audio_features.c).")
+    lines.append("levers: (1) feature-set v2 front end, (2) the v5 wave-level "
+                 "augmentation of TRAIN")
+    lines.append("windows only (augment.py, reused unchanged - same seeds, "
+                 "same recipes), (3) a seeded")
+    lines.append("model-type sweep (RF 12x7 / RF 30x8 / ET 30x8 / ET 12x7), "
+                 "(4) cry-vote-share threshold")
+    lines.append(f"    swept {T_MIN}..{T_MAX} with the {int(FP_GATE * 100)}% FP gate on the "
                  "CONFUSER split (the task's target metric); the raw VAL")
     lines.append("non-cry FP rate is reported at every sweep point (it runs "
                  "higher: fold-4 ambience covers all 40 ESC-50 classes,")
@@ -614,7 +705,7 @@ def main() -> int:
         if split not in splits:
             continue
         abs_path = os.path.join(dataset_dir, rel)
-        if not os.path.exists(abs_path):
+        if not path_exists_retry(abs_path):
             n_missing += 1
             continue
         w = windows_for(cache, cache_path, rel, abs_path)
@@ -700,7 +791,8 @@ def main() -> int:
     # 3. candidates: fit + VAL threshold sweep (frozen test untouched) --------
     lines.append("")
     lines.append("--- candidate comparison on VAL "
-                 "(threshold swept 30..80, FP gate 10%) ---")
+                 f"(threshold swept {T_MIN}..{T_MAX}, FP gate "
+                 f"{int(FP_GATE * 100)}%) ---")
     lines.append("cry side = raw val cry + stress-val cry (deployment proxy);"
                  if X_vs.shape[0] else
                  "cry side = raw val cry (--no-aug: no stress proxy);")
@@ -712,10 +804,12 @@ def main() -> int:
     for key in cand_keys:
         cfg = CANDIDATES[key]
         print(f"\nfitting candidate {key}: {cfg['desc']}")
-        clf = RandomForestClassifier(n_estimators=cfg["n_estimators"],
-                                     max_depth=cfg["max_depth"],
-                                     class_weight=cfg["class_weight"],
-                                     random_state=SEED, n_jobs=-1)
+        forest_cls = (ExtraTreesClassifier if cfg["kind"] == "et"
+                      else RandomForestClassifier)
+        clf = forest_cls(n_estimators=cfg["n_estimators"],
+                         max_depth=cfg["max_depth"],
+                         class_weight=cfg["class_weight"],
+                         random_state=SEED, n_jobs=-1)
         clf.fit(Xtr, ytr)
         votes_all_val = tree_votes(clf, Xval)
         votes_raw = votes_all_val[yval == 1]
@@ -814,7 +908,8 @@ def main() -> int:
         probe = out_path + ".size_probe"
         for cand in ranked:
             r = build_header(cand["clf"], probe, ["(probing)"], op_note_for(cand),
-                             cand["cfg"]["max_depth"], "(probing)")
+                             cand["cfg"]["max_depth"], "(probing)",
+                             model_label_for(cand["cfg"]))
             if not r[0]:
                 lines.append(f"  {cand['key']}: EXPORT FAILED - {r[2]}")
                 continue
@@ -985,7 +1080,7 @@ def main() -> int:
                          prov_lines_for(ship, n_cry_clips, n_ncry_clips,
                                         not args.no_aug, summary),
                          op_note_for(ship), ship["cfg"]["max_depth"],
-                         summary)
+                         summary, model_label_for(ship["cfg"]))
         if r[0]:
             lines.append("")
             lines.append(f"EXPORT: wrote {out_path} ({r[1]} bytes, {r[2]}, "

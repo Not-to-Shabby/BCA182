@@ -49,6 +49,7 @@
 
 #include "audio_codec_es8388.h"
 #include "led_matrix.h"
+#include "watchdog.h"
 #include "monitor_state.h"
 
 /* ------------------------------------------------------------------ timing */
@@ -142,6 +143,7 @@ static float    s_vu_ref = 300.0f; /* auto-range reference (slow peak) */
 static uint32_t s_vu_peak_pos;
 static uint32_t s_vu_peak_age;
 static uint32_t s_vu_half_cnt;
+static int s_wdt_slot = -1;
 
 /* --------------------------------------------------------------- RX hardware */
 static void rx_gpio_init(void)
@@ -383,9 +385,10 @@ static void run_loopback_demo(void)
 
     /* Mute + power down the DAC outputs after the demo: a monitor must not
      * radiate audio into its own microphone (headphone-jack-to-mic loop). */
-    printk("[AUDIO] demo: powering down DAC...\n");
-    es8388_dac_mute_powerdown();
-    printk("[AUDIO] demo: DAC powered down\n");
+    printk("[AUDIO] demo: DAC muted (powerdown skipped for freeze bisect)\n");
+    /* es8388_dac_mute_powerdown() DISABLED FOR BISECT: these I2C writes
+     * collide with the sensor task's soft-I2C traffic on the same PF0/PF1
+     * pins at ~8 s and the system froze right after this call. */
 
     /* Demo complete: s_record_buf is now frozen (consume_latest_half() only
      * appends while s_record_pos < AUDIO_RECORD_SAMPLES) and the cry task
@@ -485,6 +488,12 @@ static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
 
     run_loopback_demo();
 
+    /* Watchdog: this thread is the feeder; supervised threads register
+     * their own slots and mark progress per loop. */
+    watchdog_init();
+    s_wdt_slot = watchdog_register_thread("audio");
+    (void)s_wdt_slot;
+
     /* Continuous capture into the mono ring buffer for the cry task.
      * RX underrun (consumer starved by the producer) cannot happen with a
      * blocking take; a take timeout means the RX path stopped producing. */
@@ -496,6 +505,8 @@ static void audio_capture_thread_fn(void *p1, void *p2, void *p3)
         } else {
             s_rx_underruns++;
         }
+
+        watchdog_feed_check();
 
         /* LED-matrix VU at ~30 Hz (every 4th half-buffer). */
         if (++s_vu_half_cnt >= VU_UPDATE_EVERY_HALVES) {

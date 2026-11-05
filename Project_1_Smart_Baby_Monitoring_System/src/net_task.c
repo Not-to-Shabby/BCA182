@@ -369,7 +369,11 @@ static void net_thread_fn(void *p1, void *p2, void *p3)
      * (record + playback + codec powerdown, ends ~8-9 s after boot) clear of
      * SPI/Wi-Fi traffic. Documented acceptable simplification. */
     printk("[NET] thread entered (gate %u s)\n", NET_BOOT_GATE_S);
-    k_sleep(K_SECONDS(NET_BOOT_GATE_S));
+    for (uint32_t gi = 0; gi < NET_BOOT_GATE_S; gi++) {
+        k_sleep(K_SECONDS(1));
+        printk("[NET] gate %u/%u\n", (unsigned)(gi + 1),
+               (unsigned)NET_BOOT_GATE_S);
+    }
     printk("[NET] gate passed\n");
 
     /* One-time DHCP lease notification wiring (NOT per attempt, or the

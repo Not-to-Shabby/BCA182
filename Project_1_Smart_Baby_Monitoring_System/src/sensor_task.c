@@ -32,6 +32,7 @@
 #include "icm20608.h"
 #include "baby_logic.h"
 #include "monitor_state.h"
+#include "watchdog.h"
 
 #define SENSOR_PERIOD_MS     2000U
 #define SENSOR_FAULT_AFTER_FAILURES 5U /* consecutive env-sensor read failures */
@@ -176,6 +177,8 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
     env_alert_t prev_env = ENV_OK;
     uint32_t next_wake = k_uptime_get_32();
 
+    const int wdt_slot = watchdog_register_thread("sensor");
+
     for (;;) {
         bool aht_ok = sample_aht10(aht_present, &temp_x10, &hum_x10, &aht_failures);
         bool aps_ok = sample_ap3216c(aps_present, &lux, &proximity, &aps_failures);
@@ -238,6 +241,7 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
                    (long)accel_mg);
         }
 
+        watchdog_progress(wdt_slot);
         sleep_until(&next_wake, SENSOR_PERIOD_MS);
     }
 }

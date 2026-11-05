@@ -41,6 +41,7 @@
 #include "baby_logic.h"
 #include "cry_model.h"
 #include "monitor_state.h"
+#include "watchdog.h"
 
 /* Confirmation rule (spec): >= 2 of the last 3 consecutive 1 s windows. */
 #define CRY_VOTE_HISTORY  3u
@@ -60,6 +61,9 @@ static void cry_thread_fn(void *p1, void *p2, void *p3)
 	/* One-time setup: FFT twiddle precompute + scratch buffer claim. */
 	audio_features_init();
 	int16_t *win = audio_capture_scratch_buffer();
+	int wdt_slot = -1;
+	wdt_slot = watchdog_register_thread("cry");
+	(void)wdt_slot;
 	uint32_t filled = 0;
 
 	/* Last 3 per-window "cry" flags (circular), for the 2-of-3 rule. */
@@ -141,6 +145,7 @@ static void cry_thread_fn(void *p1, void *p2, void *p3)
 		/* Non-overlapping windows for v1 (see file header): restart
 		 * from a fresh window. Hop/overlap is a tuning option. */
 		filled = 0;
+		watchdog_progress(wdt_slot);
 	}
 }
 

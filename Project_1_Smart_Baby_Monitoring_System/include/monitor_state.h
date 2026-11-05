@@ -35,6 +35,7 @@ typedef struct {
 	uint32_t cry_confidence; /* model vote confidence, 0..100     */
 	bool env_sensor_ok;    /* mirror of the sensor task's AHT health */
 	bool net_online;       /* mirror of net_task link state        */
+	bool portal_active;    /* SoftAP config portal serving         */
 
 	/* Timing / user feedback */
 	uint32_t last_update_ms; /* k_uptime_get_32() of last refresh */

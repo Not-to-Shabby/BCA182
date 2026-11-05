@@ -81,7 +81,7 @@ static void on_key0_press(void)
 	uint32_t now = k_uptime_get_32();
 
 	monitor_state_lock();
-	baby_logic_acknowledge(now);
+	baby_logic_acknowledge_for(now, ALERT_MUTE_MS);
 	monitor_state_get()->mute_until_ms = now + ALERT_MUTE_MS;
 	monitor_state_unlock();
 

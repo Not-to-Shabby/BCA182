@@ -98,7 +98,12 @@ baby_state_t evaluate_system_state(baby_state_t current, env_alert_t env,
 
 void baby_logic_acknowledge(uint32_t now_ms)
 {
-    s_mute_until_ms = now_ms + ALERT_MUTE_MS;
+	baby_logic_acknowledge_for(now_ms, ALERT_MUTE_MS);
+}
+
+void baby_logic_acknowledge_for(uint32_t now_ms, uint32_t mute_ms)
+{
+	s_mute_until_ms = now_ms + mute_ms;
 }
 
 bool baby_logic_buzzer_on(baby_state_t state, uint32_t now_ms)

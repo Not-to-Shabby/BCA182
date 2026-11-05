@@ -48,9 +48,9 @@ SEED = 42
 MANIFEST = os.path.join(HERE, "manifest_v2.csv")
 
 VARIANTS = ["E1", "E2", "E3", "E3b", "E4", "E5", "E6",
-            "E7", "E8", "E9", "E12",
-            "E10", "E11", "E13", "E14", "E15",
-            "E17", "E19", "E20"]
+            "E9", "E10", "E11", "E13", "E14",
+            "E17", "E19", "E20",
+            "E21", "E23", "E20r30", "E20r24"]
 
 CONFUSER_CATS = {"siren", "helicopter", "chainsaw", "rooster"}
 # ESC-50 train categories nearest to the (unseen) confuser categories in
@@ -210,6 +210,17 @@ def main() -> int:
         # E17 + E19 combined
         "E20": dict(want=want_all, w_near=3.0, noncry_aug_frac=0.5,
                     newcry_mild_aug=True),
+        # refinements around E20: forest geometry, stronger near-cat weight,
+        # xunfei ablation on top
+        "E21": dict(want=want_all, w_near=5.0, noncry_aug_frac=0.5,
+                    newcry_mild_aug=True),
+        "E23": dict(want=want_all, w_near=3.0, noncry_aug_frac=0.5,
+                    newcry_mild_aug=True,
+                    drop=lambda r: "xunfei" in r.get("source_id", "")),
+        "E20r30": dict(want=want_all, w_near=3.0, noncry_aug_frac=0.5,
+                       newcry_mild_aug=True, rf=(30, 8)),
+        "E20r24": dict(want=want_all, w_near=3.0, noncry_aug_frac=0.5,
+                       newcry_mild_aug=True, rf=(24, 6)),
     }
 
     for name in which:
@@ -281,19 +292,20 @@ def main() -> int:
         print(f"train windows {X.shape[0]} (cry {n_cry}, noncry {n_nc}; "
               f"ESC-50 noncry {esc50_nc} = {esc50_nc / max(n_nc, 1):.1%} of noncry)")
 
-        clf = RandomForestClassifier(n_estimators=16, max_depth=7,
+        n_est, depth = cfg.get("rf", (16, 7))
+        clf = RandomForestClassifier(n_estimators=n_est, max_depth=depth,
                                      class_weight="balanced",
                                      random_state=SEED, n_jobs=-1)
         tf = time.perf_counter()
         clf.fit(X, y, sample_weight=w)
-        print(f"fit {time.perf_counter() - tf:.0f} s")
+        print(f"fit rf{n_est}x{depth}: {time.perf_counter() - tf:.0f} s")
         votes_all = train_cry_model.tree_votes(clf, Xval)
         votes_raw = votes_all[yval == 1]
         votes_nc = votes_all[yval == 0]
         votes_stress = train_cry_model.tree_votes(clf, X_vs)
         votes_cf = train_cry_model.tree_votes(clf, Xcf)
         pts = train_cry_model.sweep_points(votes_raw, votes_stress, votes_nc,
-                                           votes_cf, 16)
+                                           votes_cf, n_est)
         cf_cat = np.array([s.split(":")[1] if ":" in s else "unknown"
                            for s in cf_src], dtype=object)
         print(f"{'T%':>4} {'votes':>6} {'cry P':>7} {'cry R':>7} "

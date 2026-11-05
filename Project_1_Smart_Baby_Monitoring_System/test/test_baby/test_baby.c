@@ -141,6 +141,18 @@ void test_state_fault_overrides_alert(void)
                           evaluate_system_state(BABY_STATE_ALERT, ENV_TEMP_HIGH, true, true, false));
 }
 
+/* acknowledge_for: explicit mute window (portal/remote mute can request
+ * minutes-to-hours; the buzzer respects the requested duration). */
+void test_acknowledge_for_custom_window(void)
+{
+	baby_logic_acknowledge_for(1000U, 5000U);
+	TEST_ASSERT_FALSE(baby_logic_buzzer_on(BABY_STATE_ALERT, 3000U));
+	TEST_ASSERT_TRUE(baby_logic_buzzer_on(BABY_STATE_ALERT, 6000U));
+	/* zero-length window = unmute request: buzzer sounds immediately */
+	baby_logic_acknowledge_for(10000U, 0U);
+	TEST_ASSERT_TRUE(baby_logic_buzzer_on(BABY_STATE_ALERT, 10000U));
+}
+
 /* Confirmed cry (classifier output) raises ALERT like an env violation. */
 void test_state_alert_on_confirmed_cry(void)
 {
@@ -255,6 +267,7 @@ int main(void)
     RUN_TEST(test_state_fault_on_motion_even_with_ok_env);
     RUN_TEST(test_state_fault_on_missing_env_sensor);
     RUN_TEST(test_state_alert_on_confirmed_cry);
+    RUN_TEST(test_acknowledge_for_custom_window);
     RUN_TEST(test_state_fault_overrides_alert);
     RUN_TEST(test_state_returns_to_normal_when_env_recovers);
     RUN_TEST(test_buzzer_sounds_on_alert_without_ack);

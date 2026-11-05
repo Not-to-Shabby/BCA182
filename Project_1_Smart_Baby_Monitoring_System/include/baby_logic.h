@@ -64,6 +64,11 @@ baby_state_t evaluate_system_state(baby_state_t current, env_alert_t env,
  * ALERT_MUTE_MS starting at now_ms. Does not change the state itself. */
 void baby_logic_acknowledge(uint32_t now_ms);
 
+/* Acknowledge with an EXPLICIT mute window (remote mute / portal can
+ * request minutes-to-hours; KEY0 keeps ALERT_MUTE_MS). Works for any
+ * duration -- buzzer_on() simply compares against the stored deadline. */
+void baby_logic_acknowledge_for(uint32_t now_ms, uint32_t mute_ms);
+
 /* True while the buzzer should sound: ALERT state and not inside the
  * mute window that started at the last acknowledge. */
 bool baby_logic_buzzer_on(baby_state_t state, uint32_t now_ms);

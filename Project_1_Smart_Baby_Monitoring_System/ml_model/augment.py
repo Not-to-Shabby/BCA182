@@ -94,6 +94,18 @@ N_AUG_CRY_VARIANTS_DEFAULT = 2   # augmented variants per training cry clip
 NONCRY_FRAC_DEFAULT = 1.0        # fraction of training non-cry windows aug'd
 SEED = 42                        # master seed, matches the trainer contract
 
+# Wave-2 (v7): cry rows from the corpora merged by prep_v2.py (SICCD /
+# CSIBE / hoyyu_icd - everything that is NOT the close-mic donateacry
+# prefix below) are ALREADY distant/room recordings. Applying the full cry
+# recipe (reverb + lowpass + real-noise) to them double-degrades the signal
+# (reverb on reverb) and smears the cry template toward noisy broadband
+# bursts - exactly the siren/rooster confuser region (measured: confuser FP
+# at T=75 rose 0.096 -> 0.185 in the v7 dev run). Those rows therefore get
+# the MILD recipe (synthetic noise + volume only, the non-cry calibration
+# recipe) while close-mic donateacry cries keep the full recipe. Variant
+# ids: "cry<k>" (full recipe) vs "mild<k>" (mild recipe).
+CLOSE_MIC_CRY_PREFIX = "data/donateacry_wav/"
+
 LOWPASS_FC_MIN_HZ = 2500.0
 LOWPASS_FC_MAX_HZ = 7000.0
 LOWPASS_PROB = 0.6               # per cry window (stress val: always on)
@@ -432,6 +444,13 @@ def load_or_build_augmented(manifest_rows, dataset_dir,
     in manifest order (cry variants first for each cry row, then the non-cry
     calibration variant block for each non-cry row). Non-train rows are
     ignored by contract (val/test/confuser are never augmented).
+
+    v7 recipe routing: close-mic donateacry cry rows get the full cry recipe
+    ("cry<k>" variants); cry rows from the wave-2 merged corpora (already
+    distant/room audio) get the MILD recipe ("mild<k>" variants: synthetic
+    noise + volume only - see CLOSE_MIC_CRY_PREFIX above). Mild blocks are
+    built through _aug_file_block with label="noncry" (so every window is
+    included and the mild recipe applies) and re-labelled y=1 here.
     """
     cache_path = os.path.join(dataset_dir, AUG_CACHE_NAME)
     cache = _load_cache(cache_path)
@@ -445,16 +464,26 @@ def load_or_build_augmented(manifest_rows, dataset_dir,
         abs_path = os.path.join(dataset_dir, rel_path)
         if not os.path.exists(abs_path):
             continue
-        variants = ([f"cry{v}" for v in range(n_cry_variants)] if label == "cry"
-                    else ["nc"] * (1 if noncry_frac > 0 else 0))
+        is_close_mic_cry = (label == "cry"
+                            and rel_path.startswith(CLOSE_MIC_CRY_PREFIX))
+        if label == "cry":
+            variants = [f"cry{v}" for v in range(n_cry_variants)] \
+                if is_close_mic_cry \
+                else [f"mild{v}" for v in range(n_cry_variants)]
+        else:
+            variants = ["nc"] * (1 if noncry_frac > 0 else 0)
         for vid in variants:
             st = os.stat(abs_path)
+            build_label = "noncry" if vid.startswith("mild") else label
+            # mild blocks include EVERY window: they are built with
+            # noncry_frac=1.0 regardless of the non-cry calibration fraction
+            block_frac = 1.0 if vid.startswith("mild") else noncry_frac
             key = (f"{AUG_CACHE_VERSION}|{rel_path}|{st.st_mtime_ns}|"
                    f"{st.st_size}|{vid}"
-                   + ("" if label == "cry" else f"|f{noncry_frac:.2f}"))
+                   + ("" if build_label == "cry" else f"|f{block_frac:.2f}"))
             if key not in cache:
-                cache[key] = _aug_file_block(rel_path, abs_path, label, vid,
-                                             noncry_frac, noise_pool)
+                cache[key] = _aug_file_block(rel_path, abs_path, build_label,
+                                             vid, block_frac, noise_pool)
                 n_new += 1
                 n_files += 1
                 if n_files % save_every == 0:

@@ -359,12 +359,15 @@ static void apply_cmd(uint32_t mute_ms)
 	monitor_state_lock();
 	monitor_state_t *st = monitor_state_get();
 	if (mute_ms > 0u) {
-		/* Refresh the logic mute window (fixed ALERT_MUTE_MS) and
-		 * mirror the requested window for the dashboard row. */
-		baby_logic_acknowledge(now);
+		/* Parametrized logic mute window (baby_logic_acknowledge_for):
+		 * the buzzer-level window now matches the requested duration,
+		 * not just the dashboard mirror. */
+		baby_logic_acknowledge_for(now, mute_ms);
 		st->mute_until_ms = now + mute_ms;
 	} else {
-		st->mute_until_ms = now; /* sec=0: request unmute */
+		/* sec=0: request unmute */
+		baby_logic_acknowledge_for(now, 0u);
+		st->mute_until_ms = now;
 	}
 	st->buzzer_on = baby_logic_buzzer_on(st->state, now);
 	monitor_state_unlock();

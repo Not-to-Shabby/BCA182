@@ -383,7 +383,9 @@ static void run_loopback_demo(void)
 
     /* Mute + power down the DAC outputs after the demo: a monitor must not
      * radiate audio into its own microphone (headphone-jack-to-mic loop). */
+    printk("[AUDIO] demo: powering down DAC...\n");
     es8388_dac_mute_powerdown();
+    printk("[AUDIO] demo: DAC powered down\n");
 
     /* Demo complete: s_record_buf is now frozen (consume_latest_half() only
      * appends while s_record_pos < AUDIO_RECORD_SAMPLES) and the cry task

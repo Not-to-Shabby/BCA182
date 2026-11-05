@@ -141,7 +141,11 @@ static uint32_t s_backoff_s = NET_RETRY_MIN_S;
  * which is exactly what a thread stack needs (no DMA touches it). Stack is
  * 2560 B: the captive-portal call chain (poll loop + vsnprintf emit) needs
  * more headroom than the plain supervisor's 2048 B. */
-#define NET_TASK_STACK_SIZE 2560u
+#define NET_TASK_STACK_SIZE 4096u /* 2560 overflowed into the mqtt stack below
+                                     it in DTCM (stacks grow down): the mqtt
+                                     thread's saved context was corrupted at
+                                     the net thread's first deep call -> hard
+                                     fault -> silent system freeze */
 #define NET_TASK_PRIORITY   7
 
 static uint8_t __attribute__((section(".dtcm_noinit"), aligned(32)))
@@ -364,12 +368,15 @@ static void net_thread_fn(void *p1, void *p2, void *p3)
      * flag is needed; the fixed park keeps the boot loopback demo
      * (record + playback + codec powerdown, ends ~8-9 s after boot) clear of
      * SPI/Wi-Fi traffic. Documented acceptable simplification. */
+    printk("[NET] thread entered (gate %u s)\n", NET_BOOT_GATE_S);
     k_sleep(K_SECONDS(NET_BOOT_GATE_S));
+    printk("[NET] gate passed\n");
 
     /* One-time DHCP lease notification wiring (NOT per attempt, or the
      * callback list would grow on every reconnect). */
     net_mgmt_init_event_callback(&s_ip_cb, ip_event, NET_EVENT_IPV4_ADDR_ADD);
     net_mgmt_add_event_callback(&s_ip_cb);
+    printk("[NET] mgmt callback wired\n");
 
     if (strcmp(WIFI_SSID, "your-wifi-ssid") == 0) {
         printk("[NET] secrets.h placeholders in use -- join the SoftAP "
@@ -379,7 +386,9 @@ static void net_thread_fn(void *p1, void *p2, void *p3)
     bool hw_up = false;
     wifi_portal_result_t res;
 
+    printk("[NET] loading creds...\n");
     load_best_creds();
+    printk("[NET] creds loaded\n");
 
     for (;;) {
         /* On-demand portal (KEY0 held 3 s): overrides everything. */

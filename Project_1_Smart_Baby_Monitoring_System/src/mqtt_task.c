@@ -101,7 +101,9 @@
 #define MQTT_BROKER_PORT 1883u
 #endif
 
-#define MQTT_THREAD_STACK_SIZE 2048u
+#define MQTT_THREAD_STACK_SIZE 4096u /* 2048 was too shallow for
+                                        getaddrinfo+mqtt_connect once online;
+                                        DTCM has ~15 KB free after the bump */
 #define MQTT_THREAD_PRIORITY   7
 #define MQTT_THREAD_NAME       "mqtt_thread"
 
@@ -598,6 +600,7 @@ static void replay_evt_queue(void)
 static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
+	printk("[MQTT] thread entered\n");
 
 	s_fds[0].fd = -1;
 	s_fds[0].events = ZSOCK_POLLIN;

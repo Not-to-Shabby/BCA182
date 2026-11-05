@@ -20,14 +20,20 @@
  *     differential mic yields L == R) and pushes it into a mono ring buffer
  *     for the future ML task.
  *
- * A one-shot loopback demo runs once ~5 s after boot: records 2 s of mono
+ * A one-shot loopback demo runs once ~5 s after boot: records 1 s of mono
  * audio into a static SRAM buffer, prints stats, then plays it back through
- * the ES8388 DAC (headphone jack) by duplicating each mono sample into L and
- * R words via the codec driver's PCM feed API (audio_pcm_write()). After the
- * demo, live capture continues into the ring buffer with a 10 s status line.
+ * the ES8388 DAC (headphone jack) at the ~16 kHz frame rate by duplicating
+ * each mono sample into L and R words via the codec driver's PCM feed API
+ * (audio_pcm_write()). After the demo, live capture continues into the ring
+ * buffer with a 10 s status line.
  *
- * All DMA-accessible buffers are plain static SRAM (no CCM: 0x10000000 is not
- * reachable by the DMA controller, no section attributes used).
+ * RAM placement (P4 network-stack liberation): the DMA buffer and the demo
+ * record buffer are plain static main SRAM (CCM/DTCM at 0x10000000 is NOT
+ * DMA-reachable). The mono ML ring, however, is CPU-access-only (the capture
+ * thread pushes, the cry task drains under an IRQ lock; DMA never touches
+ * it), so it lives in the otherwise unused 64 KB DTCM region via the
+ * .dtcm_noinit section pattern from audio_features.c, freeing 32 KB of
+ * main SRAM for the P4 network packet pools.
  */
 
 #include "audio_capture.h"
@@ -49,8 +55,12 @@
 /* Shared I2S frame plan: PLLI2S N=271/R=2 -> 135.5 MHz, I2SDIV=16, ODD=1
  * -> Fs = 135.5 MHz / (256 * 33) = 16039 Hz (+0.24% vs 16 kHz). */
 #define AUDIO_FS_HZ             16039u
-#define AUDIO_RECORD_SECONDS    2u
-#define AUDIO_RECORD_SAMPLES    (AUDIO_FS_HZ * AUDIO_RECORD_SECONDS) /* 32078 */
+#define AUDIO_RECORD_SECONDS    1u
+/* Exactly 16000 samples: the cry classifier's 1 s window length (0.9976 s at
+ * the 16039 Hz frame rate). Shrunk from 2 s/32078 samples in P4 to free
+ * ~32 KB of main SRAM for the network stack; the demo only fills this buffer
+ * and the cry task reuses it afterwards via audio_capture_scratch_buffer(). */
+#define AUDIO_RECORD_SAMPLES    16000u
 #define AUDIO_RING_SECONDS      1u
 #define AUDIO_RING_SAMPLES      (AUDIO_FS_HZ * AUDIO_RING_SECONDS)   /* 16039 */
 #define AUDIO_STAT_PERIOD_MS    10000u
@@ -61,10 +71,27 @@
 #define AUDIO_RX_HALF_WORDS     (AUDIO_RX_DMA_WORDS / 2u) /* 256 words = 128 L,R pairs */
 #define AUDIO_CHUNK_MONO        128u                      /* mono samples per feed chunk */
 
-/* DMA buffers in plain main SRAM: CCM (0x10000000) is NOT DMA-reachable. */
+/* DTCM placement for CPU-access-only bulk buffers (pattern shared with
+ * audio_features.c): the 64 KB core-coupled RAM at 0x10000000 is unreachable
+ * by the DMA controller -- fine for the mono ring, which only the capture
+ * thread (producer) and the cry task (consumer, under an IRQ lock) touch.
+ * Everything placed there is written before it is read (ring slots are only
+ * consumed behind s_ring_count/head), so no startup zeroing is required
+ * (dtcm_noinit semantics). On the host build (non-ARM toolchain) the
+ * attribute compiles out. */
+#if defined(__arm__)
+#define AC_DTCM_BUF __attribute__((section(".dtcm_noinit")))
+#else
+#define AC_DTCM_BUF
+#endif
+
+/* DMA + demo-record buffers in plain main SRAM: CCM (0x10000000) is NOT
+ * DMA-reachable, and the 16000-sample record buffer does not fit in the
+ * DTCM budget left after the ring (~24 KB free vs 32 KB needed), so it
+ * stays in main SRAM, shrunk to 1 s. */
 static uint16_t s_rx_dma_buf[AUDIO_RX_DMA_WORDS];  /* I2S3ext RX, circular */
-static int16_t  s_record_buf[AUDIO_RECORD_SAMPLES]; /* 2 s mono demo buffer */
-static int16_t  s_ring_buf[AUDIO_RING_SAMPLES];     /* 1 s mono ML ring */
+static int16_t  s_record_buf[AUDIO_RECORD_SAMPLES]; /* 1 s mono demo buffer */
+static AC_DTCM_BUF int16_t s_ring_buf[AUDIO_RING_SAMPLES]; /* 1 s ML ring, DTCM */
 static int16_t  s_stereo_chunk[2u * AUDIO_CHUNK_MONO]; /* L,R staging for TX feed */
 
 /* ------------------------------------------------------------ capture state */
@@ -291,16 +318,16 @@ static void run_loopback_demo(void)
 
     /* Flush the pre-demo backlog: RX has been running since init, so the
      * semaphore holds stale tokens (~5 s of old audio). Drain them, resync
-     * the half tracking, and zero the miss counter so the 2 s recording
+     * the half tracking, and zero the miss counter so the 1 s recording
      * starts on FRESH audio and the stats stay honest. */
     while (k_sem_take(&s_half_sem, K_NO_WAIT) == 0) {
     }
     s_consumed_halves = s_completed_halves;
     s_half_missed = 0U;
 
-    /* Record 2 s of mono audio */
+    /* Record 1 s of mono audio */
     s_record_pos = 0;
-    printk("[AUDIO] demo: recording 2 s ...\n");
+    printk("[AUDIO] demo: recording 1 s ...\n");
     while (s_record_pos < AUDIO_RECORD_SAMPLES) {
         if (k_sem_take(&s_half_sem, K_MSEC(500)) != 0) {
             printk("[AUDIO] demo: RX stalled, aborting record (%u samples)\n",
@@ -589,8 +616,9 @@ int16_t *audio_capture_scratch_buffer(void)
     /* Post-demo lifetime contract (see audio_capture.h): once demo_done() is
      * true the capture path never writes s_record_buf again -- the demo path
      * freezes s_record_pos at AUDIO_RECORD_SAMPLES on both the completed and
-     * aborted paths -- so the 32078-sample (64 KB) boot-demo allocation is
-     * idle forever after ~10 s and is loaned here as the cry task's window
-     * buffer (needs 16000 samples), avoiding a +32 KB RAM cost. */
+     * aborted paths -- so the 16000-sample (32 KB) boot-demo allocation is
+     * idle forever after ~8 s and is loaned here as the cry task's 1 s window
+     * buffer (exactly AUDIO_RECORD_SAMPLES = 16000), avoiding a +32 KB RAM
+     * cost. */
     return s_record_buf;
 }

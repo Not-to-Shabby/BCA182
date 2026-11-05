@@ -72,14 +72,16 @@ bool audio_capture_demo_done(void);
 uint32_t audio_capture_ring_read(int16_t *dst, uint32_t max_samples);
 
 /**
- * @brief Loan the 32078-sample demo record buffer as classification scratch.
+ * @brief Loan the 16000-sample demo record buffer as classification scratch.
  *
  * POST-DEMO LIFETIME CONTRACT: once audio_capture_demo_done() is true the
  * capture path never writes this buffer again (the demo freezes its write
  * index at the full length on both the completed and aborted paths), so the
- * ~10 s boot demo leaves this 64 KB allocation idle forever. The cry task
+ * ~8 s boot demo leaves this 32 KB allocation idle forever. The cry task
  * reuses it as its 1 s (16000-sample) window buffer, avoiding a +32 KB RAM
  * cost. Not valid for concurrent use with the demo (poll demo_done() first).
+ * (P4: shrunk from 2 s/32078 samples to free 32 KB of main SRAM for the
+ * network stack; the demo records/plays exactly this 1 s window.)
  */
 int16_t *audio_capture_scratch_buffer(void);
 

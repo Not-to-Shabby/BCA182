@@ -10,7 +10,8 @@
  * red/maroon on a 250 ms phase derived from the tick, mirroring the alert
  * strip behavior of Lab 4; a confirmed cry (cry_task) replaces the ALERT
  * banner text with "CRY DETECTED" under the same treatment and raises a CRY
- * flag in the footer row.
+ * flag in the footer row, next to the NET link flag (P4: bright green while
+ * net_task holds a DHCP lease, dim grey while offline).
  *
  * All drawing happens on the caller's snapshot COPY (never the live state
  * pointer), so no lock is held while the relatively slow FSMC writes run.
@@ -50,10 +51,11 @@
 #define VALUE_X     80U
 #define ROW_Y(i)    (92U + (i) * 18U)
 
-/* Footer card: uptime left, CRY + TEST flags right */
+/* Footer card: uptime left, then NET + CRY + TEST flags right */
 #define FOOT_Y1     192U
 #define FOOT_Y2     218U
 #define UP_Y        196U
+#define NET_X       112U
 #define CRY_X       144U
 #define TEST_X      180U
 
@@ -74,6 +76,7 @@ static char   s_last_prox[12];
 static char   s_last_accel[12];
 static char   s_last_up[16];
 static bool   s_last_test;
+static bool   s_last_net;
 
 /* ----------------------------------------------------------- static frame */
 void ui_dashboard_init(void)
@@ -115,6 +118,7 @@ void ui_dashboard_init(void)
 	s_last_accel[0] = '\0';
 	s_last_up[0] = '\0';
 	s_last_test = false;
+	s_last_net = false;
 }
 
 /* ------------------------------------------------------------ field paints */
@@ -273,5 +277,16 @@ void ui_dashboard_update(const monitor_state_t *s)
 		lcd_show_string(TEST_X, UP_Y, test ? "TEST" : "    ",
 				LCD_COLOR_YELLOW, BG);
 		s_last_test = test;
+	}
+
+	/* --- NET link flag (net_task -> monitor_state.net_online) ---
+	 * Always painted so the flag position is stable: bright green while the
+	 * monitor holds a DHCP lease, dim grey otherwise. The snapshot copy the
+	 * UI thread already takes includes net_online, so this read is free. */
+	const bool net = s->net_online;
+	if (net != s_last_net) {
+		lcd_show_string(NET_X, UP_Y, "NET",
+				net ? LCD_COLOR_GREEN : LCD_COLOR_GRAY, BG);
+		s_last_net = net;
 	}
 }

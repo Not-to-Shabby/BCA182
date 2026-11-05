@@ -239,7 +239,16 @@ def save_cache(cache_path, cache):
     tmp = cache_path + ".tmp.npz"   # np.savez* appends .npz if missing
     np.savez_compressed(tmp, keys=np.array(keys, dtype="U"),
                         counts=counts, feats_flat=flat)
-    os.replace(tmp, cache_path)
+    # Windows: a parallel process (or antivirus) can transiently hold the
+    # destination open at the replace moment - retry with backoff.
+    for attempt in range(5):
+        try:
+            os.replace(tmp, cache_path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(1.0 + attempt)
 
 
 def file_cache_key(rel_path, abs_path):

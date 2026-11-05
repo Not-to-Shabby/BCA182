@@ -14,28 +14,39 @@ inside `ml_model/`.
 ## Pipeline
 
 ```
-dataset_prep.py          extract_features.py            augment.py
------------------        -----------------------        ------------------------
-git clone --depth 1      stdlib wave -> float mono      v5 wave augmentation of
-donateacry + ESC-50      windowed-sinc resample 16kHz   TRAIN windows only:
-ffmpeg .3gp/.caf->WAV    512/256 Hann frames            real ESC-50 ambience mix,
-manifest.csv             40-mel -> log -> DCT-II        reverb, lowpass, volume,
-(path,label,split,       13 MFCCs -> 63 feats/window    loud branch, pitch/speed,
- fold,source_id)         (v1 29-summary block + 34      hum -> features_aug_cache
-                         temporal-dynamics features:
-                         MFCC-delta mean/std, log-energy
-                         delta mean/std, spectral
-                         centroid/rolloff(0.85)/flatness
-                         mean/std) (pure NumPy)
+dataset_prep.py          acquire_v2.py + prep_v2.py     extract_features.py
+-----------------        ------------------------------ -----------------------
+git clone --depth 1      acquire_v2.py <name>: convert  stdlib wave -> float mono
+donateacry + ESC-50      new corpora -> 16 kHz wav16 +  windowed-sinc resample 16kHz
+ffmpeg .3gp/.caf->WAV    manifest_<name>.csv (candidates) 512/256 Hann frames
+manifest.csv             prep_v2.py: md5 content-hash   40-mel -> log -> DCT-II
+(path,label,split,       dedup vs every existing split, 13 MFCCs -> 63 feats/window
+ fold,source_id)         intra-candidate dedup, <1 s    (v1 29-summary block + 34
+                         drop, 10% stratified val,      temporal-dynamics features:
+                         feature-cache pre-warm ->      MFCC-delta mean/std, log-energy
+                         manifest_v2.csv                delta mean/std, spectral
+                                                        centroid/rolloff(0.85)/flatness
+                                                        mean/std) (pure NumPy)
+
+augment.py
+-----------------------------------------------------------------------------------
+v7 wave augmentation of TRAIN windows only, recipe split by domain:
+close-mic donateacry cries -> FULL recipe (real ESC-50 ambience mix SNR
+10-25 dB, reverb, lowpass 2.5-7 kHz, volume + loud branch, pitch/speed,
+hum); wave-2 distant/room cries (SICCD/CSIBE/hoyyu_icd) -> MILD recipe
+(synthetic noise + volume only - already domain-matched audio is not
+double-degraded); non-cry windows -> noise + volume calibration variants
+-> features_aug_cache.npz + stress-val deployment proxy for val cries
 
 train_cry_model.py
 -----------------------------------------------------------------------------------
-manifest -> windows (cached) + augmented train windows (cached, seeded)
--> candidates (seed 42: rf12x7 / rf16x7 / rf18x7 / rf20x7 / rf30x8 /
-   et30x8 / et12x7 - ExtraTrees exports through the same eml_trees code)
--> VAL-only comparison: cry side = raw val cry + stress-val cry proxy
-   (deployment channel applied to val cry windows), FP gate = confuser split
--> cry-vote-share threshold swept 40..85 (firmware rule replicated exactly)
+manifest_v2.csv -> windows (cached) + augmented train windows (cached, seeded)
+-> candidates (seed 42: rf16x7 / rf24x6 / rf30x8) with sample_weight x3 on the
+   18 nearest loud-mechanical/animal ESC-50 train categories (NEAR_CATS -
+   the confuser categories themselves are in NO training split by protocol)
+-> VAL-only comparison: cry side = raw val cry (incl. real distant clips)
+   + stress-val cry proxy, FP gate = confuser split (10%)
+-> cry-vote-share threshold swept 40..90 (firmware rule replicated exactly)
 -> FROZEN TEST evaluated once at the chosen point
 -> emlearn inline forest -> include/cry_model.h (same API as v1)
 ```
@@ -58,9 +69,17 @@ PY="C:/Users/Perch/.platformio/penv/Scripts/python.exe"
 # 2. clone datasets, convert audio, build manifest.csv  (see caveats below)
 "$PY" ml_model/dataset_prep.py
 
+# 2b. wave-2 corpora (one-time, already run): convert + merge with content
+#     dedup, build manifest_v2.csv, pre-warm the feature cache
+# "$PY" ml_model/acquire_v2.py siccd   # csibe / hoyyu_icd likewise
+"$PY" ml_model/prep_v2.py
+
 # 3. train, evaluate, export C header + report (full protocol incl. the
-#    one-shot frozen-test evaluation)
+#    one-shot frozen-test evaluation); wave-2 training reads manifest_v2.csv
 "$PY" ml_model/train_cry_model.py \
+    --manifest manifest_v2.csv \
+    --candidates rf16x7,rf24x6,rf30x8 \
+    --aug-variants 1 --noncry-aug-frac 0.5 \
     --dataset-dir ml_model \
     --out ../include/cry_model.h \
     --report model_report.txt
@@ -84,16 +103,17 @@ Notes:
 - `include/cry_model.h` is written **only** when the frozen test set holds
   >= 20 cry AND >= 20 non-cry clips; otherwise `model_report.txt` says
   exactly what is missing. The exported header is also size-gated
-  (`--header-max-bytes`, default 400 KB): the val-ranked candidates are
-  exported in order until one fits (v6: rf30x8 measured 1.18 MB and
-  rf20x7 415 KB - both skipped; rf16x7 at 330 KB ships).
+  (`--header-max-bytes`, default 1.5 MB as of wave 2): emlearn inline trees
+  are tiny in flash (the v6 332 KB header compiled to ~15 KB; the v7
+  1.276 MB rf30x8 header compiles to ~171 KB, firmware total 338 KB = 32.2%
+  of the 1 MB STM32F407 flash), so the v6 400 KB source budget was raised.
 
 ## Frozen evaluation protocol (docs/project-plan.md §P3) - unchanged
 
 | split      | contents                                                                                     | role |
 |------------|----------------------------------------------------------------------------------------------|------|
-| `train`    | donateacry-corpus (all clips, label=cry, split by **source recording**) + ESC-50 folds 1-3 non-cry (all classes except `crying_baby`) | fit (+ **wave augmentation of train windows only**) |
-| `val`      | ESC-50 fold 4 non-cry + donateacry source recordings held out of train                        | candidate + threshold tuning (plus a label-preserving stress proxy of the val cry clips) |
+| `train`    | donateacry-corpus (all clips, label=cry, split by **source recording**) + ESC-50 folds 1-3 non-cry (all classes except `crying_baby`) + **wave 2**: SICCD + CSIBE + hoyyu_icd candidates (hash-deduped, 32,085 clips) | fit (+ **wave augmentation of train windows only**) |
+| `val`      | ESC-50 fold 4 non-cry + donateacry source recordings held out of train + **wave 2**: 10% stratified hash-deduped candidate sample (3,565 clips) | candidate + threshold tuning (plus a label-preserving stress proxy of the val cry clips) |
 | `test`     | **FROZEN**: ALL 40 ESC-50 `crying_baby` clips (any fold - zero appear in training, leakage structurally impossible by fold design) + deterministic 40-clip fold-5 non-cry subset (seed 182) | reported metrics only, **evaluated once** at the chosen operating point |
 | `confuser` | ESC-50 `siren`, `helicopter`, `chainsaw`, `rooster` (all folds) + UrbanSound8K `children_playing`/`street_music` **if manually placed** | false-positive table + the task's 10% FP gate |
 
@@ -165,7 +185,7 @@ unchanged from v1:
   class; a vote tie -> NONCRY, mirroring sklearn argmax).
 
 Pair it with `CRY_CONF_THRESHOLD` in `include/cry_task.h` (currently
-**75u** = 12/16 trees, the val-tuned operating point of the shipped v6
+**73u** = 22/30 trees, the val-tuned operating point of the shipped v7
 model).
 
 Verified: the generated header was compiled standalone (`gcc -std=c99 -Wall
@@ -179,14 +199,120 @@ the shipped model bit-for-bit; `tree_votes` = emlearn leaf-majority votes).
 |---------|-----|---------|------------|
 | donateacry-corpus | github.com/gveres/donateacry-corpus | **ODbL 1.0** | cry training (all clips) |
 | ESC-50 | github.com/karolpiczak/ESC-50 | **CC BY-NC 3.0** | non-cry train folds 1-3 (+ their ambience for cry mixing), val fold 4, frozen test (40 crying_baby + 40 fold-5), confusers |
+| SICCD (Sakha & Ameri 2026) | zenodo.org/records/21848098 | **CC BY 4.0** | wave-2 cry training (3,200 clips, 4 cry-emotion classes) |
+| CSIBE (Kertesz 2018) | zenodo.org/records/1243714 | **CC BY 4.0** | wave-2 cry training incl. 960 distant/reverb AIBO room cries + 13 domestic non-cry classes |
+| hoyyu1/infant-cry-detection (ICD_MMSP, IEEE MMSP 2025) | huggingface.co/datasets/hoyyu1/infant-cry-detection | **none stated - research-use-only** | wave-2 cry training incl. 4,552 CryCeleb distant room cries + non-cry. **Training OK; raw audio NEVER redistributed** |
 | UrbanSound8K (optional) | urbansounddataset.weebly.com | CC BY-NC 3.0 | confusers only, never auto-downloaded |
 
-Both primary datasets are **non-commercial / research-education** licensed;
-this matches the academic course context. Clones live under
-`ml_model/data/` (git-ignored; re-creatable with step 2). Cloned commits are
-recorded in `ml_model/dataset_provenance.txt` at prep time.
+The base datasets are **non-commercial / research-education** licensed; the
+CC BY 4.0 additions permit commercial use individually but the combined
+corpus stays non-commercial via ESC-50/donateacry, matching the academic
+course context. The hoyyu_icd research-use-only constraint is honored: it is
+used for training only and is never redistributed (the trained model is a
+statistical derivative; attribution recorded here and in the shipped header
+provenance). Clones live under `ml_model/data/` (git-ignored). Cloned
+commits are recorded in `ml_model/dataset_provenance.txt` at prep time.
 
-## Current status (v6 retrain - feature-set v2 temporal dynamics, November 2026)
+## Current status (v7 retrain - wave-2 corpus merge, November 2026)
+
+Wave 2 merged three newly acquired corpora into training (prep_v2.py ->
+manifest_v2.csv) and retrained. **The merged distant/room cry data moved the
+needle decisively on the frozen test:**
+
+| metric (frozen test, evaluated once at each ship point) | v6 (rf16x7, T=75) | **v7 (rf30x8, T=73)** |
+|---|---|---|
+| cry precision / recall / F1 | 0.802 / **0.345** / 0.483 | 0.928 / **0.705** / **0.801** |
+| noncry FP (fold-5 subset) | 17/200 = 8.5% | **11/200 = 5.5%** |
+| accuracy | 0.630 | **0.825** |
+| cry clips with >= 1 positive window | 29/40 | **38/40** |
+| cry clips with >= 2 positive windows | 19/40 | **33/40** |
+| noncry clips with >= 1 FP window | 8/40 | **5/40** |
+| confuser FP (gate <= 10%) | 9.6% | **9.5%** |
+| header size / firmware flash | 332 KB / 167 KB total | 1.276 MB / 338 KB total (32.2%) |
+
+Frozen-test cry recall doubled (+0.36 absolute) and F1 rose +0.32 while the
+confuser gate held and ambient FP fell - the diagnosis was right all along:
+the model needed to HEAR distant/room cries (960 CSIBE AIBO + 4,552 CryCeleb
+clips), not just have close-mic cries synthesized to look distant.
+
+### Wave-2 merge (prep_v2.py): method and stats
+
+- **Fingerprint**: md5 of the 16 kHz mono signed-16-bit PCM bytes (16 kHz
+  mono/s16 files hashed verbatim from the WAV data chunk; other formats -
+  ESC-50 is 44.1 kHz - routed through the pipeline's own loader + resampler
+  and quantized to s16, so fingerprints are comparable across corpora).
+  Verified: identical copies match; a +1e-4 DC-shifted copy hashes
+  differently. **EXACT-content matching only**: re-encoded / gain- or
+  pitch-shifted duplicates are NOT caught.
+- **Routing policy** (mission contract): candidate hash == existing
+  `test`/`confuser` clip -> DROP ENTIRELY (frozen test AND FP-gate
+  protection); == existing `val` clip -> train (never val: tuning
+  contamination); == existing `train` clip -> train; == another candidate ->
+  keep one deterministic representative, drop the rest; < 1 s (no 1 s
+  window) -> dropped.
+- **Stats** (61,448 candidates scanned, 0 errors, 2.6 min on 12 workers):
+  0 frozen-test/confuser collisions (ESC-50 protection confirmed),
+  2,688 intra-candidate duplicates dropped (2,526 hoyyu_icd domestic
+  repeats + 162 SICCD), 23,110 clips shorter than 1 s dropped (79% of CSIBE
+  non-cry and 56% of CSIBE cry are sub-second AIBO event snippets),
+  **0 exact-content overlaps with donateacry** (the SICCD overlap warning
+  was precautionary - no byte-identical clips exist; re-encoded overlap
+  cannot be excluded by design and none was detectable), 35,650 eligible ->
+  3,565 val (10% stratified by corpus x label; CSIBE grouped by underlying
+  source file via the `__<chunk>__` filename ordinal) + 32,085 train.
+  Audit trail: `dropped_clips_v2.csv`; full log: `prep_v2_report.txt`.
+- SICCD's ~330 internally-augmented clips carry no metadata marker and could
+  not be identified or excluded individually (mild intra-train duplication
+  risk, no evaluation leakage).
+- Non-cry candidates were included in FULL (extraction measured ~11 ms/clip;
+  the mission's 1:2..1:4 cry:noncry band is met by clip count 1:1.1 after
+  the sub-second drop, ~1:0.85 by windows, and `class_weight=balanced`
+  equalizes the effective prior).
+
+### Wave-2 recipe (selected by val-only diagnostics, diag_v2.py E1..E23)
+
+Naive full inclusion FAILED the task's confuser gate: the dev run measured
+confuser FP 0.185 at T=75 (v6: 0.096) and no candidate passed below T=86.
+Per-category breakdown showed siren + rooster FP. Root causes found by
+controlled ablation (all val-only, frozen test untouched):
+
+1. The confuser categories are in NO training split by protocol (dataset_prep
+   routes them to split=confuser for ALL ESC-50 folds), so the gate tests
+   unseen-category generalization - and the wave-2 cry corpora genuinely
+   overlap that region (distant broadband bursts ~ rooster, melodic wails ~
+   siren).
+2. Applying the full close-mic-channel recipe (reverb/lowpass/real-noise) to
+   already-distant wave-2 cries double-degrades them and smears the cry
+   template toward the confuser region.
+
+Fixes (the shipped "E20r30" recipe):
+- **Mild augmentation routing** (augment.py `CLOSE_MIC_CRY_PREFIX`):
+  donateacry cries keep the full recipe; SICCD/CSIBE/hoyyu_icd cries get the
+  mild noise+volume recipe (1 variant per clip; non-cry calibration frac
+  0.5).
+- **NEAR_CATS sample weighting** (x3.0, ESC-50 sources only): the 18 nearest
+  loud-mechanical/animal ESC-50 train categories (engine, train, fireworks,
+  car_horn, church_bells, glass_breaking, hand_saw, vacuum_cleaner,
+  washing_machine, crow, hen, sheep, pig, cow, thunderstorm, wind, sea_waves,
+  rain) push the noncry boundary outward around the unseen confuser
+  population. Confuser-split audio is never touched, so the gate still
+  measures unseen-category generalization. A first implementation that
+  matched ANY corpus's category names accidentally weighted CSIBE's own
+  `vacuum_cleaner` class; shipped weighting is ESC-50-only (the exact
+  composition validated in diagnostics; prod reproduces the diagnostic
+  sweep bit-for-bit).
+- Real-noise pool unchanged (ESC-50 folds 1-3 only) so the v5/v6 augmented
+  cache stays valid.
+
+Candidate sweep on the merged val (gate-passing bests): rf16x7@81% F1 0.787,
+rf24x6@79% F1 0.777, **rf30x8@73% F1 0.830 (P 0.975 / R 0.722; raw val cry
+recall 0.807, stress-val recall 0.637, val noncry FP 0.041, confuser FP
+0.095)** -> ships. The 1.5 MB header budget admits rf30x8 (1,276,170 bytes,
+30 trees x depth <= 8); compiled firmware flash 338,116 B = 32.2% of 1 MB,
+RAM 95.0% (net_task/audio-buffer work tracked separately by the firmware
+side).
+
+### v6 (previous ship, for comparison)
 
 - Environment: numpy 2.4.6 / scipy 1.17.1 / scikit-learn 1.9.1 /
   emlearn 0.23.2 in the PlatformIO venv; git + ffmpeg available.
@@ -265,18 +391,23 @@ recorded in `ml_model/dataset_provenance.txt` at prep time.
 | file | purpose |
 |------|---------|
 | `dataset_prep.py` | dataset download/conversion/manifest builder (this file's step 2) |
+| `acquire_v2.py` | Datasets v2 converter: data/<name> -> wav16/ + manifest_<name>.csv |
+| `prep_v2.py` | wave-2 merger: md5 content-hash dedup, 10% stratified val split, feature-cache pre-warm -> manifest_v2.csv |
+| `diag_v2.py` | wave-2 val-only recipe diagnostics (E1..E23 ablations; chose the shipped E20r30 recipe) |
 | `extract_features.py` | pure-NumPy MFCC front-end + `--selftest` |
-| `augment.py` | v5 wave-level augmentation, stress-val proxy, caches + `--selftest` |
-| `train_cry_model.py` | trainer/evaluator/emlearn exporter (step 3) |
-| `manifest.csv` | frozen-protocol split manifest (generated) |
+| `augment.py` | wave-level augmentation (v7: full recipe for close-mic cries, mild recipe for wave-2 distant cries), stress-val proxy, caches + `--selftest` |
+| `train_cry_model.py` | trainer/evaluator/emlearn exporter (step 3; `--manifest manifest_v2.csv`) |
+| `manifest.csv` | frozen-protocol split manifest (generated, v1 datasets) |
+| `manifest_v2.csv` | merged train/val manifest (generated: base rows + wave-2 candidates) |
+| `manifest_<name>.csv` | per-dataset candidate manifest snippets (generated, see below) |
+| `prep_v2_report.txt` | wave-2 merge log: dedup method + stats + split summary (generated) |
+| `dropped_clips_v2.csv` | wave-2 dedup audit trail: every dropped candidate + reason (generated, git-ignored) |
 | `dataset_provenance.txt` | clone shas, licenses, seed, warnings (generated) |
 | `features_cache.npz` | per-clip window feature cache (generated, git-ignored) |
 | `features_aug_cache.npz` | augmented-train-window feature cache (generated, git-ignored) |
 | `noise_pool_aug-v5.npz` | real-ambience noise pool for cry mixing (generated, git-ignored) |
 | `model_report.txt` | training report (generated) |
 | `data/` | dataset clones + converted WAVs (generated, git-ignored) |
-| `acquire_v2.py` | Datasets v2 converter: data/<name> -> wav16/ + manifest_<name>.csv |
-| `manifest_<name>.csv` | per-dataset candidate manifest snippets (generated, see below) |
 
 ## Datasets v2 acquisition log (November 2026)
 
@@ -341,7 +472,9 @@ coverage (CSIBE-AIBO 960 + CryCeleb 4,552 clips) directly targeting the
 - **ESC-50 (CC BY-NC 3.0) + donateacry (ODbL 1.0)** remain
   non-commercial/research-education; the overall corpus therefore stays
   non-commercial regardless of the CC BY additions.
-- All new data is `split=candidate`: the orchestrator must de-duplicate
-  (SICCD overlaps donateacry sources) and re-split before training; the
-  frozen test protocol must not be re-drawn and `manifest.csv` was not
-  touched.
+- All new data was delivered `split=candidate`: it was de-duplicated and
+  re-split by `prep_v2.py` (md5 content-hash policy above; **no
+  byte-identical overlap with donateacry was found** - the SICCD overlap
+  warning was precautionary), merged into `manifest_v2.csv` (train/val
+  only), and the frozen test protocol was not re-drawn (`manifest.csv`
+  untouched). Integration outcome: see "Current status (v7)" above.

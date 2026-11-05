@@ -1,22 +1,24 @@
 /**
  * @file net_task.c
- * @brief STUB — filled in by the P4 connectivity agent. The build stays
- *        green (RAM-neutral: no networking CONFIG enabled yet); the real
- *        implementation brings up RW007 + DHCP with a link supervisor.
+ * @brief STUB — filled in by the P4 connectivity agent. Deliberately
+ *        RAM-neutral: no thread, no stack, no networking CONFIG yet.
+ *
+ * IMPLEMENTATION NOTES for the P4 agent (main SRAM is 99.6% full!):
+ *  - The net + mqtt thread stacks must live in the 64 KB DTCM via the
+ *    raw-buffer pattern (K_THREAD_STACK_DEFINE carries its own section
+ *    attribute and CANNOT be wrapped in a custom-section attribute):
+ *      static uint8_t __attribute__((section(".dtcm_noinit"), aligned(32)))
+ *              net_stack[2048 + 64];
+ *      k_thread_create(&cb, (k_thread_stack_t *)net_stack, 2048, ...);
+ *  - Free ~32 KB of main SRAM first by moving the mono ring (and/or the
+ *    demo record buffer, shrunk to 16000 samples) to DTCM — both are
+ *    CPU-access-only (never DMA'd).
+ *  - The networking CONFIG block goes into zephyr/prj.conf together with
+ *    the DTCM migration in one landing (see net_task.h RAM contract).
+ *  - PB4/SPI2 note: keep &spi2 unclaimed in the overlay; the RW007 driver
+ *    (LAB_3 rw007_wifi.c) owns SPI2 registers and holds PB12 high.
  */
 #include "net_task.h"
-
-#include <zephyr/kernel.h>
-
-static void net_thread_fn(void *p1, void *p2, void *p3)
-{
-	ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
-	for (;;) {
-		k_sleep(K_MSEC(1000));
-	}
-}
-
-K_THREAD_DEFINE(net_thread, 2048, net_thread_fn, NULL, NULL, NULL, 7, 0, 0);
 
 void net_task_start(void)
 {
